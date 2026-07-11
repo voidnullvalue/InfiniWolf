@@ -2,6 +2,18 @@
 
 Random Wolf generates deterministic ten-map Wolfenstein 3D campaigns for ECWolf. It uses the player's registered WL6 data at runtime and never copies Wolfenstein graphics, sounds, music, or data files into generated packages.
 
+## Prebuilt release (Windows / macOS / Linux)
+
+Every tagged release publishes a self-contained `.zip` per platform on the [Releases page](../../releases) — no Python install required. Each one bundles:
+
+- `RandomWolf` — the desktop generator (double-click to run)
+- `randomwolf-cli` — the same generator as a command-line tool
+- ECWolf itself (the **GPL edition**; see [Licensing](#licensing) below), so there's nothing else to install
+
+To use it: download the archive for your platform, unpack it, and drop its contents next to (or into) your own registered Wolfenstein 3D install — you still need to supply your own legally owned WL6 data; nothing here includes or downloads it for you. Run `RandomWolf`, choose settings, **Generate**, then **Play**.
+
+Prefer to run from source, or want to build these packages yourself? See below.
+
 ## Requirements
 
 - Python 3.11 or newer
@@ -49,3 +61,20 @@ python3 tools/smoke_ecwolf.py --ecwolf /path/to/ecwolf --data /path/to/wl6-data
 ```
 
 Generated packages contain only WAD map data, MAPINFO, and the reproducibility manifest. Registered WL6 assets remain in the user's data directory.
+
+## Building a release locally
+
+`.github/workflows/release.yml` builds and publishes the prebuilt packages automatically whenever a `vX.Y.Z` tag is pushed (see `packaging/make_release.py`). To reproduce a package by hand:
+
+```sh
+pip install pyinstaller .
+pyinstaller --onefile --windowed --name RandomWolf run.py
+pyinstaller --onefile --name randomwolf-cli randomwolf_cli.py
+python3 packaging/make_release.py --platform linux --version 0.1.0   # or windows / macos
+```
+
+The script downloads ECWolf's official prebuilt binary for the target platform from `maniacsvault.net`, checks it against a pinned SHA-256, and packages it alongside the two executables. It never touches Wolfenstein 3D game data.
+
+## Licensing
+
+Random Wolf itself is MIT licensed (`LICENSE`). ECWolf is dual licensed by its authors under either the original id Software non-commercial license or GPLv2+; `packaging/make_release.py` only ever fetches and bundles the **GPL edition** (verified against ECWolf's own bundled `readme.1st`/license files, and against the fact that the Linux build is literally the Debian-archived package, which cannot legally carry the non-commercial edition). Prebuilt release packages include ECWolf's GPL license text and copyright notices under `THIRD_PARTY_LICENSES/ecwolf/`. ECWolf's source is at [github.com/ECWolfEngine/ECWolf](https://github.com/ECWolfEngine/ECWolf).
