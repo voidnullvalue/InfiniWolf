@@ -6,7 +6,7 @@ import zipfile
 
 from randomwolf.config import CampaignConfig, Intensity
 from randomwolf.generator import GenerationCancelled, generate_campaign, generate_map, validate_map, validate_package
-from randomwolf.generator import ELEVATOR_WALL, GOLD_KEY, HANS_GROSSE, SECRET_ELEVATOR_SWITCH, _reachable
+from randomwolf.generator import ELEVATOR_TILE, GOLD_KEY, HANS_GROSSE, SECRET_EXIT_ZONE, _at, _reachable
 from randomwolf.generator import FLOOR, ZONE_MAX
 
 
@@ -51,7 +51,11 @@ class GeneratorTests(unittest.TestCase):
 
     def test_designated_floor_has_rewarded_secret_elevator(self):
         level = generate_map(CampaignConfig(seed=44), 3, secret_exit=True)
-        self.assertIn(SECRET_ELEVATOR_SWITCH, level.tiles)
+        self.assertEqual(level.tiles.count(SECRET_EXIT_ZONE), 1)
+        index = level.tiles.index(SECRET_EXIT_ZONE)
+        # The modzone floor cell must face a real elevator switch: that pair
+        # is what ECWolf rewrites into an Exit_Secret trigger.
+        self.assertEqual(_at(level.tiles, index % 64 + 1, index // 64), ELEVATOR_TILE)
         self.assertTrue(level.secret_rewards)
 
     def test_lock_setting_changes_progression_content(self):
@@ -78,7 +82,21 @@ class GeneratorTests(unittest.TestCase):
         self.assertTrue(all(FLOOR <= zone <= ZONE_MAX for zone in zones))
         wall_materials = {tile for tile in level.tiles if 1 <= tile < 90}
         self.assertGreaterEqual(len(wall_materials), 2)
-        self.assertIn(ELEVATOR_WALL, level.tiles)
+        self.assertIn(ELEVATOR_TILE, level.tiles)
+        # Tile 22 is the decoy "fake elevator" switch and must never appear.
+        self.assertNotIn(22, level.tiles)
+
+    def test_elevator_is_usable_and_authentic(self):
+        for seed in range(30):
+            level = generate_map(CampaignConfig(seed=seed), 2)
+            sx, sy = level.exit_stand
+            switch_east = _at(level.tiles, sx + 1, sy) == ELEVATOR_TILE
+            switch_west = _at(level.tiles, sx - 1, sy) == ELEVATOR_TILE
+            self.assertTrue(switch_east or switch_west,
+                            "switch must be on the east/west axis")
+            door_x = sx - 2 if switch_east else sx + 2
+            self.assertEqual(_at(level.tiles, door_x, sy), 100,
+                             "elevator entrance must be a real elevator door")
 
     def test_enemy_population_has_cumulative_difficulty_layers(self):
         level = generate_map(CampaignConfig(seed=600, guard_density=Intensity.HIGH), 8)

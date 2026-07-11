@@ -22,12 +22,22 @@ WALL = 1
 FLOOR = 108
 ZONE_MAX = 143
 DOOR_EW, DOOR_NS = 90, 91
-DOORS = {DOOR_EW, DOOR_NS, 92, 93, 94, 95}
-PLAYER_EAST = 19
+DOOR_ELEVATOR = 100  # unlocked elevator door on an east/west axis
+DOOR_GOLD_EW = 92
+DOORS = {DOOR_EW, DOOR_NS, DOOR_GOLD_EW, 93, 94, 95, DOOR_ELEVATOR, 101}
+PLAYER_START = 19  # north-facing player start (things 19-22 are N/E/S/W)
 PUSHWALL = 98
-ELEVATOR_SWITCH = 21
-ELEVATOR_WALL = 22
-SECRET_ELEVATOR_SWITCH = 107
+# Tile 21 is the real elevator: its north/south faces render as plain
+# elevator paneling and its east/west faces are the exit switch. ECWolf's
+# wolf3d translator disables activation from north/south, so a usable
+# switch must be approached along the east/west axis. Tile 22 (the "fake
+# elevator", a decoy switch that does nothing) is deliberately never used.
+ELEVATOR_TILE = 21
+# Floor code 107 is not a wall: the translator's "modzone 107" converts an
+# adjacent tile-21 Exit_Normal trigger into Exit_Secret. Placing it on the
+# floor cell in front of a hidden elevator switch is how native maps route
+# to the secret floor.
+SECRET_EXIT_ZONE = 107
 GOLD_KEY = 43
 HANS_GROSSE = 214
 
@@ -70,6 +80,10 @@ WALL_THEMES = (
 # room. Every other accent above is just an alternate plain material and is
 # fine covering a whole room's walls.
 DECOR_WALLS = frozenset({3, 4, 6, 10, 11, 14, 18, 20})
+# Fallback secret hints when a floor's theme has no decor accent of its own:
+# the grey-stone swastika banner and Hitler portrait, the two tiles the
+# original episodes most often hang on a pushwall.
+SECRET_HINTS = (3, 4)
 
 # Native WL6 furniture (things-plane old-num, from wolf3d.txt's xlat things
 # table). BLOCKING entries are +SOLID actors (verified against
@@ -141,7 +155,7 @@ def _set(plane: list[int], x: int, y: int, value: int) -> None:
 
 
 def _is_floor(value: int) -> bool:
-    return FLOOR <= value <= ZONE_MAX
+    return FLOOR <= value <= ZONE_MAX or value == SECRET_EXIT_ZONE
 
 
 def _overlaps(a: Room, b: Room, pad: int = 2) -> bool:
@@ -154,8 +168,10 @@ def _rooms(rng: random.Random, count: int) -> list[Room]:
     for _ in range(count * 100):
         if len(result) == count:
             break
+        # Rooms stay compact combat cells (the report's door-delimited room
+        # model); the rock left between them is what corridors wind through.
         room = Room(rng.randrange(3, 51), rng.randrange(3, 52),
-                    rng.randrange(7, 12), rng.randrange(7, 11))
+                    rng.randrange(6, 10), rng.randrange(6, 10))
         if room.x + room.w >= 61 or room.y + room.h >= 61:
             continue
         if not any(_overlaps(room, other) for other in result):
@@ -193,19 +209,63 @@ def _loop_edges(rooms: list[Room], tree: list[tuple[int, int]], count: int) -> l
     return [(a, b) for _, a, b in pairs[:count]]
 
 
-def _carve_connection(tiles: list[int], a: Room, b: Room) -> list[tuple[int, int]]:
+def _carve_segment(tiles: list[int], path: list[tuple[int, int]],
+                   x: int, y: int, tx: int, ty: int, x_first: bool) -> tuple[int, int]:
+    """Carve one L between two points, axis order chosen by the caller."""
+    for horizontal in ((True, False) if x_first else (False, True)):
+        if horizontal:
+            while x != tx:
+                _set(tiles, x, y, FLOOR)
+                path.append((x, y))
+                x += 1 if tx > x else -1
+        else:
+            while y != ty:
+                _set(tiles, x, y, FLOOR)
+                path.append((x, y))
+                y += 1 if ty > y else -1
+    return x, y
+
+
+def _carve_connection(tiles: list[int], a: Room, b: Room,
+                      rng: random.Random, complexity: int) -> list[tuple[int, int]]:
+    """Carve a winding corridor between two room centers.
+
+    A single L-hall makes every connection read as two straight runs, which
+    is why the floors navigate too easily. Threading the route through
+    deterministic jittered waypoints turns most connections into doglegs:
+    more corners, shorter straight runs (the report wants common straights
+    of 4-12 tiles and long sightlines only by explicit intent), and a more
+    maze-like read, while every segment stays orthogonal and fully carved.
+    """
     ax, ay = a.center
     bx, by = b.center
+    span = abs(ax - bx) + abs(ay - by)
+    waypoints: list[tuple[int, int]] = []
+    if span >= 8:
+        # Waypoints offset perpendicular to the travel axis, alternating
+        # sides: the corridor becomes an S-curve that genuinely detours
+        # instead of wandering the map and accidentally merging with other
+        # corridors into a shortcut web (which would make routes shorter,
+        # not mazier).
+        bends = 2 if complexity >= 3 and span >= 16 else 1
+        horizontal = abs(bx - ax) >= abs(by - ay)
+        amplitude = 3 + rng.randint(0, complexity + 2)
+        sign = rng.choice((-1, 1))
+        for step in range(1, bends + 1):
+            along = step / (bends + 1)
+            wx = round(ax + (bx - ax) * along)
+            wy = round(ay + (by - ay) * along)
+            if horizontal:
+                wy += sign * amplitude
+            else:
+                wx += sign * amplitude
+            sign = -sign
+            waypoints.append((max(2, min(GRID - 3, wx)), max(2, min(GRID - 3, wy))))
+    waypoints.append((bx, by))
+    path: list[tuple[int, int]] = []
     x, y = ax, ay
-    path = []
-    while x != bx:
-        _set(tiles, x, y, FLOOR)
-        path.append((x, y))
-        x += 1 if bx > x else -1
-    while y != by:
-        _set(tiles, x, y, FLOOR)
-        path.append((x, y))
-        y += 1 if by > y else -1
+    for tx, ty in waypoints:
+        x, y = _carve_segment(tiles, path, x, y, tx, ty, rng.random() < 0.5)
     _set(tiles, x, y, FLOOR)
     path.append((x, y))
     return path
@@ -254,21 +314,90 @@ def _widen_corridors(tiles: list[int], rooms: list[Room], paths: list[list[tuple
                 _set(tiles, wx, wy, FLOOR)
 
 
+def _carve_reward_stubs(tiles: list[int], things: list[int], rooms: list[Room],
+                        paths: list[list[tuple[int, int]]], reserved: set[tuple[int, int]],
+                        rng: random.Random, complexity: int) -> None:
+    """Branch short dead-end spurs off corridors, each ending in a reward.
+
+    The report calls for shallow-but-meaningful branching (mean forward
+    choices of roughly 1.2-1.8 on the traversed route): junctions where the
+    player must choose between progress and a visible side pocket. Spurs are
+    1 tile wide but only 3-6 tiles long, which the guidelines explicitly
+    allow for short connectors and reward runs. Each spur is dug entirely
+    from solid rock with a one-tile rock margin on every flank, so it can
+    connect to nothing but its own junction and never alters existing
+    geometry or connectivity.
+    """
+    junctions = [cell for path in paths for cell in path
+                 if not _inside_room(rooms, *cell) and not _adjacent_to_room(rooms, *cell)]
+    rng.shuffle(junctions)
+    target = max(1, complexity)
+    carved = 0
+    for x, y in junctions:
+        if carved >= target:
+            break
+        if not _is_floor(_at(tiles, x, y)):
+            continue
+        directions = [(1, 0), (-1, 0), (0, 1), (0, -1)]
+        rng.shuffle(directions)
+        for dx, dy in directions:
+            length = rng.randrange(3, 7)
+            strip = [(x + dx * step, y + dy * step) for step in range(1, length + 1)]
+            margin = [(sx - dy, sy - dx) for sx, sy in strip]
+            margin += [(sx + dy, sy + dx) for sx, sy in strip]
+            margin.append((x + dx * (length + 1), y + dy * (length + 1)))
+            if any(not (1 <= cx < GRID - 1 and 1 <= cy < GRID - 1) or _at(tiles, cx, cy) != WALL
+                   for cx, cy in strip + margin):
+                continue
+            for cell in strip:
+                _set(tiles, *cell, FLOOR)
+            end = strip[-1]
+            _set(things, *end, rng.choice(TREASURE + (AMMO, FOOD)))
+            reserved.add(end)
+            carved += 1
+            break
+
+
+def _door_axis(tiles: list[int], x: int, y: int) -> int | None:
+    """DOOR_EW/DOOR_NS if (x, y) is a one-tile-wide floor chokepoint with an
+    unambiguous axis (floor on both sides along one axis, solid and
+    door-free on both sides along the other), else None. The jamb sides
+    must exclude doors too, not just floor: this also runs after other
+    doors already exist on the map (see _split_oversized_zones), and a door
+    sitting in another door's jamb is exactly the "bypassed around its
+    jamb" case validate_door_axes rejects."""
+    def blocked(v: int) -> bool:
+        return not _is_floor(v) and v not in DOORS
+    horizontal = _is_floor(_at(tiles, x - 1, y)) and _is_floor(_at(tiles, x + 1, y))
+    vertical = _is_floor(_at(tiles, x, y - 1)) and _is_floor(_at(tiles, x, y + 1))
+    walls_ns = blocked(_at(tiles, x, y - 1)) and blocked(_at(tiles, x, y + 1))
+    walls_ew = blocked(_at(tiles, x - 1, y)) and blocked(_at(tiles, x + 1, y))
+    if horizontal and walls_ns:
+        return DOOR_EW
+    if vertical and walls_ew:
+        return DOOR_NS
+    return None
+
+
 def _door_candidate(tiles: list[int], rooms: list[Room],
                     path: list[tuple[int, int]]) -> tuple[int, int, int] | None:
-    """Find a one-tile-wide corridor cell with an unambiguous door axis."""
+    """Find a one-tile-wide corridor cell with an unambiguous door axis.
+
+    A cell touching a room reads as a real threshold; a chokepoint stranded
+    mid-corridor just interrupts an otherwise exposed hallway for no visible
+    reason, so it's only used when the path has no room-adjacent option.
+    """
+    fallback = None
     for x, y in path:
         if _inside_room(rooms, x, y) or not _is_floor(_at(tiles, x, y)):
             continue
-        horizontal = _is_floor(_at(tiles, x - 1, y)) and _is_floor(_at(tiles, x + 1, y))
-        vertical = _is_floor(_at(tiles, x, y - 1)) and _is_floor(_at(tiles, x, y + 1))
-        walls_ns = not _is_floor(_at(tiles, x, y - 1)) and not _is_floor(_at(tiles, x, y + 1))
-        walls_ew = not _is_floor(_at(tiles, x - 1, y)) and not _is_floor(_at(tiles, x + 1, y))
-        if horizontal and walls_ns:
-            return x, y, DOOR_EW
-        if vertical and walls_ew:
-            return x, y, DOOR_NS
-    return None
+        axis = _door_axis(tiles, x, y)
+        if not axis:
+            continue
+        if _adjacent_to_room(rooms, x, y):
+            return x, y, axis
+        fallback = fallback or (x, y, axis)
+    return fallback
 
 
 def _place_doors(config: CampaignConfig, tiles: list[int], things: list[int],
@@ -280,40 +409,76 @@ def _place_doors(config: CampaignConfig, tiles: list[int], things: list[int],
     # Every viable room-to-room junction gets a door: sound zones (see
     # _assign_sound_zones) only split at door tiles, so leaving most
     # candidates doorless silently merges most of the floor into one giant
-    # zone and one gunshot wakes almost the whole map. Locked-door intensity
-    # independently controls how many of these doors require the single
-    # reusable gold key.
+    # zone and one gunshot wakes almost the whole map. This still misses
+    # incidental adjacency where two unrelated corridors happen to run flush
+    # against each other away from their own intended junction -- see
+    # _split_oversized_zones, which catches what's left. Locked-door
+    # intensity independently controls how many of these doors require the
+    # single reusable gold key.
     placed = candidates
     for x, y, code in placed:
         _set(tiles, x, y, code)
     requested_locks = (min(len(placed), max(0, (int(config.locked_doors) - 1) // 2))
                        if allow_locks else 0)
     locked: tuple[tuple[int, int, int], ...] = ()
+    key: tuple[int, int] | None = None
+    # Secrets are carved before doors, so gating must also hold with every
+    # pushwall already pushed: otherwise a secret pocket can quietly open a
+    # route around the lock and the key becomes optional.
+    pushwalls = {(i % GRID, i // GRID) for i, thing in enumerate(things) if thing == PUSHWALL}
+    rests = {(x + 2, y) for x, y in pushwalls}
     # Choose a set that really separates the start from the exit. This makes
     # loop corridors useful exploration rather than accidental lock bypasses.
     for size in range(requested_locks, 0, -1):
         for trial in combinations(placed, size):
             for x, y, code in trial:
                 _set(tiles, x, y, 92 if code == DOOR_EW else 93)
-            gated = exit_stand not in _reachable(tiles, start, locked_open=False)
-            if gated:
+            gated = exit_stand not in _reachable(tiles, start, locked_open=False,
+                                                 extra_passable=pushwalls, blocked=rests)
+            key = _key_spot(tiles, rooms, trial, start) if gated else None
+            if key:
                 locked = trial
                 break
             for x, y, code in trial:
                 _set(tiles, x, y, code)
         if locked:
             break
-    lock_target = len(locked)
-    if lock_target:
-        pre_lock = _reachable(tiles, start, locked_open=False)
-        key_candidates = [room.center for room in rooms if room.center in pre_lock and room.center != start]
-        if key_candidates:
-            key = max(key_candidates, key=lambda point: abs(point[0] - start[0]) + abs(point[1] - start[1]))
-        else:
-            start_room = rooms[0]
-            key = (start_room.x + 1, start_room.y + start_room.h - 2)
+    if key:
         _set(things, *key, GOLD_KEY)
-    return lock_target
+    return len(locked)
+
+
+def _door_zone(tiles: list[int], cell: tuple[int, int]) -> set[tuple[int, int]]:
+    """The door-bounded floor region containing cell -- one 'room' as the
+    player experiences it, since every zone boundary is a door tile."""
+    seen = {cell}
+    queue = deque([cell])
+    while queue:
+        x, y = queue.popleft()
+        for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+            nxt = x + dx, y + dy
+            if nxt not in seen and _is_floor(_at(tiles, *nxt)):
+                seen.add(nxt); queue.append(nxt)
+    return seen
+
+
+def _key_spot(tiles: list[int], rooms: list[Room],
+              locked: tuple[tuple[int, int, int], ...],
+              start: tuple[int, int]) -> tuple[int, int] | None:
+    """Farthest reachable room center whose door-bounded region touches no
+    locked door: finding the key beside the very door it opens is a
+    non-puzzle, so such rooms never host it."""
+    pre_lock = _reachable(tiles, start, locked_open=False)
+    lock_sides = {(x + dx, y + dy) for x, y, _ in locked
+                  for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1))}
+    candidates = sorted((room.center for room in rooms
+                         if room.center in pre_lock and room.center != start),
+                        key=lambda p: abs(p[0] - start[0]) + abs(p[1] - start[1]),
+                        reverse=True)
+    for center in candidates:
+        if not lock_sides & _door_zone(tiles, center):
+            return center
+    return None
 
 
 def _reachable(tiles: list[int], start: tuple[int, int], locked_open: bool,
@@ -330,19 +495,21 @@ def _reachable(tiles: list[int], start: tuple[int, int], locked_open: bool,
             if nxt in seen or nxt in blocked:
                 continue
             tile = _at(tiles, *nxt)
-            passable = _is_floor(tile) or tile in (DOOR_EW, DOOR_NS)
-            if locked_open and tile in (92, 93, 94, 95):
+            passable = _is_floor(tile) or tile in (DOOR_EW, DOOR_NS, DOOR_ELEVATOR, 101)
+            if locked_open and tile in (DOOR_GOLD_EW, 93, 94, 95):
                 passable = True
             if passable or nxt in extra_passable:
                 seen.add(nxt); queue.append(nxt)
     return seen
 
 
-def _assign_sound_zones(tiles: list[int]) -> int:
-    """Give each door-separated floor component its own ECWolf MapZone."""
+def _floor_components(tiles: list[int]) -> list[set[tuple[int, int]]]:
+    """Connected components of plain floor -- the same partition
+    _assign_sound_zones turns into zone ids. Doors and the secret-exit
+    modzone (107) are boundaries and never join a component."""
     unassigned = {(x, y) for y in range(GRID) for x in range(GRID)
-                  if _is_floor(_at(tiles, x, y))}
-    zone_count = 0
+                  if _is_floor(_at(tiles, x, y)) and _at(tiles, x, y) != SECRET_EXIT_ZONE}
+    components = []
     while unassigned:
         start = min(unassigned, key=lambda point: (point[1], point[0]))
         component = {start}
@@ -354,11 +521,71 @@ def _assign_sound_zones(tiles: list[int]) -> int:
                 nxt = x + dx, y + dy
                 if nxt in unassigned and _is_floor(_at(tiles, *nxt)):
                     unassigned.remove(nxt); component.add(nxt); queue.append(nxt)
+        components.append(component)
+    return components
+
+
+def _split_oversized_zones(tiles: list[int], rooms: list[Room], rng: random.Random,
+                           cap: int = 160, min_piece: int = 20) -> int:
+    """Corridors carved for unrelated room-to-room connections often end up
+    flush against each other -- crossing, running alongside, or just
+    touching -- at points no edge's own path ever scanned as a door
+    junction (see _place_doors). Left alone, that stray adjacency silently
+    fuses several rooms' floor into one blob with no door anywhere inside
+    it, so _assign_sound_zones hands the whole blob a single zone id and
+    one gunshot alerts every guard in every room it happens to include.
+
+    Hunt down genuine one-tile chokepoints inside any oversized component
+    and door off the ones that actually cut it into substantial pieces,
+    rather than nibbling off tiny dead-end nooks."""
+    placed = 0
+    stuck: set[frozenset[tuple[int, int]]] = set()
+    while True:
+        component = next((c for c in _floor_components(tiles)
+                          if len(c) > cap and frozenset(c) not in stuck), None)
+        if component is None:
+            break
+        candidates = [(x, y) for x, y in component
+                     if not _inside_room(rooms, x, y) and _door_axis(tiles, x, y)]
+        rng.shuffle(candidates)
+        # Room-adjacent chokepoints read as a real doorway; try those before
+        # falling back to a stray mid-corridor pinch (same reasoning as
+        # _door_candidate).
+        candidates.sort(key=lambda cell: not _adjacent_to_room(rooms, *cell))
+        split = False
+        for x, y in candidates:
+            remaining = component - {(x, y)}
+            probe = next(iter(remaining))
+            seen = {probe}
+            queue = deque([probe])
+            while queue:
+                cx, cy = queue.popleft()
+                for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                    nxt = (cx + dx, cy + dy)
+                    if nxt in remaining and nxt not in seen:
+                        seen.add(nxt); queue.append(nxt)
+            other = len(remaining) - len(seen)
+            if len(seen) >= min_piece and other >= min_piece:
+                _set(tiles, x, y, _door_axis(tiles, x, y))
+                placed += 1
+                split = True
+                break
+        if not split:
+            stuck.add(frozenset(component))
+    return placed
+
+
+def _assign_sound_zones(tiles: list[int]) -> int:
+    """Give each door-separated floor component its own ECWolf MapZone.
+
+    Floor code 107 is skipped: it is the secret-exit modzone and must keep
+    its exact value for the translator to rewrite the adjacent switch."""
+    components = _floor_components(tiles)
+    for zone_count, component in enumerate(components):
         zone = FLOOR + (zone_count % (ZONE_MAX - FLOOR + 1))
         for x, y in component:
             _set(tiles, x, y, zone)
-        zone_count += 1
-    return zone_count
+    return len(components)
 
 
 def _apply_wall_theme(tiles: list[int], rooms: list[Room], number: int,
@@ -370,6 +597,7 @@ def _apply_wall_theme(tiles: list[int], rooms: list[Room], number: int,
             tiles[index] = base
     for room_index, room in enumerate(rooms):
         accent = accents[room_index % len(accents)]
+        other_accents = set(accents) - {accent}
         sides = (
             [(x, room.y - 1) for x in range(room.x - 1, room.x + room.w + 1)],
             [(x, room.y + room.h) for x in range(room.x - 1, room.x + room.w + 1)],
@@ -388,11 +616,34 @@ def _apply_wall_theme(tiles: list[int], rooms: list[Room], number: int,
             continue
         for side in sides:
             for x, y in side:
-                if _at(tiles, x, y) == base:
-                    _set(tiles, x, y, accent)
+                if _at(tiles, x, y) != base:
+                    continue
+                # Two rooms can sit close enough that their wall rings land
+                # a single rock tile apart. Painting both with a different
+                # accent flips the material within a couple of corridor
+                # tiles; leaving this cell in the shared base material keeps
+                # a neutral buffer instead of an abrupt seam.
+                if any(_at(tiles, x + dx, y + dy) in other_accents
+                       for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1))):
+                    continue
+                _set(tiles, x, y, accent)
 
 
-def _farthest_room(rooms: list[Room], edges: list[tuple[int, int]]) -> int:
+def _hint_secrets(tiles: list[int], things: list[int], number: int,
+                  rng: random.Random) -> None:
+    """Hang a landmark decor tile (banner, portrait, insignia) on every
+    pushwall, the way the original episodes telegraph most of theirs. Runs
+    after _apply_wall_theme so the theme can't repaint the hint, and prefers
+    the floor theme's own decor accents so the hint matches the material."""
+    _, accents = WALL_THEMES[(number - 1) % len(WALL_THEMES)]
+    hints = tuple(accent for accent in accents if accent in DECOR_WALLS) or SECRET_HINTS
+    for index, thing in enumerate(things):
+        if thing == PUSHWALL:
+            tiles[index] = rng.choice(hints)
+
+
+def _rooms_by_distance(rooms: list[Room], edges: list[tuple[int, int]]) -> list[int]:
+    """Room indices ordered farthest-first from the start room's graph node."""
     links = {i: [] for i in range(len(rooms))}
     for a, b in edges:
         links[a].append(b); links[b].append(a)
@@ -404,65 +655,92 @@ def _farthest_room(rooms: list[Room], edges: list[tuple[int, int]]) -> int:
             if nxt not in distance:
                 distance[nxt] = distance[room] + 1
                 queue.append(nxt)
-    return max(distance, key=distance.get)
+    return sorted((i for i in distance if i != 0), key=distance.get, reverse=True)
 
 
 def _place_elevator(tiles: list[int], room: Room, locked: bool = False) -> tuple[int, int]:
-    """Carve a recessed bay on a wall not already used by a corridor."""
+    """Carve a native one-tile elevator shaft into an east or west wall.
+
+    Bays never face north/south: the tile-21 exit switch only activates on
+    its east/west faces, so a shaft entered heading north or south could
+    never be exited. The shaft is framed entirely in tile 21, whose faces
+    visible from inside the car are the plain elevator paneling; the only
+    exposed switch face is the centered back wall, reachable exactly like
+    the original game's elevators. From the room the player sees only a
+    real elevator door (or a gold-locked door on the boss floor) set into
+    the room's own wall material -- no decoy switch panels.
+    """
     cx, cy = room.center
-    candidates = (
-        (room.x + room.w, cy, 1, 0), (room.x - 1, cy, -1, 0),
-        (cx, room.y + room.h, 0, 1), (cx, room.y - 1, 0, -1),
-    )
-    for wx, wy, dx, dy in candidates:
-        px, py = -dy, dx
-        footprint = [(wx + dx * depth + px * side, wy + dy * depth + py * side)
+    # Sweep rows outward from the room's midline on both east/west walls so
+    # a corridor crossing one spot doesn't doom the whole placement.
+    offsets = sorted(range(room.y + 1, room.y + room.h - 1), key=lambda y: abs(y - cy))
+    candidates = [(wx, wy, dx) for wy in offsets
+                  for wx, dx in ((room.x + room.w, 1), (room.x - 1, -1))]
+    for wx, wy, dx in candidates:
+        footprint = [(wx + dx * depth, wy + side)
                      for depth in range(4) for side in (-1, 0, 1)]
-        footprint += [(wx + dx * depth + px * side, wy + dy * depth + py * side)
-                      for depth in (1, 2) for side in (-2, 2)]
         if any(not (1 <= x < GRID - 1 and 1 <= y < GRID - 1) or _at(tiles, x, y) != WALL
                for x, y in footprint):
             continue
-        for depth in range(3):
-            # The threshold is one tile wide; widening begins behind it so
-            # the door has solid jambs and cannot be walked around.
-            for side in ((0,) if depth == 0 else (-1, 0, 1)):
-                _set(tiles, wx + dx * depth + px * side, wy + dy * depth + py * side, FLOOR)
-        # Native non-triggering elevator panels frame the threshold, sides,
-        # and back wall. Only the centered tile below is an exit trigger.
-        for depth, side in ((0, -1), (0, 1), (1, -2), (1, 2), (2, -2), (2, 2),
-                            (3, -1), (3, 1)):
-            _set(tiles, wx + dx * depth + px * side, wy + dy * depth + py * side, ELEVATOR_WALL)
-        _set(tiles, wx, wy, (92 if dx else 93) if locked else (DOOR_EW if dx else DOOR_NS))
-        _set(tiles, wx + dx * 3, wy + dy * 3, ELEVATOR_SWITCH)
-        return wx + dx * 2, wy + dy * 2
-    raise ValueError("terminal room has no clear wall for an elevator")
+        for depth in (1, 2):
+            _set(tiles, wx + dx * depth, wy, FLOOR)
+        for depth in (1, 2, 3):
+            for side in (-1, 1):
+                _set(tiles, wx + dx * depth, wy + side, ELEVATOR_TILE)
+        _set(tiles, wx + dx * 3, wy, ELEVATOR_TILE)
+        _set(tiles, wx, wy, DOOR_GOLD_EW if locked else DOOR_ELEVATOR)
+        return wx + dx * 2, wy
+    raise ValueError("terminal room has no clear east/west wall for an elevator")
 
 
 def _place_secret(tiles: list[int], things: list[int], room: Room,
                   rng: random.Random, secret_exit: bool = False) -> tuple[int, int] | None:
-    px, py = room.x + room.w, room.y + room.h // 2
-    if px + 3 >= GRID - 1:
+    px = room.x + room.w
+    if px + 4 >= GRID - 1:
         return None
-    if secret_exit and (px + 4 >= GRID - 1 or _at(tiles, px + 4, py) != WALL):
-        return None
+    # Sweep rows outward from the wall's midline so one crossing corridor
+    # doesn't doom the whole room's secret.
+    mid = room.y + room.h // 2
+    for py in sorted(range(room.y + 1, room.y + room.h - 1), key=lambda y: abs(y - mid)):
+        reward = _carve_secret_pocket(tiles, things, px, py, rng, secret_exit)
+        if reward:
+            return reward
+    return None
+
+
+def _carve_secret_pocket(tiles: list[int], things: list[int], px: int, py: int,
+                         rng: random.Random, secret_exit: bool) -> tuple[int, int] | None:
     # Corridors and elevator bays may already cross this nominal room wall.
     # Never turn their floor back into a pushwall.
     if _at(tiles, px, py) != WALL or not _is_floor(_at(tiles, px - 1, py)):
         return None
     cells = [(x, y) for x in range(px + 1, px + 4) for y in range(py - 1, py + 2)]
-    if any(_at(tiles, x, y) != WALL for x, y in cells):
+    # The pocket keeps a one-tile rock margin on every exposed flank so it
+    # connects to nothing but its own pushwall. Without it, a pocket brushing
+    # a passing corridor leaks the reward -- and pushing the wall opens a
+    # route that can bypass a locked door entirely.
+    margin = [(px + 4, y) for y in range(py - 1, py + 2)]
+    margin += [(x, py - 2) for x in range(px + 1, px + 4)]
+    margin += [(x, py + 2) for x in range(px + 1, px + 4)]
+    margin += [(px, py - 1), (px, py + 1)]
+    if any(_at(tiles, x, y) != WALL for x, y in cells + margin):
         return None
     for x, y in cells:
         _set(tiles, x, y, FLOOR)
     _set(tiles, px, py, WALL)
     _set(things, px, py, PUSHWALL)
-    reward = (px + 2, py)
+    # The pushed wall slides two tiles east and settles on (px + 2, py), so
+    # nothing collectible may sit on that track: the reward goes one cell to
+    # the side, where it stays visible and reachable around the settled slab.
+    reward = (px + 2, py + rng.choice((-1, 1)))
     _set(things, *reward, rng.choice(TREASURE + (MACHINE_GUN, CHAINGUN)))
     if secret_exit:
-        # The reward remains in the pocket; one more step reaches the hidden
-        # elevator switch set into its back wall.
-        _set(tiles, px + 4, py, SECRET_ELEVATOR_SWITCH)
+        # Native secret exits are an elevator switch with floor code 107 in
+        # front of it: the translator's modzone rewrites that switch's
+        # Exit_Normal trigger into Exit_Secret. The switch goes into the
+        # pocket's back wall, one step past the settled pushwall.
+        _set(tiles, px + 4, py, ELEVATOR_TILE)
+        _set(tiles, px + 3, py, SECRET_EXIT_ZONE)
     return reward
 
 
@@ -650,22 +928,36 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
     rng = random.Random(seed)
     tiles = [WALL] * (GRID * GRID)
     things = [0] * (GRID * GRID)
-    count = min(17, 9 + int(config.layout_complexity) + number // 3)
+    complexity = int(config.layout_complexity)
+    count = min(17, 9 + complexity + number // 3)
     rooms = _rooms(rng, count)
     for room in rooms:
         for y in range(room.y, room.y + room.h):
             for x in range(room.x, room.x + room.w):
                 _set(tiles, x, y, FLOOR)
     tree_edges = _tree(rooms)
-    loops = _loop_edges(rooms, tree_edges, max(0, int(config.layout_complexity) - 2))
+    # A few loop corridors give real route choices, but every loop is also
+    # a shortcut that shrinks the critical path, so they stay scarce.
+    loops = _loop_edges(rooms, tree_edges, max(0, complexity - 2))
     edges = tree_edges + loops
-    paths = [_carve_connection(tiles, rooms[a], rooms[b]) for a, b in edges]
+    paths = [_carve_connection(tiles, rooms[a], rooms[b], rng, complexity) for a, b in edges]
     _widen_corridors(tiles, rooms, paths, rng)
     start = rooms[0].center
-    _set(things, *start, PLAYER_EAST)
-    exit_room = rooms[_farthest_room(rooms, edges)]
+    _set(things, *start, PLAYER_START)
     is_boss = number == 9
-    exit_stand = _place_elevator(tiles, exit_room, locked=is_boss)
+    exit_room = None
+    exit_stand = None
+    # Prefer the farthest room, but fall back through the distance order:
+    # a corridor may have crossed every east/west wall of the first choice.
+    for room_index in _rooms_by_distance(rooms, edges):
+        try:
+            exit_stand = _place_elevator(tiles, rooms[room_index], locked=is_boss)
+            exit_room = rooms[room_index]
+            break
+        except ValueError:
+            continue
+    if exit_room is None:
+        raise ValueError("no room can host the exit elevator")
     reserved = {start, exit_stand}
     rewards: list[tuple[int, int]] = []
     # Report's secret budget is 2-6 per standard floor; scale directly with
@@ -681,8 +973,10 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
         reward = _place_secret(tiles, things, room, rng, secret_exit and not rewards)
         if reward:
             rewards.append(reward); reserved.add(reward)
+    _carve_reward_stubs(tiles, things, rooms, paths, reserved, rng, complexity)
     locks = _place_doors(config, tiles, things, rooms, paths, rng, start, exit_stand,
                          allow_locks=not is_boss)
+    _split_oversized_zones(tiles, rooms, rng)
     if is_boss:
         boss_room = max((room for room in rooms[1:] if room != exit_room), key=lambda room: room.w * room.h)
         _place_boss(things, boss_room, reserved)
@@ -692,6 +986,7 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
     _place_decorations(rooms, tiles, things, reserved, start, rng)
     _assign_sound_zones(tiles)
     _apply_wall_theme(tiles, rooms, number, rng)
+    _hint_secrets(tiles, things, number, rng)
     result = GeneratedMap(number, tiles, things, start, exit_stand, rewards, seed,
                           secret_exit, locks, is_boss, enemy_tiers)
     validate_map(result)
@@ -714,38 +1009,53 @@ def validate_map(level: GeneratedMap) -> None:
                 seen.add(nxt); queue.append(nxt)
     if level.exit_stand not in seen:
         raise ValueError("elevator standing position is unreachable")
-    if not any(_at(level.tiles, level.exit_stand[0] + dx, level.exit_stand[1] + dy) == ELEVATOR_SWITCH
-               for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1))):
+    sx, sy = level.exit_stand
+    # The switch must sit on the stand's east/west axis with the shaft floor
+    # opposite it: tile 21 cannot be activated from north or south.
+    if not any(_at(level.tiles, sx + dx, sy) == ELEVATOR_TILE
+               and _is_floor(_at(level.tiles, sx - dx, sy))
+               for dx in (1, -1)):
         raise ValueError("elevator switch is not usable from its standing position")
     if not level.secret_rewards:
         raise ValueError("map has no rewarded secret")
-    opened_pushwalls: set[tuple[int, int]] = set()
+    pushwalls = [(i % GRID, i // GRID) for i, thing in enumerate(level.things)
+                 if thing == PUSHWALL]
+    if len(pushwalls) < len(level.secret_rewards):
+        raise ValueError("secret reward has no pushwall")
+    # Each pushed wall slides two tiles east and permanently occupies its
+    # resting cell, so rewards are validated against the post-push layout.
+    rests = {(x + 2, y) for x, y in pushwalls}
+    baseline = _reachable(level.tiles, level.start, locked_open=True)
+    for x, y in pushwalls:
+        if _is_floor(_at(level.tiles, x, y)):
+            raise ValueError("pushwall trigger is not on a solid wall")
+        if not _is_floor(_at(level.tiles, x - 1, y)):
+            raise ValueError("pushwall has no movement clearance")
+        if (x - 1, y) not in baseline:
+            raise ValueError("pushwall cannot be approached")
+        if _at(level.tiles, x, y) not in DECOR_WALLS:
+            raise ValueError("pushwall is not hinted by a decor wall tile")
+    opened = _reachable(level.tiles, level.start, locked_open=True,
+                        extra_passable=set(pushwalls), blocked=rests)
     for reward in level.secret_rewards:
         if _at(level.things, *reward) not in TREASURE + (MACHINE_GUN, CHAINGUN):
             raise ValueError("secret is missing a valuable reward")
-        pushwall = reward[0] - 2, reward[1]
-        approach = reward[0] - 3, reward[1]
-        if _at(level.things, *pushwall) != PUSHWALL:
-            raise ValueError("secret reward has no pushwall")
-        if _is_floor(_at(level.tiles, *pushwall)):
-            raise ValueError("pushwall trigger is not on a solid wall")
-        if not _is_floor(_at(level.tiles, reward[0] - 1, reward[1])):
-            raise ValueError("pushwall has no movement clearance")
-        if approach not in _reachable(level.tiles, level.start, locked_open=True):
-            raise ValueError("pushwall cannot be approached")
-        opened_pushwalls.add(pushwall)
-        opened = _reachable(level.tiles, level.start, locked_open=True, extra_passable=opened_pushwalls)
+        if reward in rests:
+            raise ValueError("secret reward sits on the pushwall's resting cell")
         if reward not in opened:
             raise ValueError("secret reward is unreachable after opening pushwall")
-    if level.has_secret_exit and SECRET_ELEVATOR_SWITCH not in level.tiles:
-        raise ValueError("designated secret-route map has no secret elevator")
+    zone_count = level.tiles.count(SECRET_EXIT_ZONE)
     if level.has_secret_exit:
-        switch_index = level.tiles.index(SECRET_ELEVATOR_SWITCH)
-        switch = switch_index % GRID, switch_index // GRID
-        opened = _reachable(level.tiles, level.start, locked_open=True, extra_passable=opened_pushwalls)
-        if not any((switch[0] + dx, switch[1] + dy) in opened
-                   for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1))):
+        if zone_count != 1:
+            raise ValueError("designated secret-route map needs exactly one secret exit")
+        index = level.tiles.index(SECRET_EXIT_ZONE)
+        zx, zy = index % GRID, index // GRID
+        if _at(level.tiles, zx + 1, zy) != ELEVATOR_TILE:
+            raise ValueError("secret exit zone has no elevator switch east of it")
+        if (zx, zy) not in opened:
             raise ValueError("secret elevator is unusable after opening its pushwall")
+    elif zone_count:
+        raise ValueError("secret exit zone on a floor with no secret route")
     validate_door_axes(level.tiles)
     if level.locked_doors:
         if not level.boss and GOLD_KEY not in level.things:
@@ -757,7 +1067,16 @@ def validate_map(level: GeneratedMap) -> None:
             key_position = key_index % GRID, key_index // GRID
             if key_position not in _reachable(level.tiles, level.start, locked_open=False):
                 raise ValueError("gold key is unreachable before its lock")
-        if level.exit_stand in _reachable(level.tiles, level.start, locked_open=False):
+            lock_sides = {(x + dx, y + dy)
+                          for i, tile in enumerate(level.tiles) if tile in (92, 93)
+                          for x, y in ((i % GRID, i // GRID),)
+                          for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1))}
+            if lock_sides & _door_zone(level.tiles, key_position):
+                raise ValueError("gold key shares a room with a locked door")
+        # The lock must hold even with every secret pushwall already pushed:
+        # a pocket may never double as a route around the key.
+        if level.exit_stand in _reachable(level.tiles, level.start, locked_open=False,
+                                          extra_passable=set(pushwalls), blocked=rests):
             raise ValueError("locked elevator route can be bypassed")
         if level.exit_stand not in _reachable(level.tiles, level.start, locked_open=True):
             raise ValueError("exit is unreachable after obtaining the key")
@@ -870,8 +1189,9 @@ def generate_campaign(config: CampaignConfig, output: Path,
                     "validation": {
                         "passed": True,
                         "checks": ["bounds", "connectivity", "door_axes", "elevator",
-                                   "key_lock_progression", "pushwall_clearance",
-                                   "rewarded_secrets", "secret_route", "boss"],
+                                   "key_lock_progression", "key_room_separation",
+                                   "pushwall_clearance", "rewarded_secrets",
+                                   "secret_hints", "secret_route", "boss"],
                     }} for level in levels],
     }
     output = output.resolve()
