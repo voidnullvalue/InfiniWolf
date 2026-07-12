@@ -119,6 +119,40 @@ STATIC_OPEN = (
     61,  # Blood
     67,  # Pots
 )
+
+# Decoration themes keyed by room role+tier, derived from community-map
+# placement patterns: guard rooms get lamps and vases, storage closets get
+# barrel clusters, grand anchor rooms get pillar pairs, barracks get tables.
+_DECOR_BLOCKING: dict[str, tuple[int, ...]] = {
+    "guardpost": (26, 35, 31),   # FloorLamp, Vase, GreenPlant
+    "grand":     (30, 26, 35),   # WhitePillar, FloorLamp, Vase
+    "barracks":  (25, 36, 58),   # TableWithChairs, BareTable, Barrel
+    "storage":   (58, 24, 59),   # Barrel, GreenBarrel, Well
+    "lounge":    (25, 35, 34),   # TableWithChairs, Vase, BrownPlant
+    "corridor":  (26,),          # FloorLamp only
+}
+_DECOR_OPEN: dict[str, tuple[int, ...]] = {
+    "guardpost": (37, 27),   # CeilingLight, Chandelier
+    "grand":     (27, 37),   # Chandelier dominant
+    "barracks":  (61, 67),   # Blood, Pots  (battle-worn)
+    "storage":   (67, 61),   # Pots, Blood
+    "lounge":    (27, 67),   # Chandelier, Pots
+    "corridor":  (37,),      # CeilingLight
+}
+
+
+def _decor_theme(role: str, tier: str) -> str:
+    if tier == "closet":
+        return "storage"
+    if tier == "hall":
+        return "corridor"
+    if tier == "anchor" or role in ("climax",):
+        return "grand"
+    if role == "start":
+        return "guardpost"
+    if role == "relief":
+        return "lounge"
+    return "barracks"   # beat, branch, ring, hub, filler
 CEILINGS = ("#383838", "#202840", "#402828", "#303820", "#382840")
 MUSIC = ("GETTHEM", "SEARCHN", "POW", "SUSPENSE", "WARMARCH", "NAZI_OMI")
 
@@ -1577,7 +1611,12 @@ def _place_population(config: CampaignConfig, number: int, rooms: list[Room],
             name, family = "guard", GUARDS
         open_facings = [index for index, (dx, dy) in enumerate(facings)
                         if _is_floor(_at(tiles, x + dx, y + dy))]
-        patrol = name in ("guard", "dog") and open_facings and rng.random() < 0.35
+        # Dogs are patrol-only in WL6 (no standing spawn variant).
+        # Guards patrol frequently so player path unpredictability is handled
+        # by motion rather than hoping the guard faces the right direction.
+        # Officers and SS patrol occasionally for variety and tension.
+        _patrol_chance = {"guard": 0.55, "dog": 1.0, "officer": 0.20, "ss": 0.10}
+        patrol = open_facings and rng.random() < _patrol_chance.get(name, 0.0)
         if patrol:
             facing = rng.choice(open_facings)
             family = PATROLS_BY_FAMILY[family]
@@ -1745,72 +1784,140 @@ def _ensure_early_heal(tiles: list[int], things: list[int], rooms: list[Room],
 
 def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
                        reserved: set[tuple[int, int]], start: tuple[int, int],
-                       rng: random.Random) -> None:
-    """Sprinkle native WL6 furniture into rooms for visual variety.
+                       rng: random.Random,
+                       roles: list[str] | None = None,
+                       specs: list | None = None) -> None:
+    """Place purposeful, themed furniture in rooms following community-map patterns.
 
-    Blocking statics (barrels, tables, plants, pillars...) go in mirrored
-    left/right pairs so a decorated room reads as deliberately laid out
-    rather than cluttered, but only on interior cells inset from every wall,
-    and only ever committed once a full-map reachability check confirms
-    blocking them doesn't shrink what's reachable from spawn -- so furniture
-    can never wall the player out of part of a level. Open (non-solid)
-    decorations carry no such risk and are just sprinkled in loosely.
+    Blocking statics go in deliberate arrangements (pillar pairs, corner
+    clusters, entry flanking, or occasional partial dividers) chosen to match
+    the room's role and tier.  Reachability is checked before any blocking item
+    is committed, so furniture can never wall the player out of any area.
+    Open (non-solid) items are placed loosely but still theme-appropriate.
     """
     baseline = len(_reachable(tiles, start, locked_open=True))
     blocked_cells: set[tuple[int, int]] = set()
-    for room in rooms:
+    _roles = roles or ["beat"] * len(rooms)
+    _tiers = [s.tier for s in specs] if specs else ["standard"] * len(rooms)
+
+    for ridx, room in enumerate(rooms):
+        role = _roles[ridx] if ridx < len(_roles) else "beat"
+        tier = _tiers[ridx] if ridx < len(_tiers) else "standard"
+        theme = _decor_theme(role, tier)
+
         if room.w < 5 or room.h < 5:
             continue
+
+        blocking = _DECOR_BLOCKING.get(theme, STATIC_BLOCKING)
+        open_items = _DECOR_OPEN.get(theme, STATIC_OPEN)
+
         cx, cy = room.center
         interior = {(x, y) for x in range(room.x + 1, room.x + room.w - 1)
                     for y in range(room.y + 1, room.y + room.h - 1)
                     if _is_floor(_at(tiles, x, y))}
-        free = {cell for cell in interior - reserved
-                if _at(things, *cell) == 0 and _is_floor(_at(tiles, *cell))}
+        free: set[tuple[int, int]] = {cell for cell in interior - reserved
+                                      if _at(things, *cell) == 0}
 
-        # Generate symmetric pairs on both axes.  Weight cells near walls more
-        # heavily so furniture reads as placed against them, not floating.
         def _near_wall(x: int, y: int) -> bool:
             return (x <= room.x + 2 or x >= room.x + room.w - 3
                     or y <= room.y + 2 or y >= room.y + room.h - 3)
 
-        x_pairs = [((x, y), (2 * cx - x, y)) for x, y in free
-                   if x < cx and (2 * cx - x, y) in free]
-        y_pairs = [((x, y), (x, 2 * cy - y)) for x, y in free
-                   if y < cy and (x, 2 * cy - y) in free]
-        # Prefer pairs where at least one cell sits close to a wall.
-        all_pairs = x_pairs + y_pairs
-        all_pairs.sort(key=lambda p: (0 if _near_wall(*p[0]) or _near_wall(*p[1]) else 1,
-                                      rng.random()))
+        def _try_place(cells: list[tuple[int, int]], item: int) -> bool:
+            """Commit a blocking group if all cells are free and reachability holds."""
+            if not all(c in free for c in cells):
+                return False
+            candidate = blocked_cells | set(cells)
+            if len(_reachable(tiles, start, locked_open=True, blocked=candidate)) < baseline - len(candidate):
+                return False
+            for c in cells:
+                _set(things, *c, item)
+                reserved.add(c)
+                blocked_cells.add(c)
+                free.discard(c)
+            return True
 
-        # Larger rooms earn a second pair; keep it at one for small rooms.
         pair_budget = 2 if room.w >= 8 and room.h >= 8 else 1
         pairs_placed = 0
-        for (ax, ay), (bx, by) in all_pairs:
-            if pairs_placed >= pair_budget:
-                break
-            candidate = blocked_cells | {(ax, ay), (bx, by)}
-            # A blocked cell is never counted as "reachable" even when it's
-            # perfectly safe to occupy, so compare against baseline minus the
-            # blocked cells themselves -- only a shortfall beyond that means
-            # some other cell got cut off.
-            if len(_reachable(tiles, start, locked_open=True, blocked=candidate)) < baseline - len(candidate):
-                continue
-            static = rng.choice(STATIC_BLOCKING)
-            _set(things, ax, ay, static)
-            _set(things, bx, by, static)
-            reserved.add((ax, ay)); reserved.add((bx, by))
-            blocked_cells |= {(ax, ay), (bx, by)}
-            pairs_placed += 1
 
-        # Open (non-solid) items: scale count with room area for a furnished look.
+        # --- Pattern: partial divider (community-map technique, rare) ---
+        # A row of pillars or plants that visually subdivides a large room
+        # while a 2-tile gap keeps it fully traversable.  Appears in ~8% of
+        # eligible rooms -- enough to read as intentional, not as clutter.
+        if (room.w >= 10 and room.h >= 10
+                and theme in ("grand", "barracks", "guardpost")
+                and rng.random() < 0.08):
+            div_item = 30 if theme == "grand" else (31 if theme == "guardpost" else 25)
+            if room.w >= room.h:
+                span = list(range(room.y + 2, room.y + room.h - 2))
+                if len(span) >= 4:
+                    gap = rng.randrange(1, len(span) - 2)
+                    cells = [(cx, span[i]) for i in range(len(span))
+                             if not (gap <= i <= gap + 1) and (cx, span[i]) in free]
+                    if len(cells) >= 2 and _try_place(cells, div_item):
+                        pairs_placed = pair_budget
+            else:
+                span = list(range(room.x + 2, room.x + room.w - 2))
+                if len(span) >= 4:
+                    gap = rng.randrange(1, len(span) - 2)
+                    cells = [(span[i], cy) for i in range(len(span))
+                             if not (gap <= i <= gap + 1) and (span[i], cy) in free]
+                    if len(cells) >= 2 and _try_place(cells, div_item):
+                        pairs_placed = pair_budget
+
+        # --- Pattern: corner barrel cluster (storage rooms) ---
+        if pairs_placed < pair_budget and theme == "storage":
+            item = rng.choice(blocking)
+            corners = [
+                (room.x + 1, room.y + 1),
+                (room.x + room.w - 2, room.y + 1),
+                (room.x + 1, room.y + room.h - 2),
+                (room.x + room.w - 2, room.y + room.h - 2),
+            ]
+            rng.shuffle(corners)
+            for cornx, corny in corners:
+                nx = cornx + (1 if cornx < cx else -1)
+                ny = corny + (1 if corny < cy else -1)
+                cluster = [(c) for c in [(cornx, corny), (nx, corny), (cornx, ny)]
+                           if c in free][:2]
+                if len(cluster) == 2 and _try_place(cluster, item):
+                    pairs_placed += 1
+                    break
+
+        # --- Pattern: pillar colonnade (grand / anchor rooms) ---
+        if pairs_placed < pair_budget and theme == "grand" and room.w >= 8 and room.h >= 8:
+            depth = max(2, min(room.w // 3, room.h // 3))
+            for offset in (0, -1, 1):
+                if pairs_placed >= pair_budget:
+                    break
+                a = (room.x + depth, cy + offset)
+                b = (room.x + room.w - 1 - depth, cy + offset)
+                if _try_place([a, b], 30):   # WhitePillar
+                    pairs_placed += 1
+
+        # --- Pattern: symmetric wall pairs (general fallback) ---
+        if pairs_placed < pair_budget:
+            x_pairs = [((x, y), (2 * cx - x, y)) for x, y in free
+                       if x < cx and (2 * cx - x, y) in free]
+            y_pairs = [((x, y), (x, 2 * cy - y)) for x, y in free
+                       if y < cy and (x, 2 * cy - y) in free]
+            all_pairs = x_pairs + y_pairs
+            all_pairs.sort(key=lambda p: (0 if _near_wall(*p[0]) or _near_wall(*p[1]) else 1,
+                                          rng.random()))
+            for (ax, ay), (bx, by) in all_pairs:
+                if pairs_placed >= pair_budget:
+                    break
+                if _try_place([(ax, ay), (bx, by)], rng.choice(blocking)):
+                    pairs_placed += 1
+
+        # --- Open (non-solid) items, theme-appropriate ---
         area = room.w * room.h
         open_budget = 3 if area >= 80 else 2 if area >= 45 else 1
-        loose = [cell for cell in free - reserved if _at(things, *cell) == 0]
+        loose = [c for c in free - reserved if _at(things, *c) == 0]
         rng.shuffle(loose)
         for cell in loose[:rng.randrange(0, open_budget + 1)]:
-            _set(things, *cell, rng.choice(STATIC_OPEN))
+            _set(things, *cell, rng.choice(open_items))
             reserved.add(cell)
+            free.discard(cell)
 
 
 def _place_boss(tiles: list[int], things: list[int], room: Room,
@@ -1959,7 +2066,7 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
     enemy_tiers = _place_population(config, number, rooms, tiles, things, reserved, rng,
                                     start, exit_room)
     _ensure_early_heal(tiles, things, rooms, start, reserved, rng)
-    _place_decorations(rooms, tiles, things, reserved, start, rng)
+    _place_decorations(rooms, tiles, things, reserved, start, rng, roles=roles, specs=specs)
     _assign_sound_zones(tiles)
     _apply_wall_theme(tiles, rooms, districts, number, rng)
     _hint_secrets(tiles, things, number, rng)
