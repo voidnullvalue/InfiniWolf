@@ -305,7 +305,7 @@ def _plan_floor(rng: random.Random, complexity: int, number: int) -> FloorPlan:
     target = min(20, 14 + 2 * complexity)
     filler_tips: list[int] = []
     while len(specs) < target:
-        if filler_tips and rng.random() < 0.55:
+        if filler_tips and rng.random() < 0.35:
             parent = rng.choice(filler_tips)
             filler_tips.remove(parent)
         else:
