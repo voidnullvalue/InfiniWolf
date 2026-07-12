@@ -1337,6 +1337,10 @@ def _carve_secret_pocket(tiles: list[int], things: list[int], px: int, py: int,
         cells.remove((px + 4, py))
         if any(_at(tiles, x, y) != WALL for x, y in cells + margin):
             return None
+        # The east face (back) of the elevator switch must be covered by solid
+        # wall; the margin only checks up to px+8, not one step beyond.
+        if secret_exit and _at(tiles, px + 9, py) != WALL:
+            return None
         for cell in cells:
             _set(tiles, *cell, FLOOR)
         _set(things, px + 4, py, PUSHWALL)
@@ -1345,12 +1349,21 @@ def _carve_secret_pocket(tiles: list[int], things: list[int], px: int, py: int,
         _set(things, *lesser, _secret_reward(rng, depth, lesser=True))
         _set(things, *reward, _secret_reward(rng, depth, premium=True))
         if secret_exit:
+            # Frame the switch with ELEVATOR_TILE on all non-approach faces so
+            # later passes (reward stubs, sightline breakers) cannot carve
+            # through the surrounding wall and expose the switch from the side.
+            _set(tiles, px + 8, py - 1, ELEVATOR_TILE)
             _set(tiles, px + 8, py, ELEVATOR_TILE)
+            _set(tiles, px + 8, py + 1, ELEVATOR_TILE)
             _set(tiles, px + 7, py, SECRET_EXIT_ZONE)
     else:
         length = rng.randrange(4, 6) if variant == "vault" else 3
         cells, margin = chamber(length)
         if any(_at(tiles, x, y) != WALL for x, y in cells + margin):
+            return None
+        # The east face (back) of the elevator switch must be covered by solid
+        # wall; the margin only checks up to px+length+1, not one step beyond.
+        if secret_exit and _at(tiles, px + length + 2, py) != WALL:
             return None
         for cell in cells:
             _set(tiles, *cell, FLOOR)
@@ -1372,8 +1385,12 @@ def _carve_secret_pocket(tiles: list[int], things: list[int], px: int, py: int,
             _set(things, *reward, _secret_reward(rng, depth))
         if secret_exit:
             # Native secret exits are an elevator switch with floor code 107
-            # in front; the translator rewrites it into Exit_Secret.
+            # in front; the translator rewrites it into Exit_Secret. Frame the
+            # switch with ELEVATOR_TILE on all non-approach faces so later
+            # passes cannot carve through and expose a side or back face.
+            _set(tiles, px + length + 1, py - 1, ELEVATOR_TILE)
             _set(tiles, px + length + 1, py, ELEVATOR_TILE)
+            _set(tiles, px + length + 1, py + 1, ELEVATOR_TILE)
             _set(tiles, px + length, py, SECRET_EXIT_ZONE)
     _set(tiles, px, py, WALL)
     _set(things, px, py, PUSHWALL)
