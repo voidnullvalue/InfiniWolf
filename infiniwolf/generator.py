@@ -1637,6 +1637,12 @@ def _place_population(config: CampaignConfig, number: int, rooms: list[Room],
         else:
             facing = rng.randrange(4)
         _set(things, x, y, family[facing] + 36 * tier)
+        # Decoration placement runs after population and only checks that a
+        # cell is empty, not who's facing it; reserve the tile directly ahead
+        # so a later pillar/barrel/table can't get dropped in a stationary
+        # actor's face.
+        dx, dy = facings[facing]
+        reserved.add((x + dx, y + dy))
 
     distances = _floor_distances(tiles, start)
     room_distances = {room: distances.get(room.center, 0) for room in rooms}

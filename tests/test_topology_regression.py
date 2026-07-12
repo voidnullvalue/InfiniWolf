@@ -10,7 +10,8 @@ from collections import deque
 import unittest
 
 from infiniwolf.config import CampaignConfig
-from infiniwolf.generator import DOORS, GRID, _at, _is_floor, generate_map
+from infiniwolf.generator import (DOGS, DOORS, GRID, GUARDS, OFFICERS, SS,
+                                   STATIC_BLOCKING, _at, _is_floor, generate_map)
 
 
 def _generate_with_retries(config: CampaignConfig, floor: int, attempts: int = 50):
@@ -66,6 +67,53 @@ def _floor_components(tiles: list[int]) -> list[set[tuple[int, int]]]:
                     queue.append(nxt)
         components.append(component)
     return components
+
+
+_ACTOR_FACINGS = ((0, -1), (1, 0), (0, 1), (-1, 0))
+
+
+def _actor_facing_index(code: int) -> int | None:
+    """Decode a things-plane code back to its N/E/S/W facing, across the
+    tier offsets (+36/+72) that skill 2/3 copies use."""
+    for family in (GUARDS, OFFICERS, SS, DOGS):
+        for tier in (0, 1, 2):
+            base = code - 36 * tier
+            if base in family:
+                return family.index(base)
+    return None
+
+
+class ActorFacingRegressionTests(unittest.TestCase):
+    def test_actors_do_not_face_a_wall_or_blocking_decoration(self):
+        """Stationary facing is picked against the map before decorations are
+        placed; decoration placement only checked that a cell was empty, not
+        who was facing it, so a pillar/barrel/table could land directly in a
+        guard's face -- indistinguishable in-game from facing a wall. Covers
+        both the literal-wall case and the blocking-decoration case that
+        earlier tests never exercised."""
+        blocking = set(STATIC_BLOCKING)
+        for seed in REGRESSION_SEEDS:
+            config = CampaignConfig(seed=seed)
+            for floor in (2, 5, 8):
+                level = _generate_with_retries(config, floor)
+                tiles, things = level.tiles, level.things
+                for index, code in enumerate(things):
+                    facing = _actor_facing_index(code)
+                    if facing is None:
+                        continue
+                    x, y = index % GRID, index // GRID
+                    dx, dy = _ACTOR_FACINGS[facing]
+                    fx, fy = x + dx, y + dy
+                    ahead_tile = _at(tiles, fx, fy)
+                    ahead_thing = _at(things, fx, fy)
+                    self.assertTrue(
+                        _is_floor(ahead_tile) or ahead_tile in DOORS,
+                        f"seed={seed!r} floor={floor}: actor at ({x},{y}) faces "
+                        f"non-floor tile {ahead_tile}")
+                    self.assertNotIn(
+                        ahead_thing, blocking,
+                        f"seed={seed!r} floor={floor}: actor at ({x},{y}) faces "
+                        f"blocking decoration {ahead_thing}")
 
 
 class TopologyRegressionTests(unittest.TestCase):
