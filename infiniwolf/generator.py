@@ -216,6 +216,7 @@ class GeneratedMap:
     motifs: tuple[str, ...] = ()
     motif_rooms: tuple[str, ...] = ()
     secret_variants: tuple[str, ...] = ()
+    shortcut_pushwalls: tuple[tuple[int, int], ...] = ()
     critique: tuple[str, ...] = ()
     rooms: tuple[Room, ...] = ()
 
@@ -840,48 +841,26 @@ def _widen_corridors(tiles: list[int], rooms: list[Room], paths: list[list[tuple
                 _set(tiles, wx, wy, FLOOR)
 
 
-def _carve_reward_stubs(tiles: list[int], things: list[int], rooms: list[Room],
-                        paths: list[list[tuple[int, int]]], reserved: set[tuple[int, int]],
-                        rng: random.Random, complexity: int) -> None:
-    """Branch short dead-end spurs off corridors, each ending in a reward.
-
-    The report calls for shallow-but-meaningful branching (mean forward
-    choices of roughly 1.2-1.8 on the traversed route): junctions where the
-    player must choose between progress and a visible side pocket. Spurs are
-    1 tile wide but only 3-6 tiles long, which the guidelines explicitly
-    allow for short connectors and reward runs. Each spur is dug entirely
-    from solid rock with a one-tile rock margin on every flank, so it can
-    connect to nothing but its own junction and never alters existing
-    geometry or connectivity.
+def _place_bonus_rewards(tiles: list[int], things: list[int], rooms: list[Room],
+                         reserved: set[tuple[int, int]], rng: random.Random,
+                         complexity: int) -> None:
+    """A handful of extra treasure/ammo/food pickups on floor that already
+    exists, instead of carving a dead-end spur to hold every one of them.
+    A hallway that only exists because it has a pickup at the end reads as
+    artificial -- no human level author dug a corridor just to hold a candy
+    bar. Existing room floor is plentiful this early in the pipeline (before
+    population and decorations claim it), so there's no need to add rock.
     """
-    junctions = [cell for path in paths for cell in path
-                 if not _inside_room(rooms, *cell) and not _adjacent_to_room(rooms, *cell)]
-    rng.shuffle(junctions)
     target = max(1, complexity)
-    carved = 0
-    for x, y in junctions:
-        if carved >= target:
-            break
-        if not _is_floor(_at(tiles, x, y)):
-            continue
-        directions = [(1, 0), (-1, 0), (0, 1), (0, -1)]
-        rng.shuffle(directions)
-        for dx, dy in directions:
-            length = rng.randrange(3, 7)
-            strip = [(x + dx * step, y + dy * step) for step in range(1, length + 1)]
-            margin = [(sx - dy, sy - dx) for sx, sy in strip]
-            margin += [(sx + dy, sy + dx) for sx, sy in strip]
-            margin.append((x + dx * (length + 1), y + dy * (length + 1)))
-            if any(not (1 <= cx < GRID - 1 and 1 <= cy < GRID - 1) or _at(tiles, cx, cy) != WALL
-                   for cx, cy in strip + margin):
-                continue
-            for cell in strip:
-                _set(tiles, *cell, FLOOR)
-            end = strip[-1]
-            _set(things, *end, rng.choice(TREASURE + (AMMO, FOOD)))
-            reserved.add(end)
-            carved += 1
-            break
+    candidates = [(x, y) for room in rooms
+                  for y in range(room.y + 1, room.y + room.h - 1)
+                  for x in range(room.x + 1, room.x + room.w - 1)
+                  if (x, y) not in reserved and _at(things, x, y) == 0
+                  and _is_floor(_at(tiles, x, y))]
+    rng.shuffle(candidates)
+    for cell in candidates[:target]:
+        _set(things, *cell, rng.choice(TREASURE + (AMMO, FOOD)))
+        reserved.add(cell)
 
 
 def _door_axis(tiles: list[int], x: int, y: int) -> int | None:
@@ -1341,7 +1320,8 @@ def _secret_reward(rng: random.Random, depth: float,
 
 def _place_secret(tiles: list[int], things: list[int], room: Room,
                   rng: random.Random, variant: str, depth: float,
-                  secret_exit: bool = False) -> tuple[tuple[int, int], str] | None:
+                  secret_exit: bool = False
+                  ) -> tuple[tuple[int, int], str, tuple[int, int]] | None:
     px = room.x + room.w
     if px + 4 >= GRID - 1:
         return None
@@ -1353,7 +1333,7 @@ def _place_secret(tiles: list[int], things: list[int], room: Room,
         reward = _carve_secret_pocket(tiles, things, px, py, rng, secret_exit,
                                       variant, depth)
         if reward:
-            return reward, variant
+            return reward, variant, (px, py)
     return None
 
 
@@ -1403,9 +1383,14 @@ def _carve_secret_pocket(tiles: list[int], things: list[int], px: int, py: int,
         _set(things, *reward, _secret_reward(rng, depth))
     elif variant == "nested":
         cells, margin = chamber(7)
-        # The wall between the two chambers remains solid until its own
-        # push, while the shared outer margin protects the complete pair.
-        cells.remove((px + 4, py))
+        # The wall between the two chambers must stay solid on every row
+        # but the pushwall's own cell. Only removing the center cell here
+        # left the flanking rows (py-1/py+1) as already-carved open floor,
+        # so the second wall was just a bypassable prop: a player could
+        # walk straight around it, and pushing it revealed nothing new.
+        for wall_y in (py - 1, py, py + 1):
+            cells.remove((px + 4, wall_y))
+        margin += [(px + 4, py - 1), (px + 4, py + 1)]
         if any(_at(tiles, x, y) != WALL for x, y in cells + margin):
             return None
         # The east face (back) of the elevator switch must be covered by solid
@@ -2032,6 +2017,7 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
     reserved = {start, exit_stand}
     rewards: list[tuple[int, int]] = []
     secret_variants: list[str] = []
+    shortcut_pushwalls: list[tuple[int, int]] = []
     floor_distances = _floor_distances(tiles, start)
     room_distances = {room: floor_distances.get(room.center, 0) for room in rooms}
     max_room_distance = max(room_distances.values(), default=1) or 1
@@ -2064,9 +2050,11 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
                     host = room
                     break
         if placed_secret:
-            reward, realized_variant = placed_secret
+            reward, realized_variant, push_cell = placed_secret
             rewards.append(reward); secret_variants.append(realized_variant)
             reserved.add(reward)
+            if realized_variant == "shortcut":
+                shortcut_pushwalls.append(push_cell)
             candidates.remove(host)
         else:
             break
@@ -2097,11 +2085,13 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
                     break
         if reward:
             rewards.append(reward); secret_variants.append(variant); reserved.add(reward)
+            if variant == "shortcut":
+                shortcut_pushwalls.append((px, py))
         else:
             break
     reserved.update((index % GRID - 1, index // GRID)
                     for index, thing in enumerate(things) if thing == PUSHWALL)
-    _carve_reward_stubs(tiles, things, rooms, paths, reserved, rng, complexity)
+    _place_bonus_rewards(tiles, things, rooms, reserved, rng, complexity)
     locks = _place_doors(config, tiles, things, rooms, paths, rng, start, exit_stand, roles,
                          reserved,
                          allow_locks=not is_boss)
@@ -2125,7 +2115,8 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
                           has_secret_exit=secret_exit, locked_doors=locks, boss=is_boss,
                           enemy_tiers=enemy_tiers, motifs=plan.motifs,
                           motif_rooms=tuple(spec.motif for spec in specs),
-                          secret_variants=tuple(secret_variants), rooms=tuple(rooms))
+                          secret_variants=tuple(secret_variants),
+                          shortcut_pushwalls=tuple(shortcut_pushwalls), rooms=tuple(rooms))
     validate_map(result)
     result.critique = _critique(result)
     return result
@@ -2188,6 +2179,23 @@ def validate_map(level: GeneratedMap) -> None:
             raise ValueError("pushwall cannot be approached")
         wall = ready[0]
         pending.remove(wall); pushed.add(wall)
+    # A pushwall guarding nothing is worse than no secret at all: the player
+    # either finds a bypass and the "secret" never needed pushing, or pushes
+    # it and sees no new floor because everything past it was already open.
+    # Check each wall in isolation -- every OTHER wall already pushed (best
+    # case for a bypass to exist) but this one still solid -- and confirm
+    # the cell right behind it is unreachable any other way. "shortcut"
+    # secrets are exempt: connecting to floor that's already reachable from
+    # the far side is the whole point of that variant, not a bug.
+    for wall in pushwalls:
+        if wall in level.shortcut_pushwalls:
+            continue
+        others = pushed - {wall}
+        bypass = _reachable(level.tiles, level.start, locked_open=True,
+                            extra_passable=others,
+                            blocked={(x + 2, y) for x, y in others})
+        if (wall[0] + 1, wall[1]) in bypass:
+            raise ValueError("pushwall is bypassable without being pushed")
     opened = _reachable(level.tiles, level.start, locked_open=True,
                         extra_passable=pushed, blocked=rests)
     for reward in level.secret_rewards:
