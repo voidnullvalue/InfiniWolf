@@ -105,31 +105,27 @@ ECWolf treats each `+36` on an actor code as the next cumulative skill tier: tie
 ### 7.5 Rewards
 After enemies are placed, every second room places an ammo/food/first-aid or treasure pickup in an unused candidate cell. `_ensure_early_heal` guarantees a first-aid in the low-depth zone so a rough opening doesn't spiral.
 
-## 8. Actor facing (rayscore)
+## 8. Actor facing
 
 Enemy facing is the frame the player sees when they open a door. A misfaced guard reads as broken, so this pass is deliberately conservative.
 
 ### 8.1 Room entry cells (`room_entries`)
 For every room, we collect *every* floor or door tile immediately outside its boundary — all four sides scanned. Storing the full list (not just the closest to `start`) is what lets a two-door room orient different actors toward different doors.
 
-### 8.2 Rayscore (`_clear_ahead`, `_entry_pull`, `_pick_facing`)
-For every candidate facing (N/E/S/W), we compute two numbers from tile geometry:
+### 8.2 Stationary facing (`_entry_pull`, `_pick_stationary_facing`)
+All actors spawn stationary. `_pick_stationary_facing` scores each of the four cardinal directions with `_entry_pull`:
 
-- **`_clear_ahead(x, y, idx)`**: number of open floor tiles ahead in that direction, capped at 5. This is what makes patrol facing safe — patrol actors physically walk forward in their initial facing, and less than 3 clear tiles produces the "running against a wall" bug.
-- **`_entry_pull(x, y, idx, entries)`**: for each entry cell `e`, take the parallel component `para = dir · (e − pos)` and the perpendicular magnitude `perp = |dy·vx − dx·vy|`; only entries with `para > 0` count, and the score is `para − 2·perp`. The perpendicular penalty is why a south-facing guard near the south wall correctly beats an east-facing guard on the south wall even when an east entry is Manhattan-closer.
+For each entry cell `e`, the pull score for a direction `(dx, dy)` is `para − 2·perp` where `para = dx·(ex−x) + dy·(ey−y)` (only directions where `para > 0` count) and `perp = |dy·(ex−x) − dx·(ey−y)|`. The perpendicular penalty is what makes a south-facing guard near the south wall correctly beat an east-facing guard on the south wall even when the east entry is Manhattan-closer. The direction with the highest score is chosen; if it points at a wall tile the algorithm widens the pool to all four directions rather than forcing a wall-adjacent face.
 
-`_pick_facing(x, y, room, want_patrol)` combines them:
+### 8.3 Why patrol actors are not used
 
-- **Patrol**: require `clear_ahead >= 3`. Among qualifying directions, maximise `entry_pull`, break ties on `clear_ahead`. If no direction qualifies, the actor is downgraded to stationary — better a facing-a-wall standing guard than a walking-into-a-wall patrol.
-- **Stationary**: require `clear_ahead >= 1` when possible (avoid the ugly nose-in-wall pose). Maximise `entry_pull`, break ties on `clear_ahead`.
+Three separate patrol-facing implementations were tried. All produced actors "walking in place into walls" because two bugs compound:
 
-Dogs are patrol-only in WL6 (no stationary sprite). If the geometry forces a dog to stationary, the spawn is skipped rather than emitting a broken code.
+1. **ECWolf's `T_Path` requires things-plane turn-point markers.** Without them, a patrol actor that reaches a wall sets `dir = nodir`, which plays the walk animation with no movement — "walking in place" — on every subsequent tick. This is not recoverable without explicit path objects.
 
-### 8.3 Patrol probability
-```
-guard: 0.35   officer: 0.20   ss: 0.10   dog: 1.00
-```
-Guards were briefly boosted to 0.55 in `4aa1042` as a workaround for the facing bug; that bump has been reverted now that the rayscore keeps patrols oriented and walkable.
+2. **`_clear_ahead` stops at door tiles** (doors are not `_is_floor`). A room's corridor entry is often gated by a door, so the toward-entry direction scores ≤ 2 clear tiles and is excluded from the patrol candidate pool. Actors end up patrolling *away* from the player even when the overall pull calculation is correct.
+
+Patrol with proper turn-marker routing is a planned future feature. Until then, all actors use stationary codes and the entry-pull facing, which gives the correct first impression on door breach. Dogs use their standing spawn codes (DOGS 134–137).
 
 ## 9. Where the numbers came from
 
@@ -203,7 +199,7 @@ B.J. Rowan's 1994 Wolf3D map-design tips and "From Column to Column: The Wolfens
 Two specific measurements led to permanent regression tests:
 
 - **Bare-seam bug** — a corridor router fallback could fuse two rooms into one long open sightline, invisible to every solvability validator. Found by measuring the longest unobstructed straight run across seeds (values of 22–36 tiles with no door on that row/column). Fix: the buffered search now exhausts every portal pair, and the last-resort fallback refuses to cross a cell owned by an unrelated room. `tests/test_topology_regression.py` locks in a longest-run assertion and a "no door-bounded component is half the map" check over a fixed seed list that includes the exact repro.
-- **Facing regressions** — described in full in §8. Two prior approaches (single primary entry with jittered dot product; bumping patrol chance to 55%) both looked plausible in the diff but broke on real geometry: the first flipped diagonally close entries, the second gave patrol actors random initial facing. The rayscore (§8.2) is the third revision and the one that actually reads walkable geometry rather than optimising distance to a point.
+- **Facing regressions (three rounds)** — described in full in §8. Pass 1 (single primary entry + jittered dot product): RNG jitter flipped marginal choices; single entry wrong for multi-door rooms. Pass 2 (55% patrol chance): patrol actors got random initial facing — worse than pass 1. Pass 3 (rayscore with `_clear_ahead >= 3`): improved stationary actors but patrol actors still walked in place because ECWolf's `T_Path` requires things-plane turn-point markers that were never placed, and `_clear_ahead` stopping at door tiles forced actors to patrol away from the player even when entry_pull was correct. Resolution: drop patrol spawning entirely; all actors stationary with `_pick_stationary_facing`. Patrol with turn-marker routing is a future feature.
 
 **Standing rule from these episodes:** always verify a structural change by measuring the property it could have broken, not just by re-running existing validators. Validity and quality are different axes, and bugs live in the gap between them.
 
