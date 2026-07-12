@@ -1550,17 +1550,35 @@ def _place_population(config: CampaignConfig, number: int, rooms: list[Room],
 
     facings = ((0, -1), (1, 0), (0, 1), (-1, 0))
 
-    def place_enemy(x: int, y: int, depth: float, tier: int) -> None:
+    def place_enemy(x: int, y: int, depth: float, tier: int,
+                    room: Room | None = None) -> None:
         name, family = pick_family(depth)
         if name in ("officer", "ss") and near_door(x, y):
             name, family = "guard", GUARDS
-        facing = rng.randrange(4)
         open_facings = [index for index, (dx, dy) in enumerate(facings)
                         if _is_floor(_at(tiles, x + dx, y + dy))]
-        patrol = name in ("guard", "dog") and open_facings and rng.random() < 0.25
+        patrol = name in ("guard", "dog") and open_facings and rng.random() < 0.35
         if patrol:
             facing = rng.choice(open_facings)
             family = PATROLS_BY_FAMILY[family]
+        elif open_facings:
+            # Bias stationary guards to face toward the room center (a proxy
+            # for the doorway direction) so they're likely to spot the player
+            # entering.  Among the open directions, pick the one whose unit
+            # vector has the highest dot-product with the center vector; break
+            # ties randomly so not every guard stares dead-center.
+            if room is not None:
+                cx, cy = room.center
+                vx, vy = cx - x, cy - y
+                def _score(idx: int) -> float:
+                    dx, dy = facings[idx]
+                    dot = dx * vx + dy * vy
+                    return dot + rng.uniform(-0.5, 0.5)
+                facing = max(open_facings, key=_score)
+            else:
+                facing = rng.choice(open_facings)
+        else:
+            facing = rng.randrange(4)
         _set(things, x, y, family[facing] + 36 * tier)
 
     distances = _floor_distances(tiles, start)
@@ -1592,7 +1610,7 @@ def _place_population(config: CampaignConfig, number: int, rooms: list[Room],
         rng.shuffle(candidates)
         cursor = 0
         for x, y in candidates[cursor:cursor + budget]:
-            place_enemy(x, y, depth, 0)
+            place_enemy(x, y, depth, 0, room)
             tier_counts[0] += 1
         cursor += budget
         # ECWolf's base translator treats +36 as the next cumulative skill
@@ -1601,7 +1619,7 @@ def _place_population(config: CampaignConfig, number: int, rooms: list[Room],
         extra = max(0, round(budget * (0.20 + progression * 0.12)))
         for tier in (1, 2):
             for x, y in candidates[cursor:cursor + extra]:
-                place_enemy(x, y, depth, tier)
+                place_enemy(x, y, depth, tier, room)
                 tier_counts[tier] += 1
             cursor += extra
         if candidates[cursor:]:

@@ -21,8 +21,37 @@ jobs:
           python-version: "3.11"
       - run: python -m unittest discover -s tests -v
 
-  build:
+  # Auto-tag main-branch pushes so every merge produces a versioned release.
+  # Tag pushes skip this job (already have a tag) via the `if` guard.
+  tag:
+    if: github.ref == 'refs/heads/main'
     needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      version_tag: ${{ steps.gen.outputs.version_tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Generate version tag
+        id: gen
+        shell: bash
+        run: |
+          # Use the commit count on main as the patch number for a simple
+          # monotonically-increasing scheme: v0.0.<commit_count>
+          count=$(git rev-list --count HEAD)
+          tag="v0.0.${count}"
+          echo "version_tag=${tag}" >> "$GITHUB_OUTPUT"
+          git tag "${tag}"
+          git push origin "${tag}"
+
+  build:
+    needs: [test, tag]
+    # Run for both auto-tagged main pushes and manually-pushed version tags.
+    if: always() && needs.test.result == 'success'
     strategy:
       fail-fast: false
       matrix:
@@ -52,6 +81,8 @@ jobs:
         run: |
           if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
             echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          elif [[ -n "${{ needs.tag.outputs.version_tag }}" ]]; then
+            echo "version=${{ needs.tag.outputs.version_tag }}" >> "$GITHUB_OUTPUT"
           else
             echo "version=dev-${GITHUB_SHA:0:7}" >> "$GITHUB_OUTPUT"
           fi
@@ -71,12 +102,16 @@ jobs:
           path: release/*.zip
 
   publish:
-    if: github.event_name == 'push'
-    needs: build
+    if: always() && needs.build.result == 'success'
+    needs: [build, tag]
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
       - uses: actions/download-artifact@v4
         with:
           path: release
@@ -87,27 +122,21 @@ jobs:
         shell: bash
         run: |
           if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
-            echo "tag=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
-            echo "prerelease=false" >> "$GITHUB_OUTPUT"
-            echo "title=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+            tag="${GITHUB_REF_NAME}"
+          elif [[ -n "${{ needs.tag.outputs.version_tag }}" ]]; then
+            tag="${{ needs.tag.outputs.version_tag }}"
           else
-            echo "tag=nightly" >> "$GITHUB_OUTPUT"
-            echo "prerelease=true" >> "$GITHUB_OUTPUT"
-            echo "title=Nightly build (${GITHUB_SHA:0:7})" >> "$GITHUB_OUTPUT"
+            tag="v0.0.dev"
           fi
-
-      - name: Clear previous nightly release
-        if: steps.target.outputs.tag == 'nightly'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: gh release delete nightly --yes --cleanup-tag --repo "${{ github.repository }}" || true
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          echo "title=${tag}" >> "$GITHUB_OUTPUT"
 
       - name: Create GitHub release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.target.outputs.tag }}
           name: ${{ steps.target.outputs.title }}
-          prerelease: ${{ steps.target.outputs.prerelease }}
-          make_latest: ${{ steps.target.outputs.prerelease == 'false' }}
+          prerelease: false
+          make_latest: true
           files: release/*.zip
           generate_release_notes: true
