@@ -131,7 +131,83 @@ guard: 0.35   officer: 0.20   ss: 0.10   dog: 1.00
 ```
 Guards were briefly boosted to 0.55 in `4aa1042` as a workaround for the facing bug; that bump has been reverted now that the rayscore keeps patrols oriented and walkable.
 
-## 9. Determinism and validation
+## 9. Where the numbers came from
+
+Almost every threshold in the sections above is either an engine limit, a manual/community-guide rule, or a value measured off a real-map corpus. This section names the source for each so the parameters are auditable rather than magic. The full internal report (kept as a personal working document, not tracked) is `deep-research-report.md`; what follows is a distilled provenance record of the parts that shipped.
+
+### 9.1 Engine limits (hard bounds)
+
+Read directly from the original Wolf3D source (`wolfhack`/`wolf3d.txt` and `WL_DEF.H`):
+
+| Limit | Value | Enforced by |
+|-------|------:|-------------|
+| Map dimensions | 64 × 64 | `GRID = 64`; every plane accessor is bounds-checked in `_at`/`_set`. |
+| Distinct floor "areas" (sound zones) | 37 | `_assign_sound_zones` + `_split_oversized_zones`; a floor with more than 36 door-bounded components fails the per-floor retry loop instead of wrapping mod 36 (a real bug that predated the split). |
+| Sliding doors | 64 | Soft cap 56 (headroom for repair); `_place_doors` will not exceed it. |
+| Actors | 150 | Soft cap 120 in the population budget. |
+| Statics | 400 | Soft cap 320 across decor + treasure + pickups. |
+| Starting player state | 100 HP, pistol, 8 rounds, 3 lives | Used as the pistol-start assumption for the ammo-solvency check. |
+| Door open duration | 300 tics ("close after three seconds") | Used to size the reasoning about combat-cell partitioning, not written into a runtime constant. |
+| Pushwall travel | 2 tiles | Every secret pocket is carved so the pushwall's 2-tile move can never seal a reward or overrun a wall. |
+
+### 9.2 Ballistic and fairness rules (from the original manual)
+
+Player gunfire is strong at close range, degrades fast, and becomes unreliable past **21 tiles**. This drives:
+
+- The **`max_run = 21`** sightline cap in `_break_long_sightlines`.
+- The **routine-fight range 3–12 tiles** target; room sizing (6–9 baseline, halls 9–13 major axis) is chosen so most rooms fall inside this band.
+- The **near-door officer/SS downgrade** (`near_door(x, y, radius=3)` in `_place_population`) — the manual explicitly warns against rushing straight through doors, and a point-blank elite at the door is the worst version of that trap.
+- The **"necessary items are not hidden" rule** (from the manual). Enforced by `_reachable(..., locked_open=False)` and by placing keys in `_key_spot` off critical-path rooms only, never behind pushwalls. Secrets are always optional surplus.
+
+### 9.3 Real-map corpus (254 maps, 6277 rooms)
+
+`tools/inspect_map.py` is the reproducible analysis tool. `--compare DIR` walks every `.wad` under a directory, parses each map's WDC3.1 PWAD container (the same container `_wad_bytes` emits), floods door-bounded rooms with the same "zone" definition `_assign_sound_zones` uses, and prints a summary table you can diff against generated output.
+
+The corpus itself was **254 real, playable Wolf3D-family maps** already present on this machine (`ecwolf/mods/installed/…`), spanning:
+
+- The id-numbered `classics_*` conversions — Spear of Destiny and its two official mission packs — in native WL6 tile numbering.
+- Well-regarded independent total conversions: `totengraeber`, `rtotenhaus_enh`, `wolfoverdrive`, `pthollenteufel`.
+
+Each was chosen because it uses ECWolf's default tile numbering (walls low, doors 90–101, floor/zone codes 108–143) — the same convention this generator writes — so measurements are directly comparable without format translation. Every measured metric agreed across independently authored campaigns spanning 20+ years of Wolf3D mapping, which is why the numbers below were treated as a signature rather than an accident. **No coordinates, dimensions, or layouts from any analyzed file were transcribed into the generator** — only aggregate statistics and community-guide principles.
+
+To reproduce the comparison against a fresh generator build:
+
+```sh
+python3 tools/inspect_map.py --compare /path/to/ecwolf/mods/installed
+python3 tools/inspect_map.py --seed castle --floor 1 --complexity 3
+```
+
+The numbers that shipped into the generator, and the corpus figures that produced them:
+
+| Signal from the corpus | Corpus value | Generator response |
+|------------------------|-------------:|--------------------|
+| Rooms that are a plain rectangle | 18.1% | `_carve_notches`, `_carve_alcoves` add corner bites / wall-flush bumps to roughly half of rooms. |
+| Rooms with an isolated interior pillar/column | 13.8% (median 2 — a mirrored pair) | `_add_pillars` adds a single interior wall-plane tile (or a mirrored pair) to ~40% of rooms ≥7×7, guarded so it cannot become an articulation point. |
+| Median room aspect ratio | 1.40 : 1 | `_room_size` reserves a `hall` tier (major 9–13, minor 5–7) so a minority of rooms move the aspect distribution off 1.1:1. |
+| Bilateral symmetry rate on rooms ≥25 tiles | 44–46% (not ~100%) | Notches, alcoves, and pillars are applied per-feature, not mirrored globally — the "one intentional exception" pattern. |
+| Rooms per map (mean) | 24.7 | Floor-plan target `min(20, 14 + 2·complexity)` + closet tier; measured after: 22.8. |
+| Doors per map (mean) | 27.2 | Door placement measured after the change: 27.7 (near-exact). |
+| Door-graph cycles per map (mean) | 1.1–1.54 | `ring` motif in `_plan_floor` guarantees at least one; measured after: 1.87. |
+
+### 9.4 Community level-design guides
+
+B.J. Rowan's 1994 Wolf3D map-design tips and "From Column to Column: The Wolfenstein 3D Level Design Bible" converge on the same qualitative advice, which shows up in:
+
+- **Five room constructs** (square / rectangle / corner / T-junction / intersection): the plan grammar's `standard`/`hall`/`closet`/`anchor`/hub-junction tiers cover the same vocabulary.
+- **Mirroring rule** ("if you add a column at the top, add one at the bottom"): `_add_pillars` prefers mirrored pairs; `wings` motif places a mirrored branch pair with shared `size_groups`.
+- **Room size cap**: no single room exceeds roughly a quarter of the playable area; enforced by `anchor` tier maxing at 13×13.
+- **"Make every room unique"**: districts + `WALL_THEMES` + motif membership vary each room's silhouette *and* material.
+
+### 9.5 Iteration lessons that shaped the code
+
+Two specific measurements led to permanent regression tests:
+
+- **Bare-seam bug** — a corridor router fallback could fuse two rooms into one long open sightline, invisible to every solvability validator. Found by measuring the longest unobstructed straight run across seeds (values of 22–36 tiles with no door on that row/column). Fix: the buffered search now exhausts every portal pair, and the last-resort fallback refuses to cross a cell owned by an unrelated room. `tests/test_topology_regression.py` locks in a longest-run assertion and a "no door-bounded component is half the map" check over a fixed seed list that includes the exact repro.
+- **Facing regressions** — described in full in §8. Two prior approaches (single primary entry with jittered dot product; bumping patrol chance to 55%) both looked plausible in the diff but broke on real geometry: the first flipped diagonally close entries, the second gave patrol actors random initial facing. The rayscore (§8.2) is the third revision and the one that actually reads walkable geometry rather than optimising distance to a point.
+
+**Standing rule from these episodes:** always verify a structural change by measuring the property it could have broken, not just by re-running existing validators. Validity and quality are different axes, and bugs live in the gap between them.
+
+## 10. Determinism and validation
 
 Every RNG call goes through a per-floor `random.Random` seeded from the campaign seed and floor number. Given the same version, seed, and settings the generator produces byte-identical PK3s (the manifest inside the PK3 records both the resolved seed and the floor-by-floor derived seeds).
 
