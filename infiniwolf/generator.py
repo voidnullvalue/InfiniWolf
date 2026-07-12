@@ -538,9 +538,26 @@ def _add_pillars(tiles: list[int], room: Room, rng: random.Random,
             return
 
 
+DOOR_SPACING = 3  # minimum Manhattan gap enforced between distinct doorways
+
+
+def _far_from_doors(cell: tuple[int, int], avoid: set[tuple[int, int]],
+                    radius: int = DOOR_SPACING) -> bool:
+    """True if cell keeps at least `radius` tiles from every already-placed
+    doorway. Two doors crammed a tile or two apart -- a bare rock sliver
+    between them -- read as a broken wall rather than a real room, and the
+    sliver of hallway between them is a pointless loop back into the same
+    room. Filtering candidates here, at threshold-selection time, is cheaper
+    and more general than trying to prune finished doors after the fact."""
+    return all(abs(cell[0] - ox) + abs(cell[1] - oy) >= radius for ox, oy in avoid)
+
+
 def _carve_connection(tiles: list[int], a: Room, b: Room,
-                      rng: random.Random, complexity: int) -> list[tuple[int, int]]:
+                      rng: random.Random, complexity: int,
+                      avoid: set[tuple[int, int]] | None = None) -> list[tuple[int, int]]:
     """Carve the shortest rock-backed route between two clean thresholds."""
+    avoid = set() if avoid is None else avoid
+
     def portals(room: Room) -> list[tuple[tuple[int, int], tuple[int, int],
                                            tuple[int, int]]]:
         result = []
@@ -558,7 +575,8 @@ def _carve_connection(tiles: list[int], a: Room, b: Room,
                      (outer[0] + dy, outer[1] + dx))
             if (_is_floor(_at(tiles, *inner)) and _at(tiles, *outer) == WALL
                     and _at(tiles, *beyond) == WALL
-                    and all(_at(tiles, *cell) == WALL for cell in jambs)):
+                    and all(_at(tiles, *cell) == WALL for cell in jambs)
+                    and _far_from_doors(outer, avoid)):
                 result.append((outer, beyond, inner))
         return result
 
@@ -605,6 +623,7 @@ def _carve_connection(tiles: list[int], a: Room, b: Room,
         path = [outer_a] + route + [outer_b]
         for x, y in path:
             _set(tiles, x, y, FLOOR)
+        avoid.update((outer_a, outer_b))
         return path
 
     source = {a.center}
@@ -629,7 +648,8 @@ def _carve_connection(tiles: list[int], a: Room, b: Room,
             beyond = x - dx, y - dy
             jambs = ((x - dy, y - dx), (x + dy, y + dx))
             if (_at(tiles, *beyond) == WALL
-                    and all(_at(tiles, *cell) == WALL for cell in jambs)):
+                    and all(_at(tiles, *cell) == WALL for cell in jambs)
+                    and _far_from_doors((x, y), avoid)):
                 thresholds.append(((x, y), (dx, dy)))
     rng.shuffle(thresholds)
     thresholds.sort(key=lambda item: abs(item[0][0] - b.center[0])
@@ -677,6 +697,7 @@ def _carve_connection(tiles: list[int], a: Room, b: Room,
                     for cell in route[:-1]:
                         _set(tiles, *cell, FLOOR)
                     _set(tiles, *nxt, DOOR_EW if target[0][0] else DOOR_NS)
+                    avoid.add(nxt)
                     return route[1:]
                 previous[nxt] = (x, y); queue.append(nxt)
         return None
@@ -763,6 +784,7 @@ def _carve_connection(tiles: list[int], a: Room, b: Room,
             before, after = route[index - 1], route[index + 1]
             code = DOOR_NS if before[0] == cell[0] == after[0] else DOOR_EW
             _set(tiles, *cell, code)
+            avoid.add(cell)
         else:
             _set(tiles, *cell, FLOOR)
         carved.append(cell)
@@ -780,7 +802,7 @@ def _adjacent_to_room(rooms: list[Room], x: int, y: int) -> bool:
 
 
 def _widen_corridors(tiles: list[int], rooms: list[Room], paths: list[list[tuple[int, int]]],
-                     rng: random.Random, widen_chance: float = 0.75) -> None:
+                     rng: random.Random, widen_chance: float = 0.8) -> None:
     """A map built entirely from 1-tile halls reads as door-camping and rush
     traps. Default corridors to 2 tiles wide by adding floor to one side of
     each interior cell, but leave the doorway threshold (any cell touching a
@@ -1111,6 +1133,12 @@ def _split_oversized_zones(tiles: list[int], rooms: list[Room], rng: random.Rand
     rather than nibbling off tiny dead-end nooks."""
     placed = 0
     stuck: set[frozenset[tuple[int, int]]] = set()
+    # This pass runs after every real door is already on the map, so a fresh
+    # doorway placed here is just as prone to landing a tile or two from an
+    # existing one as anything _carve_connection carves; keep it under the
+    # same minimum spacing.
+    door_zones = {(x, y) for y in range(GRID) for x in range(GRID)
+                  if _at(tiles, x, y) in DOORS}
     while True:
         components = _floor_components(tiles)
         if len(components) >= ZONE_MAX - FLOOR + 1:
@@ -1121,7 +1149,7 @@ def _split_oversized_zones(tiles: list[int], rooms: list[Room], rng: random.Rand
             break
         candidates = [(x, y) for x, y in component
                      if (x, y) not in reserved and not _inside_room(rooms, x, y)
-                     and _door_axis(tiles, x, y)]
+                     and _door_axis(tiles, x, y) and _far_from_doors((x, y), door_zones)]
         rng.shuffle(candidates)
         # Room-adjacent chokepoints read as a real doorway; try those before
         # falling back to a stray mid-corridor pinch (same reasoning as
@@ -1142,6 +1170,7 @@ def _split_oversized_zones(tiles: list[int], rooms: list[Room], rng: random.Rand
             other = len(remaining) - len(seen)
             if len(seen) >= min_piece and other >= min_piece:
                 _set(tiles, x, y, _door_axis(tiles, x, y))
+                door_zones.add((x, y))
                 placed += 1
                 split = True
                 break
@@ -1258,9 +1287,14 @@ def _place_elevator(tiles: list[int], room: Room, locked: bool = False) -> tuple
             continue
         # depth range(5): the extra ring ensures the cell immediately beyond
         # the back wall is also solid, so tile-21's east face can never be
-        # approached from outside the shaft.
+        # approached from outside the shaft. side range(-2, 3): tile 21's
+        # north/south faces show the same paneling graphic on both sides, so
+        # the shaft's rail walls (side +-1) need a second rock's worth of
+        # backing at side +-2 -- otherwise a room or corridor that happens to
+        # run flush against the shaft would see the elevator dressing bleed
+        # through into a space that was never meant to be the elevator room.
         footprint = [(wx + dx * depth, wy + side)
-                     for depth in range(5) for side in (-1, 0, 1)]
+                     for depth in range(5) for side in (-2, -1, 0, 1, 2)]
         if any(not (1 <= x < GRID - 1 and 1 <= y < GRID - 1) or _at(tiles, x, y) != WALL
                for x, y in footprint):
             continue
@@ -1973,7 +2007,9 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
     _carve_alcoves(tiles, rooms, rng)
     for room in rooms:
         _add_pillars(tiles, room, rng)
-    paths = [_carve_connection(tiles, rooms[a], rooms[b], rng, complexity) for a, b in edges]
+    door_zones: set[tuple[int, int]] = set()
+    paths = [_carve_connection(tiles, rooms[a], rooms[b], rng, complexity, door_zones)
+             for a, b in edges]
     _widen_corridors(tiles, rooms, paths, rng)
     start = rooms[0].center
     _set(things, *start, PLAYER_START)
