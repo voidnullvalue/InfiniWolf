@@ -110,7 +110,9 @@ After enemies are placed, every second room places an ammo/food/first-aid or tre
 Enemy facing is the frame the player sees when they open a door. A misfaced guard reads as broken, so this pass is deliberately conservative.
 
 ### 8.1 Room entry cells (`room_entries`)
-For every room, we collect *every* floor or door tile immediately outside its boundary — all four sides scanned. Storing the full list (not just the closest to `start`) is what lets a two-door room orient different actors toward different doors.
+For every room, we collect every floor or door tile immediately outside its boundary (all four sides scanned), then **filter to approach-side entries only**: cells whose BFS distance from `start` is strictly less than the room's own depth. These are the doors the player walked through to reach this room. Cells on the far side (leading deeper into the level) are discarded so actors don't face the exit instead of the entrance. The full list is used as a fallback for the start room or any room with no closer-than-self adjacent cells.
+
+Note on secret doors: pushwall faces are `WALL` tiles in the tiles plane and are never collected. Secret pocket floors are carved at `px+2` onward — two tiles outside the room boundary — and are also never reached by the one-tile scan.
 
 ### 8.2 Stationary facing (`_entry_pull`, `_pick_stationary_facing`)
 All actors spawn stationary. `_pick_stationary_facing` scores each of the four cardinal directions with `_entry_pull`:
