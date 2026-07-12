@@ -1,7 +1,7 @@
 # InfiniWolf
 
 [![CI](https://github.com/voidnullvalue/InfiniWolf/actions/workflows/release.yml/badge.svg)](https://github.com/voidnullvalue/InfiniWolf/actions/workflows/release.yml)
-[![Latest release](https://img.shields.io/github/v/release/voidnullvalue/InfiniWolf?display_name=tag&sort=semver)](https://github.com/voidnullvalue/InfiniWolf/releases/latest)
+[![Latest release](https://img.shields.io/github/v/release/voidnullvalue/InfiniWolf?display_name=tag&sort=date)](https://github.com/voidnullvalue/InfiniWolf/releases/latest)
 [![Downloads](https://img.shields.io/github/downloads/voidnullvalue/InfiniWolf/total)](https://github.com/voidnullvalue/InfiniWolf/releases)
 [![License](https://img.shields.io/github/license/voidnullvalue/InfiniWolf)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.11%2B-blue)](https://www.python.org/downloads/)
