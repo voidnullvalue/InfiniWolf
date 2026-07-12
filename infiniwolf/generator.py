@@ -1609,61 +1609,88 @@ def _place_population(config: CampaignConfig, number: int, rooms: list[Room],
         name, family = pick_family(depth)
         if name in ("officer", "ss") and near_door(x, y):
             name, family = "guard", GUARDS
-        open_facings = [index for index, (dx, dy) in enumerate(facings)
-                        if _is_floor(_at(tiles, x + dx, y + dy))]
         # Dogs are patrol-only in WL6 (no standing spawn variant).
-        # Guards patrol frequently so player path unpredictability is handled
-        # by motion rather than hoping the guard faces the right direction.
-        # Officers and SS patrol occasionally for variety and tension.
-        _patrol_chance = {"guard": 0.55, "dog": 1.0, "officer": 0.20, "ss": 0.10}
-        patrol = open_facings and rng.random() < _patrol_chance.get(name, 0.0)
-        if patrol:
-            facing = rng.choice(open_facings)
-            family = PATROLS_BY_FAMILY[family]
-        elif open_facings:
-            # Bias stationary guards to face toward the room's entry point
-            # (the corridor cell closest to player start adjacent to this
-            # room), so they face the door the player actually walks through.
-            if room is not None:
-                ex, ey = room_entry[room]
-                vx, vy = ex - x, ey - y
-                def _score(idx: int) -> float:
-                    dx, dy = facings[idx]
-                    dot = dx * vx + dy * vy
-                    return dot + rng.uniform(-0.5, 0.5)
-                facing = max(open_facings, key=_score)
-            else:
-                facing = rng.choice(open_facings)
+        _patrol_chance = {"guard": 0.35, "dog": 1.0, "officer": 0.20, "ss": 0.10}
+        want_patrol = rng.random() < _patrol_chance.get(name, 0.0)
+        if room is not None:
+            facing, patrol = _pick_facing(x, y, room, want_patrol)
         else:
-            facing = rng.randrange(4)
+            facing, patrol = rng.randrange(4), False
+        # Dogs never spawn stationary; if geometry forbids patrol we skip the
+        # cell rather than emit a broken standing-dog code.
+        if name == "dog" and not patrol:
+            return
+        if patrol:
+            family = PATROLS_BY_FAMILY[family]
         _set(things, x, y, family[facing] + 36 * tier)
 
     distances = _floor_distances(tiles, start)
     room_distances = {room: distances.get(room.center, 0) for room in rooms}
     max_distance = max(room_distances.values(), default=1) or 1
 
-    # For each room, find the corridor/door cell just outside its boundary
-    # with the smallest BFS distance from player start.  Guards face toward
-    # this cell so they look at the door the player would actually enter.
-    room_entry: dict[Room, tuple[int, int]] = {}
+    # Collect every corridor/door cell adjacent to each room's boundary so an
+    # actor faces the entry nearest to it, not just the entry nearest to the
+    # player's start.  Multi-door rooms otherwise send every guard's gaze to
+    # the "primary" door regardless of where they were placed.
+    room_entries: dict[Room, list[tuple[int, int]]] = {}
     for _room in rooms:
-        _best: tuple[int, int] | None = None
-        _best_d = float('inf')
+        _entries: list[tuple[int, int]] = []
         for _ry in range(_room.y, _room.y + _room.h):
             for _nx in (_room.x - 1, _room.x + _room.w):
                 _t = _at(tiles, _nx, _ry)
                 if _is_floor(_t) or _t in DOORS:
-                    _d = distances.get((_nx, _ry), float('inf'))
-                    if _d < _best_d:
-                        _best_d = _d; _best = (_nx, _ry)
+                    _entries.append((_nx, _ry))
         for _rx in range(_room.x, _room.x + _room.w):
             for _ny in (_room.y - 1, _room.y + _room.h):
                 _t = _at(tiles, _rx, _ny)
                 if _is_floor(_t) or _t in DOORS:
-                    _d = distances.get((_rx, _ny), float('inf'))
-                    if _d < _best_d:
-                        _best_d = _d; _best = (_rx, _ny)
-        room_entry[_room] = _best or _room.center
+                    _entries.append((_rx, _ny))
+        room_entries[_room] = _entries or [_room.center]
+
+    def _clear_ahead(x: int, y: int, idx: int, cap: int = 5) -> int:
+        dx, dy = facings[idx]
+        steps = 0
+        while steps < cap and _is_floor(_at(tiles, x + dx * (steps + 1),
+                                            y + dy * (steps + 1))):
+            steps += 1
+        return steps
+
+    def _entry_pull(x: int, y: int, idx: int,
+                    entries: list[tuple[int, int]]) -> float:
+        dx, dy = facings[idx]
+        best = -1e9
+        for ex, ey in entries:
+            vx, vy = ex - x, ey - y
+            para = dx * vx + dy * vy
+            if para <= 0:
+                continue
+            # perpendicular magnitude; penalise heavily so a facing that
+            # merely shares an axis with an off-side entry doesn't beat one
+            # that actually points at a further-but-aligned entry.
+            perp = abs(dy * vx - dx * vy)
+            score = para - 2 * perp
+            if score > best:
+                best = score
+        return best
+
+    def _pick_facing(x: int, y: int, room: Room,
+                     want_patrol: bool) -> tuple[int, bool]:
+        entries = room_entries.get(room) or [room.center]
+        clears = [_clear_ahead(x, y, i) for i in range(4)]
+        pulls = [_entry_pull(x, y, i, entries) for i in range(4)]
+        # Patrol actors walk forward in their initial direction; they need at
+        # least a few clear tiles or the sprite jams against a wall.  Drop to
+        # stationary if geometry can't give them room.
+        patrol_pool = [i for i in range(4) if clears[i] >= 3]
+        if want_patrol and patrol_pool:
+            i = max(patrol_pool, key=lambda i: (pulls[i], clears[i]))
+            return i, True
+        # Stationary: prefer directions with at least one open tile ahead so
+        # the actor isn't staring at a wall.  If none has any (rare -- actor
+        # boxed on all sides), accept any and pick the best pull.
+        stand_pool = [i for i in range(4) if clears[i] >= 1] or list(range(4))
+        i = max(stand_pool, key=lambda i: (pulls[i], clears[i]))
+        return i, False
 
     def depth_of(room: Room) -> float:
         return room_distances[room] / max_distance

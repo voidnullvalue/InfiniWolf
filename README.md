@@ -1,6 +1,14 @@
 # InfiniWolf
 
+[![CI](https://github.com/voidnullvalue/InfiniWolf/actions/workflows/release.yml/badge.svg)](https://github.com/voidnullvalue/InfiniWolf/actions/workflows/release.yml)
+[![Latest release](https://img.shields.io/github/v/release/voidnullvalue/InfiniWolf?display_name=tag&sort=semver)](https://github.com/voidnullvalue/InfiniWolf/releases/latest)
+[![Downloads](https://img.shields.io/github/downloads/voidnullvalue/InfiniWolf/total)](https://github.com/voidnullvalue/InfiniWolf/releases)
+[![License](https://img.shields.io/github/license/voidnullvalue/InfiniWolf)](LICENSE)
+[![Python](https://img.shields.io/badge/python-3.11%2B-blue)](https://www.python.org/downloads/)
+
 InfiniWolf generates deterministic ten-map Wolfenstein 3D campaigns for ECWolf. It uses the player's registered WL6 data at runtime and never copies Wolfenstein graphics, sounds, music, or data files into generated packages.
+
+Curious how the generator actually works — floor grammar, room realisation, actor placement, and the rayscore facing pass? See [`DESIGN.md`](DESIGN.md).
 
 ## Prebuilt release (Windows / macOS / Linux)
 
