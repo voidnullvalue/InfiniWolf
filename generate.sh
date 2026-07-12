@@ -6,11 +6,11 @@ src_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 # straight into the slot run-mod.sh launches from; otherwise keep the
 # package local to the checkout. RUN_MOD overrides the launcher lookup.
 if [ -d "$src_dir/../installed" ]; then
-    mod_dir="$src_dir/../installed/randomwolf"
+    mod_dir="$src_dir/../installed/infiniwolf"
 else
-    mod_dir="$src_dir/randomwolf"
+    mod_dir="$src_dir/infiniwolf"
 fi
-output="$mod_dir/randomwolf.pk3"
+output="$mod_dir/infiniwolf.pk3"
 run_mod=${RUN_MOD:-"$src_dir/../run-mod.sh"}
 
 ask() {
@@ -39,7 +39,7 @@ ask_dial() {
     done
 }
 
-echo "== Random Wolf campaign generator =="
+echo "== InfiniWolf campaign generator =="
 echo
 
 ask seed "Seed (blank = random each run, or type any word/number for a repeatable one)" ""
@@ -70,7 +70,7 @@ if [ -n "$seed" ]; then
     set -- --seed "$seed" "$@"
 fi
 
-(cd "$src_dir" && python3 -m randomwolf "$@")
+(cd "$src_dir" && python3 -m infiniwolf "$@")
 
 echo "Wrote $output"
 echo
@@ -83,6 +83,25 @@ fi
 printf 'Play it now? [Y/n]: '
 read -r play
 case $play in
-    ''|[Yy]*) exec "$run_mod" randomwolf ;;
-    *) echo "Run '$run_mod randomwolf' whenever you're ready." ;;
+    ''|[Yy]*)
+        # This ECWolf build only looks for its mandatory archive in its
+        # startup directory.  Resolve the collection from the launcher (not
+        # from this generator or the caller's current directory), then put a
+        # relocatable link beside the game data where run-mod.sh starts it.
+        run_mod_dir=$(CDPATH= cd -- "$(dirname -- "$run_mod")" && pwd)
+        collection_root=$(CDPATH= cd -- "$run_mod_dir/.." && pwd)
+        engine_data="$collection_root/share/ecwolf/ecwolf.pk3"
+        startup_data="$collection_root/data"
+        if [ -f "$engine_data" ] && [ -d "$startup_data" ]; then
+            if [ ! -e "$startup_data/ecwolf.pk3" ]; then
+                ln -s ../share/ecwolf/ecwolf.pk3 "$startup_data/ecwolf.pk3"
+            fi
+            if [ ! -r "$startup_data/ecwolf.pk3" ]; then
+                echo "Could not stage ECWolf engine data at $startup_data/ecwolf.pk3" >&2
+                exit 1
+            fi
+        fi
+        exec "$run_mod" infiniwolf
+        ;;
+    *) echo "Run '$run_mod infiniwolf' whenever you're ready." ;;
 esac

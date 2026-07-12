@@ -1,16 +1,16 @@
-# Random Wolf
+# InfiniWolf
 
-Random Wolf generates deterministic ten-map Wolfenstein 3D campaigns for ECWolf. It uses the player's registered WL6 data at runtime and never copies Wolfenstein graphics, sounds, music, or data files into generated packages.
+InfiniWolf generates deterministic ten-map Wolfenstein 3D campaigns for ECWolf. It uses the player's registered WL6 data at runtime and never copies Wolfenstein graphics, sounds, music, or data files into generated packages.
 
 ## Prebuilt release (Windows / macOS / Linux)
 
 Every tagged release publishes a self-contained `.zip` per platform on the [Releases page](../../releases) — no Python install required. Each one bundles:
 
-- `RandomWolf` — the desktop generator (double-click to run)
-- `randomwolf-cli` — the same generator as a command-line tool
+- `InfiniWolf` — the desktop generator (double-click to run)
+- `infiniwolf-cli` — the same generator as a command-line tool
 - ECWolf itself (the **GPL edition**; see [Licensing](#licensing) below), so there's nothing else to install
 
-To use it: download the archive for your platform, unpack it, and drop its contents next to (or into) your own registered Wolfenstein 3D install — you still need to supply your own legally owned WL6 data; nothing here includes or downloads it for you. Run `RandomWolf`, choose settings, **Generate**, then **Play**.
+To use it: download the archive for your platform, unpack it, and drop its contents next to (or into) your own registered Wolfenstein 3D install — you still need to supply your own legally owned WL6 data; nothing here includes or downloads it for you. Run `InfiniWolf`, choose settings, **Generate**, then **Play**.
 
 Prefer to run from source, or want to build these packages yourself? See below.
 
@@ -29,20 +29,20 @@ python3 run.py
 
 The first launch attempts to find ECWolf and WL6 data automatically. Confirm the paths, choose generation settings and an optional seed, then select **Generate**. Once validation succeeds, select **Play**.
 
-When the tool detects the `/data`, `/mods`, and `/games` layout used by this collection, it installs to `mods/installed/randomwolf/randomwolf.pk3` automatically. The campaign will then also appear in the collection's normal mod selector.
+When the tool detects the `/data`, `/mods`, and `/games` layout used by this collection, it installs to `mods/installed/infiniwolf/infiniwolf.pk3` automatically. The campaign will then also appear in the collection's normal mod selector.
 
 ## Command line
 
 ```sh
-python3 -m randomwolf --seed castle --output randomwolf.pk3
+python3 -m infiniwolf --seed castle --output infiniwolf.pk3
 ```
 
 Every intensity option accepts `1` through `5`:
 
 ```sh
-python3 -m randomwolf --seed 42 --guard-density 4 --enemy-toughness 3 \
+python3 -m infiniwolf --seed 42 --guard-density 4 --enemy-toughness 3 \
   --supplies 3 --treasure 2 --secrets 4 --locked-doors 3 \
-  --layout-complexity 5 --output randomwolf.pk3
+  --layout-complexity 5 --output infiniwolf.pk3
 ```
 
 Using the same version, seed, and settings produces byte-identical output. A manifest inside the PK3 records the resolved seed, settings, floor seeds, enemy tiers, locks, secrets, and boss floor.
@@ -68,8 +68,8 @@ Generated packages contain only WAD map data, MAPINFO, and the reproducibility m
 
 ```sh
 pip install pyinstaller .
-pyinstaller --onefile --windowed --name RandomWolf run.py
-pyinstaller --onefile --name randomwolf-cli randomwolf_cli.py
+pyinstaller --onefile --windowed --name InfiniWolf run.py
+pyinstaller --onefile --name infiniwolf-cli infiniwolf_cli.py
 python3 packaging/make_release.py --platform linux --version 0.1.0   # or windows / macos
 ```
 
@@ -77,4 +77,4 @@ The script downloads ECWolf's official prebuilt binary for the target platform f
 
 ## Licensing
 
-Random Wolf itself is MIT licensed (`LICENSE`). ECWolf is dual licensed by its authors under either the original id Software non-commercial license or GPLv2+; `packaging/make_release.py` only ever fetches and bundles the **GPL edition** (verified against ECWolf's own bundled `readme.1st`/license files, and against the fact that the Linux build is literally the Debian-archived package, which cannot legally carry the non-commercial edition). Prebuilt release packages include ECWolf's GPL license text and copyright notices under `THIRD_PARTY_LICENSES/ecwolf/`. ECWolf's source is at [github.com/ECWolfEngine/ECWolf](https://github.com/ECWolfEngine/ECWolf).
+InfiniWolf itself is MIT licensed (`LICENSE`). ECWolf is dual licensed by its authors under either the original id Software non-commercial license or GPLv2+; `packaging/make_release.py` only ever fetches and bundles the **GPL edition** (verified against ECWolf's own bundled `readme.1st`/license files, and against the fact that the Linux build is literally the Debian-archived package, which cannot legally carry the non-commercial edition). Prebuilt release packages include ECWolf's GPL license text and copyright notices under `THIRD_PARTY_LICENSES/ecwolf/`. ECWolf's source is at [github.com/ECWolfEngine/ECWolf](https://github.com/ECWolfEngine/ECWolf).

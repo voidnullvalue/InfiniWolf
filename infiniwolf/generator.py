@@ -2039,7 +2039,7 @@ def _mapinfo(secret_from: int) -> str:
     lines = [
         'gameinfo { drawreadthis = false }',
         'clearepisodes',
-        'episode "RW01" { name = "Random Wolf" key = "R" }',
+        'episode "IW01" { name = "InfiniWolf" key = "I" }',
     ]
     for number in range(1, 10):
         # ECWolf only recognizes "EndSequence:<id>" or "EndTitle" as a real
@@ -2047,14 +2047,14 @@ def _mapinfo(secret_from: int) -> str:
         # including the Doom/ZDoom-only "EndGameC" cast-call keyword this
         # used to say, is treated as a literal (nonexistent) map name and
         # crashes on exit once LevelInfo::Find fails to resolve it.
-        nxt = f'RW{number + 1:02d}' if number < 9 else 'EndTitle'
-        secret = ' secretnext = "RW10"' if number == secret_from else ''
+        nxt = f'IW{number + 1:02d}' if number < 9 else 'EndTitle'
+        secret = ' secretnext = "IW10"' if number == secret_from else ''
         ceiling = CEILINGS[(number - 1) % len(CEILINGS)]
         music = MUSIC[(number - 1) % len(MUSIC)]
         par = 90 + number * 30
-        lines.append(f'map "RW{number:02d}" "Random Floor {number}" {{ next = "{nxt}"{secret} '
+        lines.append(f'map "IW{number:02d}" "Random Floor {number}" {{ next = "{nxt}"{secret} '
                      f'levelnum = {number} par = {par} defaultceiling = "{ceiling}" music = "{music}" }}')
-    lines.append(f'map "RW10" "Secret Floor" {{ next = "RW{secret_from + 1:02d}" levelnum = 10 '
+    lines.append(f'map "IW10" "Secret Floor" {{ next = "IW{secret_from + 1:02d}" levelnum = 10 '
                  f'par = 360 defaultceiling = "{CEILINGS[4]}" music = "{MUSIC[5]}" }}')
     return "\n".join(lines) + "\n"
 
@@ -2090,7 +2090,7 @@ def generate_campaign(config: CampaignConfig, output: Path,
         if progress:
             progress(number, 10)
     manifest = {
-        "generator": "randomwolf", "version": __version__, "seed": config.seed,
+        "generator": "infiniwolf", "version": __version__, "seed": config.seed,
         "settings": json.loads(config.to_json()), "secret_from": secret_from,
         "floors": [{"number": level.number, "seed": level.seed,
                     "secrets": len(level.secret_rewards),
@@ -2122,10 +2122,10 @@ def generate_campaign(config: CampaignConfig, output: Path,
                 info.external_attr = 0o644 << 16
                 package.writestr(info, data)
             write("mapinfo.txt", _mapinfo(secret_from))
-            write("randomwolf-manifest.json", json.dumps(manifest, indent=2, sort_keys=True))
+            write("infiniwolf-manifest.json", json.dumps(manifest, indent=2, sort_keys=True))
             for level in levels:
-                write(f"maps/rw{level.number:02d}.wad",
-                      _wad_bytes(f"RW{level.number:02d}", level.tiles, level.things))
+                write(f"maps/iw{level.number:02d}.wad",
+                      _wad_bytes(f"IW{level.number:02d}", level.tiles, level.things))
         validate_package(temp_path)
         if cancelled and cancelled():
             raise GenerationCancelled("campaign generation cancelled")
@@ -2137,7 +2137,7 @@ def generate_campaign(config: CampaignConfig, output: Path,
 
 def read_manifest(package_path: Path) -> dict[str, object]:
     with zipfile.ZipFile(package_path) as package:
-        return json.loads(package.read("randomwolf-manifest.json"))
+        return json.loads(package.read("infiniwolf-manifest.json"))
 
 
 def validate_package(package_path: Path) -> dict[str, object]:
@@ -2147,13 +2147,13 @@ def validate_package(package_path: Path) -> dict[str, object]:
         if corrupt:
             raise ValueError(f"corrupt package entry: {corrupt}")
         names = set(package.namelist())
-        expected_maps = {f"maps/rw{number:02d}.wad" for number in range(1, 11)}
+        expected_maps = {f"maps/iw{number:02d}.wad" for number in range(1, 11)}
         if not expected_maps.issubset(names):
             raise ValueError("package is missing one or more campaign maps")
         forbidden = (".wl6", ".png", ".wav", ".ogg", ".voc")
         if any(name.lower().endswith(forbidden) for name in names):
             raise ValueError("package contains an asset file instead of map metadata")
-        manifest = json.loads(package.read("randomwolf-manifest.json"))
+        manifest = json.loads(package.read("infiniwolf-manifest.json"))
         if len(manifest.get("floors", ())) != 10:
             raise ValueError("manifest does not describe ten floors")
         for name in expected_maps:

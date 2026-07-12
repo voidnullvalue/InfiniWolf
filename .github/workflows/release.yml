@@ -52,17 +52,17 @@ jobs:
           echo "version=${ref#v}" >> "$GITHUB_OUTPUT"
 
       - name: Build GUI executable
-        run: pyinstaller --onefile --windowed --name RandomWolf run.py
+        run: pyinstaller --onefile --windowed --name InfiniWolf run.py
 
       - name: Build CLI executable
-        run: pyinstaller --onefile --name randomwolf-cli randomwolf_cli.py
+        run: pyinstaller --onefile --name infiniwolf-cli infiniwolf_cli.py
 
       - name: Assemble release package
         run: python packaging/make_release.py --platform ${{ matrix.platform }} --version ${{ steps.version.outputs.version }}
 
       - uses: actions/upload-artifact@v4
         with:
-          name: randomwolf-${{ matrix.platform }}
+          name: infiniwolf-${{ matrix.platform }}
           path: release/*.zip
 
   publish:

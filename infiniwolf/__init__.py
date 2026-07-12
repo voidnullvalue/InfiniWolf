@@ -1,4 +1,4 @@
-"""Random Wolf campaign generator."""
+"""InfiniWolf campaign generator."""
 
 __version__ = "0.1.0"
 

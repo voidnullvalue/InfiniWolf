@@ -9,7 +9,7 @@ Build a cross-platform Python desktop generator that creates a complete classic-
 - Refactor the useful WAD-writing and room-graph portions of `wolfenslop-src/build.py` into a new, clean generator core without Wolfslop textures, actors, or story content.
 - Add a Tkinter GUI with an optional seed, five-step generation controls, Generate and Play actions, progress/error reporting, and a generated-campaign summary.
 - Support Windows, macOS, and Linux path handling and ECWolf launching. Validate registered WL6 data but never copy it into generated packages.
-- Install generation atomically into a stable `randomwolf` campaign slot, retaining the previous valid output until its replacement passes validation.
+- Install generation atomically into a stable `infiniwolf` campaign slot, retaining the previous valid output until its replacement passes validation.
 
 ## Generation and Gameplay Rules
 

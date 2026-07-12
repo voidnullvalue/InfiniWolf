@@ -470,7 +470,7 @@ The strongest original examples are useful here. **Episode 2 Floor 2** is a caut
 
 ## Addendum (2026-07-12): room-shape patterns mined from real map corpora
 
-The sections above already cover pacing, threat, and resource balance in depth, and the current generator (`randomwolf/generator.py`) implements most of it. What is still missing is **room silhouette variety** — the thing that most immediately reads as "hand-designed" versus "boxes connected by hallways." This addendum is the result of two independent lines of evidence gathered specifically to close that gap.
+The sections above already cover pacing, threat, and resource balance in depth, and the current generator (`infiniwolf/generator.py`) implements most of it. What is still missing is **room silhouette variety** — the thing that most immediately reads as "hand-designed" versus "boxes connected by hallways." This addendum is the result of two independent lines of evidence gathered specifically to close that gap.
 
 ### Evidence 1: structural analysis of 254 real map files, 6277 rooms
 

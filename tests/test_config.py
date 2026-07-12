@@ -1,6 +1,6 @@
 import unittest
 
-from randomwolf.config import CampaignConfig, Intensity, resolve_seed
+from infiniwolf.config import CampaignConfig, Intensity, resolve_seed
 
 
 class ConfigTests(unittest.TestCase):

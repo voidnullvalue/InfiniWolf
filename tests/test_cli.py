@@ -2,7 +2,7 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from randomwolf.cli import main, parser
+from infiniwolf.cli import main, parser
 
 
 class CliTests(unittest.TestCase):

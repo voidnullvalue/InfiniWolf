@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Debug/inspection CLI for randomwolf maps.
+"""Debug/inspection CLI for infiniwolf maps.
 
 Renders an ASCII view of a single map plus a metrics block covering
 door-graph topology, room shape, corridor pacing, and enemy placement, so a
@@ -9,7 +9,7 @@ Wolf3D map corpus (WDC3.1 PWADs, planes 0/1) with --compare.
 Modes (pick exactly one):
   --seed SEED --floor N [--complexity 1-5]   generate a floor and inspect it
   --wad path/to/map.wad                      inspect one corpus WAD
-  --pk3 path/to/pack.pk3 [--floor N]         inspect maps/rwNN.wad from a pk3
+  --pk3 path/to/pack.pk3 [--floor N]         inspect maps/iwNN.wad from a pk3
   --compare DIR                              inspect every *.wad under DIR
                                               and print a summary table
 """
@@ -26,8 +26,8 @@ import zipfile
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from randomwolf import generator as G
-from randomwolf.config import CampaignConfig, Intensity
+from infiniwolf import generator as G
+from infiniwolf.config import CampaignConfig, Intensity
 
 # Native Wolf3D patrol variants (guard/officer/ss/dog stand codes + 4), each
 # repeated for the three skill tiers (+36 per tier) the translator supports.
@@ -109,7 +109,7 @@ def load_wad_file(path: Path) -> tuple[list[int], list[int]]:
     return parsed
 
 def load_pk3(path: Path, floor: int) -> tuple[list[int], list[int]]:
-    name = f"maps/rw{floor:02d}.wad"
+    name = f"maps/iw{floor:02d}.wad"
     with zipfile.ZipFile(path) as package:
         if name not in package.namelist():
             raise ValueError(f"{path}: no {name} inside this package")
@@ -360,13 +360,13 @@ def compare_corpus(directory: Path) -> int:
 # --------------------------------------------------------------------------- CLI
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Inspect randomwolf/corpus Wolf3D maps.")
+    parser = argparse.ArgumentParser(description="Inspect infiniwolf/corpus Wolf3D maps.")
     parser.add_argument("--seed", help="deterministic seed for --floor generation")
     parser.add_argument("--floor", type=int, help="floor number (1-10)")
     parser.add_argument("--complexity", type=int, choices=range(1, 6),
                         help="layout_complexity intensity (1-5) for --seed generation")
     parser.add_argument("--wad", type=Path, help="path to a corpus WDC3.1 PWAD")
-    parser.add_argument("--pk3", type=Path, help="path to a generated randomwolf .pk3 package")
+    parser.add_argument("--pk3", type=Path, help="path to a generated infiniwolf .pk3 package")
     parser.add_argument("--compare", type=Path, help="recursively inspect every *.wad under DIR")
     parser.add_argument("--json", action="store_true", help="emit metrics as JSON, suppress render")
     return parser

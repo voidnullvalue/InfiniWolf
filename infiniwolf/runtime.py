@@ -26,7 +26,7 @@ def settings_dir() -> Path:
         root = Path.home() / "Library/Application Support"
     else:
         root = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
-    return root / "randomwolf"
+    return root / "infiniwolf"
 
 
 def discover_settings() -> AppSettings:
@@ -44,9 +44,9 @@ def discover_settings() -> AppSettings:
                    if (root / name).is_file()), None)
     data = next((root for root in data_roots if not validate_wl6_data(root)), None)
     if data is not None and (data.parent / "mods/installed").is_dir():
-        output = data.parent / "mods/installed/randomwolf/randomwolf.pk3"
+        output = data.parent / "mods/installed/infiniwolf/infiniwolf.pk3"
     else:
-        output = Path.home() / "RandomWolf" / "randomwolf.pk3"
+        output = Path.home() / "InfiniWolf" / "infiniwolf.pk3"
     return AppSettings(str(ecwolf) if ecwolf is not None else "",
                        str(data) if data is not None else "", str(output))
 

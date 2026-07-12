@@ -4,10 +4,10 @@ import tempfile
 import unittest
 import zipfile
 
-from randomwolf.config import CampaignConfig, Intensity
-from randomwolf.generator import GenerationCancelled, generate_campaign, generate_map, validate_map, validate_package
-from randomwolf.generator import ELEVATOR_TILE, GOLD_KEY, HANS_GROSSE, SECRET_EXIT_ZONE, _at, _reachable
-from randomwolf.generator import FLOOR, ZONE_MAX
+from infiniwolf.config import CampaignConfig, Intensity
+from infiniwolf.generator import GenerationCancelled, generate_campaign, generate_map, validate_map, validate_package
+from infiniwolf.generator import ELEVATOR_TILE, GOLD_KEY, HANS_GROSSE, SECRET_EXIT_ZONE, _at, _reachable
+from infiniwolf.generator import FLOOR, ZONE_MAX
 
 
 class GeneratorTests(unittest.TestCase):
@@ -31,7 +31,7 @@ class GeneratorTests(unittest.TestCase):
                 names = package.namelist()
                 self.assertEqual(len([name for name in names if name.endswith(".wad")]), 10)
                 self.assertFalse(any(name.lower().endswith((".png", ".wav", ".wl6")) for name in names))
-                manifest = json.loads(package.read("randomwolf-manifest.json"))
+                manifest = json.loads(package.read("infiniwolf-manifest.json"))
                 self.assertEqual(manifest["seed"], config.seed)
                 self.assertTrue(all(floor["validation"]["passed"] for floor in manifest["floors"]))
                 self.assertIn("par =", package.read("mapinfo.txt").decode("utf-8"))

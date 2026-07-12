@@ -11,9 +11,9 @@ from .generator import generate_campaign
 
 
 def parser() -> argparse.ArgumentParser:
-    result = argparse.ArgumentParser(prog="randomwolf", description="Generate a WL6 campaign for ECWolf.")
+    result = argparse.ArgumentParser(prog="infiniwolf", description="Generate a WL6 campaign for ECWolf.")
     result.add_argument("--seed", help="Integer, 0x-prefixed integer, or stable text seed; blank uses time")
-    result.add_argument("--output", type=Path, default=Path.cwd() / "randomwolf.pk3")
+    result.add_argument("--output", type=Path, default=Path.cwd() / "infiniwolf.pk3")
     for name in ("guard-density", "enemy-toughness", "supplies", "treasure",
                  "secrets", "locked-doors", "layout-complexity"):
         result.add_argument(f"--{name}", type=int, choices=range(1, 6), default=3,

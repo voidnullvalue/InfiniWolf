@@ -9,8 +9,8 @@ failure mode it exists to catch.
 from collections import deque
 import unittest
 
-from randomwolf.config import CampaignConfig
-from randomwolf.generator import DOORS, GRID, _at, _is_floor, generate_map
+from infiniwolf.config import CampaignConfig
+from infiniwolf.generator import DOORS, GRID, _at, _is_floor, generate_map
 
 
 def _generate_with_retries(config: CampaignConfig, floor: int, attempts: int = 50):

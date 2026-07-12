@@ -3,16 +3,16 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "randomwolf"
+name = "infiniwolf"
 version = "0.1.0"
 description = "Seeded Wolfenstein 3D campaign generator for ECWolf"
 requires-python = ">=3.11"
 license = {text = "MIT"}
 
 [project.scripts]
-randomwolf = "randomwolf.cli:main"
-randomwolf-gui = "randomwolf.gui:main"
+infiniwolf = "infiniwolf.cli:main"
+infiniwolf-gui = "infiniwolf.gui:main"
 
 [tool.setuptools]
-packages = ["randomwolf"]
+packages = ["infiniwolf"]
 

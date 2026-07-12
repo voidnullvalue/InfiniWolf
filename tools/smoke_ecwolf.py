@@ -12,8 +12,8 @@ import tempfile
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from randomwolf import CampaignConfig, generate_campaign
-from randomwolf.paths import validate_ecwolf, validate_wl6_data
+from infiniwolf import CampaignConfig, generate_campaign
+from infiniwolf.paths import validate_ecwolf, validate_wl6_data
 
 
 def main() -> int:
@@ -26,9 +26,9 @@ def main() -> int:
     errors = validate_ecwolf(args.ecwolf) + validate_wl6_data(args.data)
     if errors:
         parser.error("; ".join(errors))
-    with tempfile.TemporaryDirectory(prefix="randomwolf-smoke-") as directory:
+    with tempfile.TemporaryDirectory(prefix="infiniwolf-smoke-") as directory:
         root = Path(directory)
-        package = generate_campaign(CampaignConfig.with_seed(args.seed), root / "randomwolf.pk3")
+        package = generate_campaign(CampaignConfig.with_seed(args.seed), root / "infiniwolf.pk3")
         environment = os.environ.copy()
         environment.setdefault("SDL_VIDEODRIVER", "dummy")
         environment.setdefault("SDL_AUDIODRIVER", "dummy")

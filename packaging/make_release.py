@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Assemble a per-platform release .zip: PyInstaller output for randomwolf
+"""Assemble a per-platform release .zip: PyInstaller output for infiniwolf
 plus a pinned, checksum-verified copy of ECWolf's official GPL-edition build.
 
 Never bundles Wolfenstein 3D game data. The generated .zip is meant to be
@@ -114,12 +114,12 @@ def _dist_binary(dist: Path, name: str, platform: str) -> Path:
 
 
 README_TEMPLATE = """\
-Random Wolf {version} ({platform})
+InfiniWolf {version} ({platform})
 ====================================
 
 1. Unpack this entire folder next to your own legally owned, registered
    copy of Wolfenstein 3D (the WL6 data files), or copy its contents into
-   that folder. Random Wolf never includes any Wolfenstein 3D game data --
+   that folder. InfiniWolf never includes any Wolfenstein 3D game data --
    you must supply your own.
 2. Run {gui_binary} and choose your generation settings.
 3. Click Generate, then Play. It launches the bundled ECWolf ({ecwolf_version},
@@ -128,7 +128,7 @@ Random Wolf {version} ({platform})
 {cli_binary} is the same generator as a scriptable command-line tool; run it
 with --help for options.
 
-Licensing: Random Wolf is MIT licensed (see LICENSE). The bundled ECWolf
+Licensing: InfiniWolf is MIT licensed (see LICENSE). The bundled ECWolf
 engine is GPLv2+ licensed; see THIRD_PARTY_LICENSES/ecwolf for its license
 text and copyright notices, and https://github.com/ECWolfEngine/ECWolf for
 its source.
@@ -138,20 +138,20 @@ its source.
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--platform", required=True, choices=("windows", "linux", "macos"))
-    parser.add_argument("--version", required=True, help="randomwolf release version, e.g. 0.2.0")
+    parser.add_argument("--version", required=True, help="infiniwolf release version, e.g. 0.2.0")
     parser.add_argument("--dist", type=Path, default=Path("dist"), help="PyInstaller output directory")
     parser.add_argument("--repo-root", type=Path, default=Path("."))
     parser.add_argument("--out", type=Path, default=Path("release"))
     args = parser.parse_args()
 
-    package_name = f"RandomWolf-{args.version}-{args.platform}"
+    package_name = f"InfiniWolf-{args.version}-{args.platform}"
     staging = args.out / package_name
     if staging.exists():
         shutil.rmtree(staging)
     staging.mkdir(parents=True)
 
-    gui_src = _dist_binary(args.dist, "RandomWolf", args.platform)
-    cli_src = _dist_binary(args.dist, "randomwolf-cli", args.platform)
+    gui_src = _dist_binary(args.dist, "InfiniWolf", args.platform)
+    cli_src = _dist_binary(args.dist, "infiniwolf-cli", args.platform)
     for src in (gui_src, cli_src):
         if not src.exists():
             raise SystemExit(f"expected PyInstaller output missing: {src}")

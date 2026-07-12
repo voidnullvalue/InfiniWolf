@@ -1,1 +1,1 @@
-"""RandomWolf test suite."""
+"""InfiniWolf test suite."""

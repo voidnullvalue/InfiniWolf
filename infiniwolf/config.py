@@ -36,7 +36,7 @@ class CampaignConfig:
     def floor_seed(self, floor: int, attempt: int = 0) -> int:
         if not 1 <= floor <= 10:
             raise ValueError("floor must be between 1 and 10")
-        payload = f"randomwolf:v1:{self.seed}:{floor}:{attempt}".encode("ascii")
+        payload = f"infiniwolf:v1:{self.seed}:{floor}:{attempt}".encode("ascii")
         return int.from_bytes(hashlib.blake2b(payload, digest_size=8).digest(), "little")
 
     def to_json(self) -> str:

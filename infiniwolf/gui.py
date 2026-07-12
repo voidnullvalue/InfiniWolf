@@ -28,7 +28,7 @@ class App(ttk.Frame):
     def __init__(self, master: tk.Tk) -> None:
         super().__init__(master, padding=16)
         self.grid(sticky="nsew")
-        master.title("Random Wolf Campaign Generator")
+        master.title("InfiniWolf Campaign Generator")
         master.columnconfigure(0, weight=1)
         master.rowconfigure(0, weight=1)
         self.seed = tk.StringVar()
@@ -131,7 +131,7 @@ class App(ttk.Frame):
                 return
             self.after(0, self._generation_finished, output)
 
-        threading.Thread(target=work, name="randomwolf-generator", daemon=True).start()
+        threading.Thread(target=work, name="infiniwolf-generator", daemon=True).start()
 
     def _progress(self, current: int, total: int) -> None:
         self.status.set(f"Generated and validated floor {current} of {total}…")
