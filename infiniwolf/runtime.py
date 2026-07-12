@@ -87,7 +87,8 @@ def validate_settings(settings: AppSettings, require_output: bool = True) -> lis
 
 
 def launch_command(settings: AppSettings) -> list[str]:
-    return [settings.ecwolf, "--data", "wl6", "--file", str(Path(settings.output).expanduser().resolve())]
+    return [settings.ecwolf, "--data", "wl6", "--file", str(Path(settings.output).expanduser().resolve()),
+            "--fullscreen"]
 
 
 def launch_ecwolf(settings: AppSettings) -> subprocess.Popen[bytes]:

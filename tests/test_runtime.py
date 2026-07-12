@@ -29,6 +29,7 @@ class RuntimeTests(unittest.TestCase):
             self.assertEqual(validate_settings(settings), [])
             command = launch_command(settings)
             self.assertEqual(command[:4], [str(executable), "--data", "wl6", "--file"])
+            self.assertIn("--fullscreen", command)
 
 
 if __name__ == "__main__":
