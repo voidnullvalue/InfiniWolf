@@ -46,9 +46,15 @@ GUARDS = (108, 109, 110, 111)
 OFFICERS = (116, 117, 118, 119)
 SS = (126, 127, 128, 129)
 DOGS = (134, 135, 136, 137)
+PATROL_GUARDS = tuple(code + 4 for code in GUARDS)
+PATROL_OFFICERS = tuple(code + 4 for code in OFFICERS)
+PATROL_SS = tuple(code + 4 for code in SS)
+PATROL_DOGS = tuple(code + 4 for code in DOGS)
 AMMO, FOOD, FIRST_AID, MACHINE_GUN, CHAINGUN = 49, 47, 48, 50, 51
 TREASURE = (52, 53, 54, 55)
-ENEMY_CODES = frozenset(code + tier * 36 for family in (GUARDS, OFFICERS, SS, DOGS)
+ENEMY_CODES = frozenset(code + tier * 36
+                        for family in (GUARDS, OFFICERS, SS, DOGS,
+                                       PATROL_GUARDS, PATROL_OFFICERS, PATROL_SS, PATROL_DOGS)
                         for code in family for tier in range(3)) | {HANS_GROSSE}
 
 # Threat-weighted roster: (name, thing codes, base frequency weight, expected
@@ -61,9 +67,12 @@ ENEMY_FAMILIES = (
     ("officer", OFFICERS, 3, 3.0),
     ("ss", SS, 1, 6.0),
 )
+PATROLS_BY_FAMILY = dict(zip((GUARDS, OFFICERS, SS, DOGS),
+                             (PATROL_GUARDS, PATROL_OFFICERS, PATROL_SS, PATROL_DOGS)))
 FAMILY_BY_CODE = {code + 36 * tier: family
                   for _, family, _, _ in ENEMY_FAMILIES
-                  for code in family for tier in range(3)}
+                  for variant in (family, PATROLS_BY_FAMILY[family])
+                  for code in variant for tier in range(3)}
 AMMO_COST = {family: cost for _, family, _, cost in ENEMY_FAMILIES}
 
 # Native WL6 wall tiles only. Each tuple is (base, room accents).
@@ -168,10 +177,17 @@ def _rooms(rng: random.Random, count: int) -> list[Room]:
     for _ in range(count * 100):
         if len(result) == count:
             break
-        # Rooms stay compact combat cells (the report's door-delimited room
-        # model); the rock left between them is what corridors wind through.
-        room = Room(rng.randrange(3, 51), rng.randrange(3, 52),
-                    rng.randrange(6, 10), rng.randrange(6, 10))
+        # Small side cells carry the real-map room count without consuming
+        # the rock buffers that keep thresholds and secrets unambiguous.
+        tier = rng.random()
+        if tier < 0.30:
+            w, h = rng.randrange(4, 6), rng.randrange(4, 6)
+        elif tier < 0.55:
+            major, minor = rng.randrange(9, 14), rng.randrange(5, 8)
+            w, h = ((major, minor) if rng.random() < 0.5 else (minor, major))
+        else:
+            w, h = rng.randrange(6, 10), rng.randrange(6, 10)
+        room = Room(rng.randrange(3, 51), rng.randrange(3, 52), w, h)
         if room.x + room.w >= 61 or room.y + room.h >= 61:
             continue
         if not any(_overlaps(room, other) for other in result):
@@ -179,6 +195,90 @@ def _rooms(rng: random.Random, count: int) -> list[Room]:
     if len(result) < 8:
         raise ValueError("could not place enough rooms")
     return result
+
+
+def _carve_notches(tiles: list[int], rooms: list[Room], rng: random.Random,
+                   chance: float = 0.35) -> None:
+    for room in rooms:
+        if room.w < 6 or room.h < 6 or rng.random() >= chance:
+            continue
+        corners = [(False, False), (True, False), (False, True), (True, True)]
+        rng.shuffle(corners)
+        # The untouched center row and column join every remaining quadrant;
+        # even two bites therefore cannot split the room.
+        count = 2 if rng.random() < 0.25 else 1
+        for right, bottom in corners[:count]:
+            nw = rng.randint(2, min(3, (room.w - 2) // 2))
+            nh = rng.randint(2, min(3, (room.h - 2) // 2))
+            nx = room.x + room.w - nw if right else room.x
+            ny = room.y + room.h - nh if bottom else room.y
+            for y in range(ny, ny + nh):
+                for x in range(nx, nx + nw):
+                    _set(tiles, x, y, WALL)
+
+
+def _carve_alcoves(tiles: list[int], rooms: list[Room], rng: random.Random,
+                   chance: float = 0.3) -> None:
+    established = list(rooms)
+    for room in rooms:
+        if rng.random() >= chance:
+            continue
+        span, depth = rng.randrange(2, 4), rng.randrange(2, 4)
+        directions = [(0, -1), (0, 1), (-1, 0), (1, 0)]
+        rng.shuffle(directions)
+        for dx, dy in directions:
+            if dx:
+                bx = room.x - depth if dx < 0 else room.x + room.w
+                by = room.y + (room.h - span) // 2
+                bump = Room(bx, by, depth, span)
+            else:
+                bx = room.x + (room.w - span) // 2
+                by = room.y - depth if dy < 0 else room.y + room.h
+                bump = Room(bx, by, span, depth)
+            if not (1 <= bump.x and bump.x + bump.w <= GRID - 1 and
+                    1 <= bump.y and bump.y + bump.h <= GRID - 1):
+                continue
+            # The normal rock buffer keeps a niche from quietly joining a
+            # neighboring room or another room's niche into a shortcut.
+            if any(other != room and _overlaps(bump, other, pad=2)
+                   for other in established):
+                continue
+            for y in range(bump.y, bump.y + bump.h):
+                for x in range(bump.x, bump.x + bump.w):
+                    _set(tiles, x, y, FLOOR)
+            established.append(bump)
+            break
+
+
+def _add_pillars(tiles: list[int], room: Room, rng: random.Random,
+                 chance: float = 0.4) -> None:
+    if room.w < 7 or room.h < 7 or rng.random() >= chance:
+        return
+    cx, cy = room.center
+    if rng.random() < 0.7:
+        patterns = []
+        for dx, dy in ((1, 0), (0, 1)):
+            for offset in range(1, max(room.w, room.h)):
+                cells = ((cx - dx * offset, cy - dy * offset),
+                         (cx + dx * offset, cy + dy * offset))
+                if all(room.x + 2 <= x < room.x + room.w - 2 and
+                       room.y + 2 <= y < room.y + room.h - 2 for x, y in cells):
+                    patterns.append(cells)
+    else:
+        patterns = [((x, y),) for y in range(room.y + 2, room.y + room.h - 2)
+                    for x in range(room.x + 2, room.x + room.w - 2)
+                    if (x, y) != (cx, cy)]
+    rng.shuffle(patterns)
+    for cells in patterns:
+        # Four open flanks make each wall-plane column an island, never a
+        # barrier; checking late also rejects spots touched by a notch.
+        if all(_is_floor(_at(tiles, x, y)) and
+               all(_is_floor(_at(tiles, x + dx, y + dy))
+                   for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)))
+               for x, y in cells):
+            for x, y in cells:
+                _set(tiles, x, y, WALL)
+            return
 
 
 def _tree(rooms: list[Room]) -> list[tuple[int, int]]:
@@ -581,8 +681,10 @@ def _assign_sound_zones(tiles: list[int]) -> int:
     Floor code 107 is skipped: it is the secret-exit modzone and must keep
     its exact value for the translator to rewrite the adjacent switch."""
     components = _floor_components(tiles)
+    if len(components) > ZONE_MAX - FLOOR + 1:
+        raise ValueError("sound-zone budget exceeded")
     for zone_count, component in enumerate(components):
-        zone = FLOOR + (zone_count % (ZONE_MAX - FLOOR + 1))
+        zone = FLOOR + zone_count
         for x, y in component:
             _set(tiles, x, y, zone)
     return len(components)
@@ -677,6 +779,8 @@ def _place_elevator(tiles: list[int], room: Room, locked: bool = False) -> tuple
     candidates = [(wx, wy, dx) for wy in offsets
                   for wx, dx in ((room.x + room.w, 1), (room.x - 1, -1))]
     for wx, wy, dx in candidates:
+        if not _is_floor(_at(tiles, wx - dx, wy)):
+            continue
         footprint = [(wx + dx * depth, wy + side)
                      for depth in range(4) for side in (-1, 0, 1)]
         if any(not (1 <= x < GRID - 1 and 1 <= y < GRID - 1) or _at(tiles, x, y) != WALL
@@ -744,9 +848,84 @@ def _carve_secret_pocket(tiles: list[int], things: list[int], px: int, py: int,
     return reward
 
 
+def _floor_distances(tiles: list[int], start: tuple[int, int]) -> dict[tuple[int, int], int]:
+    distances = {start: 0}
+    queue = deque([start])
+    while queue:
+        x, y = queue.popleft()
+        for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+            nxt = x + dx, y + dy
+            if nxt in distances:
+                continue
+            tile = _at(tiles, *nxt)
+            if _is_floor(tile) or tile in DOORS:
+                distances[nxt] = distances[(x, y)] + 1
+                queue.append(nxt)
+    return distances
+
+
+def _break_long_sightlines(tiles: list[int], things: list[int], rooms: list[Room],
+                           reserved: set[tuple[int, int]], rng: random.Random,
+                           start: tuple[int, int],
+                           max_run: int = 16) -> int:
+    centers = {room.center for room in rooms}
+    doors = {(x, y) for y in range(GRID) for x in range(GRID)
+             if _at(tiles, x, y) in DOORS}
+
+    def runs() -> list[list[tuple[int, int]]]:
+        found = []
+        for horizontal in (True, False):
+            for fixed in range(GRID):
+                run: list[tuple[int, int]] = []
+                for moving in range(GRID + 1):
+                    x, y = ((moving, fixed) if horizontal else (fixed, moving))
+                    if moving < GRID and _is_floor(_at(tiles, x, y)):
+                        run.append((x, y))
+                    else:
+                        if len(run) > max_run:
+                            found.append(run)
+                        run = []
+        return found
+
+    placed = 0
+    while True:
+        baseline = _reachable(tiles, start, locked_open=True)
+        changed = False
+        for run in runs():
+            midpoint = (len(run) - 1) / 2
+            candidates = list(enumerate(run))
+            rng.shuffle(candidates)
+            candidates.sort(key=lambda item: abs(item[0] - midpoint))
+            for _, (x, y) in candidates:
+                if (x, y) in centers or (x, y) in reserved or _at(things, x, y):
+                    continue
+                if (x, y) not in baseline:
+                    continue
+                if any(abs(x - dx) <= 1 and abs(y - dy) <= 1 for dx, dy in doors):
+                    continue
+                # Open flanks keep cover as an island while the middle bias
+                # breaks the most exposed portion of the lane first.
+                if not all(_is_floor(_at(tiles, x + dx, y + dy))
+                           for dx, dy in ((0, 0), (1, 0), (-1, 0), (0, 1), (0, -1))):
+                    continue
+                original = _at(tiles, x, y)
+                _set(tiles, x, y, WALL)
+                if _reachable(tiles, start, locked_open=True) != baseline - {(x, y)}:
+                    _set(tiles, x, y, original)
+                    continue
+                placed += 1
+                changed = True
+                break
+            if changed:
+                break
+        if not changed:
+            return placed
+
+
 def _place_population(config: CampaignConfig, number: int, rooms: list[Room],
                       tiles: list[int], things: list[int], reserved: set[tuple[int, int]],
-                      rng: random.Random) -> tuple[int, int, int]:
+                      rng: random.Random, start: tuple[int, int],
+                      exit_room: Room) -> tuple[int, int, int]:
     progression = (number - 1) / 8
     per_room = max(1, round(config.guard_density * .7 + progression * 2))
     toughness = int(config.enemy_toughness)
@@ -762,38 +941,70 @@ def _place_population(config: CampaignConfig, number: int, rooms: list[Room],
     def near_door(x: int, y: int, radius: int = 3) -> bool:
         return any(abs(x - dx) + abs(y - dy) <= radius for dx, dy in doors)
 
-    def pick_family() -> tuple[str, tuple[int, ...]]:
+    def pick_family(depth: float) -> tuple[str, tuple[int, ...]]:
         # Guards stay the common baseline; officers/SS grow more common as
-        # the campaign progresses instead of matching the pistol-start opener.
-        weights = [weight * (1 + progression) if name in ("officer", "ss") else weight
+        # the campaign progresses, then concentrate where the floor peaks.
+        elite_scale = 0.45 if depth < 0.2 else (1.35 if 0.6 <= depth <= 0.85 else 1.0)
+        weights = [weight * (1 + progression) * elite_scale
+                   if name in ("officer", "ss") else weight
                    for name, weight in zip(names, base_weights)]
         index = rng.choices(range(len(families)), weights=weights, k=1)[0]
         return names[index], families[index]
 
+    facings = ((0, -1), (1, 0), (0, 1), (-1, 0))
+
+    def place_enemy(x: int, y: int, depth: float, tier: int) -> None:
+        name, family = pick_family(depth)
+        if name in ("officer", "ss") and near_door(x, y):
+            name, family = "guard", GUARDS
+        facing = rng.randrange(4)
+        open_facings = [index for index, (dx, dy) in enumerate(facings)
+                        if _is_floor(_at(tiles, x + dx, y + dy))]
+        patrol = name in ("guard", "dog") and open_facings and rng.random() < 0.25
+        if patrol:
+            facing = rng.choice(open_facings)
+            family = PATROLS_BY_FAMILY[family]
+        _set(things, x, y, family[facing] + 36 * tier)
+
+    distances = _floor_distances(tiles, start)
+    room_distances = {room: distances.get(room.center, 0) for room in rooms}
+    max_distance = max(room_distances.values(), default=1) or 1
+
+    def depth_of(room: Room) -> float:
+        return room_distances[room] / max_distance
+
+    def pacing(depth: float) -> float:
+        if depth < 0.2:
+            return 0.4
+        if depth < 0.6:
+            return 0.4 + (depth - 0.2) * 2.75
+        if depth <= 0.85:
+            return 1.5
+        if depth < 0.9:
+            return 1.5 - (depth - 0.85) * 14
+        return 0.8
+
     tier_counts = [0, 0, 0]
     for ridx, room in enumerate(rooms[1:], 1):
+        depth = depth_of(room)
+        budget = max(0, round(per_room * (0.4 if room == exit_room else pacing(depth))))
         candidates = [(x, y) for y in range(room.y + 2, room.y + room.h - 1)
                       for x in range(room.x + 2, room.x + room.w - 1)
-                      if (x, y) not in reserved and _at(things, x, y) == 0]
+                      if (x, y) not in reserved and _at(things, x, y) == 0
+                      and _is_floor(_at(tiles, x, y))]
         rng.shuffle(candidates)
         cursor = 0
-        for x, y in candidates[cursor:cursor + per_room]:
-            name, family = pick_family()
-            if name in ("officer", "ss") and near_door(x, y):
-                family = GUARDS
-            _set(things, x, y, rng.choice(family))
+        for x, y in candidates[cursor:cursor + budget]:
+            place_enemy(x, y, depth, 0)
             tier_counts[0] += 1
-        cursor += per_room
+        cursor += budget
         # ECWolf's base translator treats +36 as the next cumulative skill
         # tier: skill 2 actors join the easy population on medium, and skill 3
         # actors join both on hard. They require their own cells in plane 2.
-        extra = max(0, round(per_room * (0.20 + progression * 0.12)))
+        extra = max(0, round(budget * (0.20 + progression * 0.12)))
         for tier in (1, 2):
             for x, y in candidates[cursor:cursor + extra]:
-                name, family = pick_family()
-                if name in ("officer", "ss") and near_door(x, y):
-                    family = GUARDS
-                _set(things, x, y, rng.choice(family) + 36 * tier)
+                place_enemy(x, y, depth, tier)
                 tier_counts[tier] += 1
             cursor += extra
         if candidates[cursor:]:
@@ -802,12 +1013,26 @@ def _place_population(config: CampaignConfig, number: int, rooms: list[Room],
                 _set(things, x, y, rng.choice((AMMO, FOOD, FIRST_AID)))
             elif ridx % max(2, 7 - int(config.treasure)) == 1:
                 _set(things, x, y, rng.choice(TREASURE))
-    _guarantee_supplies(config, rooms, things, reserved, rng)
+    recovery_rooms = sorted((room for room in rooms if 0.85 < depth_of(room) < 1.0
+                             and room != exit_room), key=depth_of)
+    if recovery_rooms:
+        room = recovery_rooms[0]
+        nearby = _floor_distances(tiles, room.center)
+        if not any(thing in (AMMO, FIRST_AID) and nearby.get((index % GRID, index // GRID), 13) <= 12
+                   for index, thing in enumerate(things)):
+            candidates = [(x, y) for y in range(room.y + 1, room.y + room.h - 1)
+                          for x in range(room.x + 1, room.x + room.w - 1)
+                          if (x, y) not in reserved and _at(things, x, y) == 0
+                          and _is_floor(_at(tiles, x, y))]
+            if candidates:
+                _set(things, *rng.choice(candidates), rng.choice((AMMO, FIRST_AID)))
+    _guarantee_supplies(config, rooms, tiles, things, reserved, rng)
     return tuple(tier_counts)
 
 
-def _guarantee_supplies(config: CampaignConfig, rooms: list[Room], things: list[int],
-                        reserved: set[tuple[int, int]], rng: random.Random) -> None:
+def _guarantee_supplies(config: CampaignConfig, rooms: list[Room], tiles: list[int],
+                        things: list[int], reserved: set[tuple[int, int]],
+                        rng: random.Random) -> None:
     """Ammo floor follows the report's expected-bullet-sink model: sum each
     placed enemy's AMMO_COST, then require a fresh pistol start (8 rounds
     plus 8 per map clip) to clear that total with a 1.2-1.4x margin. Health
@@ -823,7 +1048,8 @@ def _guarantee_supplies(config: CampaignConfig, rooms: list[Room], things: list[
     health_now = things.count(FOOD) + things.count(FIRST_AID)
     available = [(x, y) for room in rooms for y in range(room.y + 1, room.y + room.h - 1)
                  for x in range(room.x + 1, room.x + room.w - 1)
-                 if (x, y) not in reserved and _at(things, x, y) == 0]
+                 if (x, y) not in reserved and _at(things, x, y) == 0
+                 and _is_floor(_at(tiles, x, y))]
     rng.shuffle(available)
     for thing in [AMMO] * ammo_target + [FIRST_AID] * max(0, health_target - health_now):
         if not available:
@@ -881,8 +1107,10 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
             continue
         cx, _ = room.center
         interior = {(x, y) for x in range(room.x + 1, room.x + room.w - 1)
-                    for y in range(room.y + 1, room.y + room.h - 1)}
-        free = {cell for cell in interior - reserved if _at(things, *cell) == 0}
+                    for y in range(room.y + 1, room.y + room.h - 1)
+                    if _is_floor(_at(tiles, x, y))}
+        free = {cell for cell in interior - reserved
+                if _at(things, *cell) == 0 and _is_floor(_at(tiles, *cell))}
         pairs = [((x, y), (2 * cx - x, y)) for x, y in free
                  if x < cx and (2 * cx - x, y) in free]
         rng.shuffle(pairs)
@@ -907,17 +1135,19 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
             reserved.add(cell)
 
 
-def _place_boss(things: list[int], room: Room, reserved: set[tuple[int, int]]) -> None:
+def _place_boss(tiles: list[int], things: list[int], room: Room,
+                reserved: set[tuple[int, int]]) -> None:
     cx, cy = room.center
     positions = [(cx, cy), (cx + 1, cy), (cx - 1, cy), (cx, cy + 1), (cx, cy - 1)]
     bx, by = next(((x, y) for x, y in positions
-                   if (x, y) not in reserved and _at(things, x, y) == 0), (cx, cy))
+                   if (x, y) not in reserved and _at(things, x, y) == 0
+                   and _is_floor(_at(tiles, x, y))), (cx, cy))
     _set(things, bx, by, HANS_GROSSE)
     reserved.add((bx, by))
     supplies = ((cx - 2, cy - 2, FIRST_AID), (cx + 2, cy - 2, FIRST_AID),
                 (cx - 2, cy + 2, AMMO), (cx + 2, cy + 2, AMMO))
     for x, y, thing in supplies:
-        if _at(things, x, y) == 0:
+        if _at(things, x, y) == 0 and _is_floor(_at(tiles, x, y)):
             _set(things, x, y, thing)
             reserved.add((x, y))
 
@@ -929,12 +1159,16 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
     tiles = [WALL] * (GRID * GRID)
     things = [0] * (GRID * GRID)
     complexity = int(config.layout_complexity)
-    count = min(17, 9 + complexity + number // 3)
+    count = min(24, 13 + 2 * complexity + number // 3)
     rooms = _rooms(rng, count)
     for room in rooms:
         for y in range(room.y, room.y + room.h):
             for x in range(room.x, room.x + room.w):
                 _set(tiles, x, y, FLOOR)
+    _carve_notches(tiles, rooms, rng)
+    _carve_alcoves(tiles, rooms, rng)
+    for room in rooms:
+        _add_pillars(tiles, room, rng)
     tree_edges = _tree(rooms)
     # A few loop corridors give real route choices, but every loop is also
     # a shortcut that shrinks the critical path, so they stay scarce.
@@ -977,11 +1211,15 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
     locks = _place_doors(config, tiles, things, rooms, paths, rng, start, exit_stand,
                          allow_locks=not is_boss)
     _split_oversized_zones(tiles, rooms, rng)
+    if sum(tile in DOORS for tile in tiles) > 56:
+        raise ValueError("door budget exceeded")
+    _break_long_sightlines(tiles, things, rooms, reserved, rng, start)
     if is_boss:
         boss_room = max((room for room in rooms[1:] if room != exit_room), key=lambda room: room.w * room.h)
-        _place_boss(things, boss_room, reserved)
+        _place_boss(tiles, things, boss_room, reserved)
         locks += 1
-    enemy_tiers = _place_population(config, number, rooms, tiles, things, reserved, rng)
+    enemy_tiers = _place_population(config, number, rooms, tiles, things, reserved, rng,
+                                    start, exit_room)
     _ensure_early_heal(tiles, things, rooms, start, reserved, rng)
     _place_decorations(rooms, tiles, things, reserved, start, rng)
     _assign_sound_zones(tiles)
