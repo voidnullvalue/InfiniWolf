@@ -2,6 +2,8 @@ name: Release
 
 on:
   push:
+    branches:
+      - main
     tags:
       - "v[0-9]+.[0-9]+.[0-9]+"
   workflow_dispatch: {}
@@ -48,8 +50,11 @@ jobs:
         id: version
         shell: bash
         run: |
-          ref="${GITHUB_REF_NAME:-dev}"
-          echo "version=${ref#v}" >> "$GITHUB_OUTPUT"
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=dev-${GITHUB_SHA:0:7}" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Build GUI executable
         run: pyinstaller --onefile --windowed --name InfiniWolf run.py
@@ -66,16 +71,43 @@ jobs:
           path: release/*.zip
 
   publish:
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: github.event_name == 'push'
     needs: build
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/download-artifact@v4
         with:
           path: release
           merge-multiple: true
+
+      - name: Resolve release target
+        id: target
+        shell: bash
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            echo "tag=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+            echo "prerelease=false" >> "$GITHUB_OUTPUT"
+            echo "title=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=nightly" >> "$GITHUB_OUTPUT"
+            echo "prerelease=true" >> "$GITHUB_OUTPUT"
+            echo "title=Nightly build (${GITHUB_SHA:0:7})" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Clear previous nightly release
+        if: steps.target.outputs.tag == 'nightly'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release delete nightly --yes --cleanup-tag --repo "${{ github.repository }}" || true
+
       - name: Create GitHub release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ steps.target.outputs.tag }}
+          name: ${{ steps.target.outputs.title }}
+          prerelease: ${{ steps.target.outputs.prerelease }}
+          make_latest: ${{ steps.target.outputs.prerelease == 'false' }}
           files: release/*.zip
           generate_release_notes: true
