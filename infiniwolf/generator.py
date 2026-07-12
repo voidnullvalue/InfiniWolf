@@ -481,19 +481,16 @@ def _add_pillars(tiles: list[int], room: Room, rng: random.Random,
     if room.w < 7 or room.h < 7 or rng.random() >= chance:
         return
     cx, cy = room.center
-    if rng.random() < 0.7:
-        patterns = []
-        for dx, dy in ((1, 0), (0, 1)):
-            for offset in range(1, max(room.w, room.h)):
-                cells = ((cx - dx * offset, cy - dy * offset),
-                         (cx + dx * offset, cy + dy * offset))
-                if all(room.x + 2 <= x < room.x + room.w - 2 and
-                       room.y + 2 <= y < room.y + room.h - 2 for x, y in cells):
-                    patterns.append(cells)
-    else:
-        patterns = [((x, y),) for y in range(room.y + 2, room.y + room.h - 2)
-                    for x in range(room.x + 2, room.x + room.w - 2)
-                    if (x, y) != (cx, cy)]
+    # Always use symmetric pairs around the room center — lone single-cell
+    # placements read as map glitches rather than intentional architecture.
+    patterns = []
+    for dx, dy in ((1, 0), (0, 1)):
+        for offset in range(1, max(room.w, room.h)):
+            cells = ((cx - dx * offset, cy - dy * offset),
+                     (cx + dx * offset, cy + dy * offset))
+            if all(room.x + 2 <= x < room.x + room.w - 2 and
+                   room.y + 2 <= y < room.y + room.h - 2 for x, y in cells):
+                patterns.append(cells)
     rng.shuffle(patterns)
     for cells in patterns:
         # Four open flanks make each wall-plane column an island, never a
@@ -1448,6 +1445,24 @@ def _break_long_sightlines(tiles: list[int], things: list[int], rooms: list[Room
                 if _reachable(tiles, start, locked_open=True) != baseline - {(x, y)}:
                     _set(tiles, x, y, original)
                     continue
+                # Try to add a perpendicular companion so the break reads as
+                # an intentional 1×2 pillar rather than a lone floating wall.
+                run_horiz = (run[0][1] == run[-1][1])
+                companion_dirs = ((0, 1), (0, -1)) if run_horiz else ((1, 0), (-1, 0))
+                for cdx, cdy in companion_dirs:
+                    cx2, cy2 = x + cdx, y + cdy
+                    orig2 = _at(tiles, cx2, cy2)
+                    if ((cx2, cy2) not in centers and (cx2, cy2) not in reserved
+                            and not _at(things, cx2, cy2)
+                            and _is_floor(orig2)
+                            and all(_is_floor(_at(tiles, cx2 + ddx, cy2 + ddy))
+                                    for ddx, ddy in ((1, 0), (-1, 0), (0, 1), (0, -1)))):
+                        _set(tiles, cx2, cy2, WALL)
+                        if _reachable(tiles, start, locked_open=True) == (baseline - {(x, y)}) - {(cx2, cy2)}:
+                            placed += 1  # companion succeeded
+                        else:
+                            _set(tiles, cx2, cy2, orig2)  # companion blocked reachability
+                        break
                 placed += 1
                 changed = True
                 break
@@ -1687,16 +1702,34 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
     for room in rooms:
         if room.w < 5 or room.h < 5:
             continue
-        cx, _ = room.center
+        cx, cy = room.center
         interior = {(x, y) for x in range(room.x + 1, room.x + room.w - 1)
                     for y in range(room.y + 1, room.y + room.h - 1)
                     if _is_floor(_at(tiles, x, y))}
         free = {cell for cell in interior - reserved
                 if _at(things, *cell) == 0 and _is_floor(_at(tiles, *cell))}
-        pairs = [((x, y), (2 * cx - x, y)) for x, y in free
-                 if x < cx and (2 * cx - x, y) in free]
-        rng.shuffle(pairs)
-        for (ax, ay), (bx, by) in pairs:
+
+        # Generate symmetric pairs on both axes.  Weight cells near walls more
+        # heavily so furniture reads as placed against them, not floating.
+        def _near_wall(x: int, y: int) -> bool:
+            return (x <= room.x + 2 or x >= room.x + room.w - 3
+                    or y <= room.y + 2 or y >= room.y + room.h - 3)
+
+        x_pairs = [((x, y), (2 * cx - x, y)) for x, y in free
+                   if x < cx and (2 * cx - x, y) in free]
+        y_pairs = [((x, y), (x, 2 * cy - y)) for x, y in free
+                   if y < cy and (x, 2 * cy - y) in free]
+        # Prefer pairs where at least one cell sits close to a wall.
+        all_pairs = x_pairs + y_pairs
+        all_pairs.sort(key=lambda p: (0 if _near_wall(*p[0]) or _near_wall(*p[1]) else 1,
+                                      rng.random()))
+
+        # Larger rooms earn a second pair; keep it at one for small rooms.
+        pair_budget = 2 if room.w >= 8 and room.h >= 8 else 1
+        pairs_placed = 0
+        for (ax, ay), (bx, by) in all_pairs:
+            if pairs_placed >= pair_budget:
+                break
             candidate = blocked_cells | {(ax, ay), (bx, by)}
             # A blocked cell is never counted as "reachable" even when it's
             # perfectly safe to occupy, so compare against baseline minus the
@@ -1709,10 +1742,14 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
             _set(things, bx, by, static)
             reserved.add((ax, ay)); reserved.add((bx, by))
             blocked_cells |= {(ax, ay), (bx, by)}
-            break  # one deliberate symmetric pair per room, not clutter
+            pairs_placed += 1
+
+        # Open (non-solid) items: scale count with room area for a furnished look.
+        area = room.w * room.h
+        open_budget = 3 if area >= 80 else 2 if area >= 45 else 1
         loose = [cell for cell in free - reserved if _at(things, *cell) == 0]
         rng.shuffle(loose)
-        for cell in loose[:rng.randrange(0, 2)]:
+        for cell in loose[:rng.randrange(0, open_budget + 1)]:
             _set(things, *cell, rng.choice(STATIC_OPEN))
             reserved.add(cell)
 
