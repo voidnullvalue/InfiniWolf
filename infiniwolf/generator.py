@@ -1623,10 +1623,11 @@ def _place_population(config: CampaignConfig, number: int, rooms: list[Room],
     room_distances = {room: distances.get(room.center, 0) for room in rooms}
     max_distance = max(room_distances.values(), default=1) or 1
 
-    # Collect every corridor/door cell adjacent to each room's boundary so an
-    # actor faces the entry nearest to it, not just the entry nearest to the
-    # player's start.  Multi-door rooms otherwise send every guard's gaze to
-    # the "primary" door regardless of where they were placed.
+    # Collect corridor/door cells adjacent to each room's boundary, then
+    # restrict to approach-side entries (BFS distance from start < room's own
+    # depth) so actors face the door the player arrived through, not a back
+    # door leading deeper into the level.  Falls back to all entries for the
+    # start room or any room with no closer-than-self adjacent cells.
     room_entries: dict[Room, list[tuple[int, int]]] = {}
     for _room in rooms:
         _entries: list[tuple[int, int]] = []
@@ -1640,7 +1641,9 @@ def _place_population(config: CampaignConfig, number: int, rooms: list[Room],
                 _t = _at(tiles, _rx, _ny)
                 if _is_floor(_t) or _t in DOORS:
                     _entries.append((_rx, _ny))
-        room_entries[_room] = _entries or [_room.center]
+        _room_d = room_distances[_room]
+        _approach = [e for e in _entries if distances.get(e, float('inf')) < _room_d]
+        room_entries[_room] = _approach or _entries or [_room.center]
 
     def _entry_pull(x: int, y: int, idx: int,
                     entries: list[tuple[int, int]]) -> float:
