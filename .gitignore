@@ -3,3 +3,5 @@ __pycache__/
 .claude/
 *.pk3
 generate.sh
+PLAN.md
+deep-research-report.md
