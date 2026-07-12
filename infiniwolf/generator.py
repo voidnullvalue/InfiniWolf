@@ -1408,7 +1408,7 @@ def _carve_secret_pocket(tiles: list[int], things: list[int], px: int, py: int,
             guard = (px + length - (1 if secret_exit else 0), py)
             if abs(guard[0] - px) < 3:
                 guard = (px + length, py)
-            _set(things, *guard, rng.choice(GUARDS))
+            _set(things, *guard, GUARDS[3])  # west-facing: pocket opens eastward
             spots = [(px + length, py - 1), (px + length, py + 1),
                      (px + length - 1, py + rng.choice((-1, 1)))]
             count = rng.randrange(2, 4)
