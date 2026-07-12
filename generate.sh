@@ -2,8 +2,16 @@
 set -eu
 
 src_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-mod_dir=/media/mount/ecwolf/mods/installed/randomwolf
+# When this checkout sits inside the collection's mods directory, install
+# straight into the slot run-mod.sh launches from; otherwise keep the
+# package local to the checkout. RUN_MOD overrides the launcher lookup.
+if [ -d "$src_dir/../installed" ]; then
+    mod_dir="$src_dir/../installed/randomwolf"
+else
+    mod_dir="$src_dir/randomwolf"
+fi
 output="$mod_dir/randomwolf.pk3"
+run_mod=${RUN_MOD:-"$src_dir/../run-mod.sh"}
 
 ask() {
     # ask VAR_NAME PROMPT DEFAULT
@@ -67,9 +75,14 @@ fi
 echo "Wrote $output"
 echo
 
+if [ ! -x "$run_mod" ]; then
+    echo "Launcher not found at $run_mod (set RUN_MOD to your run-mod.sh to enable Play)."
+    exit 0
+fi
+
 printf 'Play it now? [Y/n]: '
 read -r play
 case $play in
-    ''|[Yy]*) exec /media/mount/ecwolf/mods/run-mod.sh randomwolf ;;
-    *) echo "Run '/media/mount/ecwolf/mods/run-mod.sh randomwolf' whenever you're ready." ;;
+    ''|[Yy]*) exec "$run_mod" randomwolf ;;
+    *) echo "Run '$run_mod randomwolf' whenever you're ready." ;;
 esac
