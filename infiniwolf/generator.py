@@ -1222,8 +1222,11 @@ def _place_elevator(tiles: list[int], room: Room, locked: bool = False) -> tuple
     for wx, wy, dx in candidates:
         if not _is_floor(_at(tiles, wx - dx, wy)):
             continue
+        # depth range(5): the extra ring ensures the cell immediately beyond
+        # the back wall is also solid, so tile-21's east face can never be
+        # approached from outside the shaft.
         footprint = [(wx + dx * depth, wy + side)
-                     for depth in range(4) for side in (-1, 0, 1)]
+                     for depth in range(5) for side in (-1, 0, 1)]
         if any(not (1 <= x < GRID - 1 and 1 <= y < GRID - 1) or _at(tiles, x, y) != WALL
                for x, y in footprint):
             continue
@@ -1579,14 +1582,12 @@ def _place_population(config: CampaignConfig, number: int, rooms: list[Room],
             facing = rng.choice(open_facings)
             family = PATROLS_BY_FAMILY[family]
         elif open_facings:
-            # Bias stationary guards to face toward the room center (a proxy
-            # for the doorway direction) so they're likely to spot the player
-            # entering.  Among the open directions, pick the one whose unit
-            # vector has the highest dot-product with the center vector; break
-            # ties randomly so not every guard stares dead-center.
+            # Bias stationary guards to face toward the room's entry point
+            # (the corridor cell closest to player start adjacent to this
+            # room), so they face the door the player actually walks through.
             if room is not None:
-                cx, cy = room.center
-                vx, vy = cx - x, cy - y
+                ex, ey = room_entry[room]
+                vx, vy = ex - x, ey - y
                 def _score(idx: int) -> float:
                     dx, dy = facings[idx]
                     dot = dx * vx + dy * vy
@@ -1601,6 +1602,29 @@ def _place_population(config: CampaignConfig, number: int, rooms: list[Room],
     distances = _floor_distances(tiles, start)
     room_distances = {room: distances.get(room.center, 0) for room in rooms}
     max_distance = max(room_distances.values(), default=1) or 1
+
+    # For each room, find the corridor/door cell just outside its boundary
+    # with the smallest BFS distance from player start.  Guards face toward
+    # this cell so they look at the door the player would actually enter.
+    room_entry: dict[Room, tuple[int, int]] = {}
+    for _room in rooms:
+        _best: tuple[int, int] | None = None
+        _best_d = float('inf')
+        for _ry in range(_room.y, _room.y + _room.h):
+            for _nx in (_room.x - 1, _room.x + _room.w):
+                _t = _at(tiles, _nx, _ry)
+                if _is_floor(_t) or _t in DOORS:
+                    _d = distances.get((_nx, _ry), float('inf'))
+                    if _d < _best_d:
+                        _best_d = _d; _best = (_nx, _ry)
+        for _rx in range(_room.x, _room.x + _room.w):
+            for _ny in (_room.y - 1, _room.y + _room.h):
+                _t = _at(tiles, _rx, _ny)
+                if _is_floor(_t) or _t in DOORS:
+                    _d = distances.get((_rx, _ny), float('inf'))
+                    if _d < _best_d:
+                        _best_d = _d; _best = (_rx, _ny)
+        room_entry[_room] = _best or _room.center
 
     def depth_of(room: Room) -> float:
         return room_distances[room] / max_distance
