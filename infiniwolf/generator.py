@@ -1609,19 +1609,14 @@ def _place_population(config: CampaignConfig, number: int, rooms: list[Room],
         name, family = pick_family(depth)
         if name in ("officer", "ss") and near_door(x, y):
             name, family = "guard", GUARDS
-        # Dogs are patrol-only in WL6 (no standing spawn variant).
-        _patrol_chance = {"guard": 0.35, "dog": 1.0, "officer": 0.20, "ss": 0.10}
-        want_patrol = rng.random() < _patrol_chance.get(name, 0.0)
         if room is not None:
-            facing, patrol = _pick_facing(x, y, room, want_patrol)
+            facing = _pick_stationary_facing(x, y, room)
+        elif open_facings := [i for i in range(4)
+                              if _is_floor(_at(tiles, x + facings[i][0],
+                                               y + facings[i][1]))]:
+            facing = rng.choice(open_facings)
         else:
-            facing, patrol = rng.randrange(4), False
-        # Dogs never spawn stationary; if geometry forbids patrol we skip the
-        # cell rather than emit a broken standing-dog code.
-        if name == "dog" and not patrol:
-            return
-        if patrol:
-            family = PATROLS_BY_FAMILY[family]
+            facing = rng.randrange(4)
         _set(things, x, y, family[facing] + 36 * tier)
 
     distances = _floor_distances(tiles, start)
@@ -1647,14 +1642,6 @@ def _place_population(config: CampaignConfig, number: int, rooms: list[Room],
                     _entries.append((_rx, _ny))
         room_entries[_room] = _entries or [_room.center]
 
-    def _clear_ahead(x: int, y: int, idx: int, cap: int = 5) -> int:
-        dx, dy = facings[idx]
-        steps = 0
-        while steps < cap and _is_floor(_at(tiles, x + dx * (steps + 1),
-                                            y + dy * (steps + 1))):
-            steps += 1
-        return steps
-
     def _entry_pull(x: int, y: int, idx: int,
                     entries: list[tuple[int, int]]) -> float:
         dx, dy = facings[idx]
@@ -1664,33 +1651,20 @@ def _place_population(config: CampaignConfig, number: int, rooms: list[Room],
             para = dx * vx + dy * vy
             if para <= 0:
                 continue
-            # perpendicular magnitude; penalise heavily so a facing that
-            # merely shares an axis with an off-side entry doesn't beat one
-            # that actually points at a further-but-aligned entry.
             perp = abs(dy * vx - dx * vy)
             score = para - 2 * perp
             if score > best:
                 best = score
         return best
 
-    def _pick_facing(x: int, y: int, room: Room,
-                     want_patrol: bool) -> tuple[int, bool]:
+    def _pick_stationary_facing(x: int, y: int, room: Room) -> int:
         entries = room_entries.get(room) or [room.center]
-        clears = [_clear_ahead(x, y, i) for i in range(4)]
         pulls = [_entry_pull(x, y, i, entries) for i in range(4)]
-        # Patrol actors walk forward in their initial direction; they need at
-        # least a few clear tiles or the sprite jams against a wall.  Drop to
-        # stationary if geometry can't give them room.
-        patrol_pool = [i for i in range(4) if clears[i] >= 3]
-        if want_patrol and patrol_pool:
-            i = max(patrol_pool, key=lambda i: (pulls[i], clears[i]))
-            return i, True
-        # Stationary: prefer directions with at least one open tile ahead so
-        # the actor isn't staring at a wall.  If none has any (rare -- actor
-        # boxed on all sides), accept any and pick the best pull.
-        stand_pool = [i for i in range(4) if clears[i] >= 1] or list(range(4))
-        i = max(stand_pool, key=lambda i: (pulls[i], clears[i]))
-        return i, False
+        open_idxs = [i for i in range(4)
+                     if _is_floor(_at(tiles, x + facings[i][0],
+                                      y + facings[i][1]))]
+        pool = open_idxs or list(range(4))
+        return max(pool, key=lambda i: pulls[i])
 
     def depth_of(room: Room) -> float:
         return room_distances[room] / max_distance
