@@ -1660,14 +1660,24 @@ def _place_population(config: CampaignConfig, number: int, rooms: list[Room],
                 best = score
         return best
 
+    def _clear_ahead(x: int, y: int, idx: int, cap: int = 8) -> int:
+        dx, dy = facings[idx]
+        n = 0
+        while n < cap and _is_floor(_at(tiles, x + dx * (n + 1),
+                                        y + dy * (n + 1))):
+            n += 1
+        return n
+
     def _pick_stationary_facing(x: int, y: int, room: Room) -> int:
         entries = room_entries.get(room) or [room.center]
         pulls = [_entry_pull(x, y, i, entries) for i in range(4)]
-        open_idxs = [i for i in range(4)
-                     if _is_floor(_at(tiles, x + facings[i][0],
-                                      y + facings[i][1]))]
+        clears = [_clear_ahead(x, y, i) for i in range(4)]
+        # Require at least 1 open tile ahead so the actor doesn't nose into a
+        # wall.  Secondary sort on clear count breaks pull ties and prevents
+        # actors from facing into corners when all pulls are equal or degenerate.
+        open_idxs = [i for i in range(4) if clears[i] >= 1]
         pool = open_idxs or list(range(4))
-        return max(pool, key=lambda i: pulls[i])
+        return max(pool, key=lambda i: (pulls[i], clears[i]))
 
     def depth_of(room: Room) -> float:
         return room_distances[room] / max_distance
