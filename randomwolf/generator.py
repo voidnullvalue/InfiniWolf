@@ -50,7 +50,7 @@ PATROL_GUARDS = tuple(code + 4 for code in GUARDS)
 PATROL_OFFICERS = tuple(code + 4 for code in OFFICERS)
 PATROL_SS = tuple(code + 4 for code in SS)
 PATROL_DOGS = tuple(code + 4 for code in DOGS)
-AMMO, FOOD, FIRST_AID, MACHINE_GUN, CHAINGUN = 49, 47, 48, 50, 51
+AMMO, FOOD, FIRST_AID, MACHINE_GUN, CHAINGUN, ONE_UP = 49, 47, 48, 50, 51, 56
 TREASURE = (52, 53, 54, 55)
 ENEMY_CODES = frozenset(code + tier * 36
                         for family in (GUARDS, OFFICERS, SS, DOGS,
@@ -139,6 +139,33 @@ class Room:
         return self.x + self.w // 2, self.y + self.h // 2
 
 
+@dataclass(frozen=True, slots=True)
+class RoomSpec:
+    role: str
+    tier: str
+    district: int
+    motif: str = "spine"
+
+
+@dataclass(slots=True)
+class FloorPlan:
+    specs: list[RoomSpec]
+    edges: list[tuple[int, int]]
+    loop_edges: list[tuple[int, int]]
+    motifs: tuple[str, ...]
+    # Realization metadata keeps grammar membership out of gameplay roles.
+    critical: frozenset[int] = frozenset()
+    size_groups: tuple[tuple[int, ...], ...] = ()
+
+
+@dataclass(slots=True)
+class PlacedPlan:
+    rooms: list[Room]
+    spec_indices: list[int]
+    edges: list[tuple[int, int]]
+    loop_edges: list[tuple[int, int]]
+
+
 @dataclass(slots=True)
 class GeneratedMap:
     number: int
@@ -152,6 +179,11 @@ class GeneratedMap:
     locked_doors: int = 0
     boss: bool = False
     enemy_tiers: tuple[int, int, int] = (0, 0, 0)
+    motifs: tuple[str, ...] = ()
+    motif_rooms: tuple[str, ...] = ()
+    secret_variants: tuple[str, ...] = ()
+    critique: tuple[str, ...] = ()
+    rooms: tuple[Room, ...] = ()
 
 
 def _at(plane: list[int], x: int, y: int) -> int:
@@ -172,29 +204,223 @@ def _overlaps(a: Room, b: Room, pad: int = 2) -> bool:
                 a.y + a.h + pad <= b.y or b.y + b.h + pad <= a.y)
 
 
-def _rooms(rng: random.Random, count: int) -> list[Room]:
-    result: list[Room] = []
-    for _ in range(count * 100):
-        if len(result) == count:
-            break
-        # Small side cells carry the real-map room count without consuming
-        # the rock buffers that keep thresholds and secrets unambiguous.
-        tier = rng.random()
-        if tier < 0.30:
-            w, h = rng.randrange(4, 6), rng.randrange(4, 6)
-        elif tier < 0.55:
-            major, minor = rng.randrange(9, 14), rng.randrange(5, 8)
-            w, h = ((major, minor) if rng.random() < 0.5 else (minor, major))
+def _plan_floor(rng: random.Random, complexity: int, number: int) -> FloorPlan:
+    spine_count = min(8, 5 + (complexity + 1) // 2 + (number >= 6))
+    beat_count = spine_count - 4
+    tiers = ["standard"] + [("hall" if rng.random() < 0.25 else "standard")
+                            for _ in range(beat_count)]
+    tiers += ["anchor", rng.choice(("closet", "standard")), "standard"]
+    roles = ["start"] + ["beat"] * beat_count + ["climax", "relief", "exit"]
+    district_count = 3 if spine_count >= 7 and rng.random() < 0.6 else 2
+    cuts = sorted(rng.sample(range(2, spine_count - 1), district_count - 1))
+    districts = [sum(index >= cut for cut in cuts) for index in range(spine_count)]
+    specs = [RoomSpec(role, tier, district)
+             for role, tier, district in zip(roles, tiers, districts)]
+    edges = [(index, index + 1) for index in range(spine_count - 1)]
+    loops: list[tuple[int, int]] = []
+    critical = set(range(spine_count))
+    groups: list[tuple[int, ...]] = []
+    budget = min(3, 1 + (complexity >= 3) + (rng.random() < 0.35))
+    motifs = ["ring"]
+    remaining = ["hub", "wings", "gallery"]
+    rng.shuffle(remaining)
+    motifs += remaining[:budget - 1]
+
+    # The first motif always spends topology budget on a real reconvergence.
+    pairs = [(i, j) for i in range(1, spine_count - 2)
+             for j in range(i + 2, spine_count - 1)]
+    weights = [spine_count - abs((i + j) - (spine_count - 1)) for i, j in pairs]
+    left, right = rng.choices(pairs, weights=weights, k=1)[0]
+    parent = left
+    for _ in range(rng.randrange(1, 3)):
+        node = len(specs)
+        specs.append(RoomSpec("ring", "standard", districts[left], "ring"))
+        edges.append((parent, node)); critical.add(node)
+        parent = node
+    edges.append((parent, right)); loops.append((parent, right))
+
+    middle_beats = list(range(1, 1 + beat_count))
+    if "hub" in motifs:
+        hub = rng.choice(middle_beats)
+        specs[hub] = RoomSpec("hub", "anchor", districts[hub], "hub")
+        climax = roles.index("climax")
+        specs[climax] = RoomSpec("climax", "standard", districts[climax])
+        for role in ["branch", "branch"] + ["closet"] * rng.randrange(1, 3):
+            node = len(specs)
+            specs.append(RoomSpec(role, "closet" if role == "closet" else "standard",
+                                  districts[hub], "hub"))
+            edges.append((hub, node)); critical.add(node)
+    if "wings" in motifs:
+        parent = rng.choice(middle_beats)
+        wings = tuple(range(len(specs), len(specs) + 2))
+        for node in wings:
+            specs.append(RoomSpec("branch", "standard", districts[parent], "wings"))
+            edges.append((parent, node)); critical.add(node)
+        groups.append(wings)
+    if "gallery" in motifs:
+        parent = rng.choice(middle_beats)
+        district = districts[parent]
+        gallery = []
+        for _ in range(rng.randrange(2, 4)):
+            node = len(specs)
+            specs.append(RoomSpec("closet", "closet", district, "gallery"))
+            edges.append((parent, node)); gallery.append(node); critical.add(node)
+            parent = node
+        groups.append(tuple(gallery))
+
+    target = min(20, 14 + 2 * complexity)
+    filler_tips: list[int] = []
+    while len(specs) < target:
+        if filler_tips and rng.random() < 0.55:
+            parent = rng.choice(filler_tips)
+            filler_tips.remove(parent)
         else:
-            w, h = rng.randrange(6, 10), rng.randrange(6, 10)
-        room = Room(rng.randrange(3, 51), rng.randrange(3, 52), w, h)
-        if room.x + room.w >= 61 or room.y + room.h >= 61:
+            degrees = [sum(index in edge for edge in edges) for index in middle_beats]
+            parent = rng.choices(middle_beats, weights=[1 / degree for degree in degrees], k=1)[0]
+        role = "closet" if rng.random() < 0.45 else "branch"
+        tier = "closet" if role == "closet" else rng.choice(("standard", "standard", "hall"))
+        node = len(specs)
+        specs.append(RoomSpec(role, tier, specs[parent].district, "filler"))
+        edges.append((parent, node))
+        filler_tips.append(node)
+    if sum(spec.tier == "anchor" for spec in specs) != 1:
+        raise ValueError("floor plan must have exactly one anchor")
+    return FloorPlan(specs, edges, loops, tuple(motifs), frozenset(critical), tuple(groups))
+
+
+def _room_size(rng: random.Random, tier: str) -> tuple[int, int]:
+    if tier == "anchor":
+        return rng.randrange(10, 14), rng.randrange(10, 14)
+    if tier == "closet":
+        return rng.randrange(4, 6), rng.randrange(4, 6)
+    if tier == "hall":
+        major, minor = rng.randrange(9, 14), rng.randrange(5, 8)
+        return (major, minor) if rng.random() < 0.5 else (minor, major)
+    return rng.randrange(6, 10), rng.randrange(6, 10)
+
+
+def _place_planned_rooms(rng: random.Random, plan: FloorPlan) -> PlacedPlan:
+    spine_count = next(index for index, spec in enumerate(plan.specs)
+                       if spec.role == "exit") + 1
+    sizes = [_room_size(rng, spec.tier) for spec in plan.specs]
+    for group in plan.size_groups:
+        shared = sizes[group[0]]
+        for index in group[1:]:
+            sizes[index] = shared
+    parents: dict[int, int] = {}
+    for child in range(1, len(plan.specs)):
+        parents[child] = next(other for a, b in plan.edges
+                              for other in ((b,) if a == child else (a,) if b == child else ())
+                              if other < child)
+    rooms: list[Room] = []
+    kept: list[int] = []
+    room_by_spec: dict[int, Room] = {}
+    dropped: set[int] = set()
+    used_sides: dict[int, dict[tuple[int, int], int]] = {}
+    quadrant = rng.randrange(4)
+    heading = ((1, 0), (-1, 0), (0, 1), (0, -1))[quadrant]
+    w, h = sizes[0]
+    sx = rng.randrange(4, 10) if heading[0] > 0 else (GRID - w - rng.randrange(4, 10)
+         if heading[0] < 0 else rng.randrange(4, GRID - w - 3))
+    sy = rng.randrange(4, 10) if heading[1] > 0 else (GRID - h - rng.randrange(4, 10)
+         if heading[1] < 0 else rng.randrange(4, GRID - h - 3))
+    start = Room(sx, sy, w, h)
+    rooms.append(start); kept.append(0); room_by_spec[0] = start
+
+    def adjacent(parent: Room, size: tuple[int, int], side: tuple[int, int],
+                 gap: int, jitter: int) -> Room:
+        rw, rh = size
+        dx, dy = side
+        if dx:
+            x = parent.x + parent.w + gap if dx > 0 else parent.x - rw - gap
+            y = parent.y + (parent.h - rh) // 2 + jitter
+        else:
+            x = parent.x + (parent.w - rw) // 2 + jitter
+            y = parent.y + parent.h + gap if dy > 0 else parent.y - rh - gap
+        return Room(x, y, rw, rh)
+
+    def legal(room: Room) -> bool:
+        return (3 <= room.x and 3 <= room.y and room.x + room.w < 61
+                and room.y + room.h < 61
+                and not any(_overlaps(room, other) for other in rooms))
+
+    grouped = {index for group in plan.size_groups for index in group}
+    order = list(range(1, spine_count))
+    pending = set(range(spine_count, len(plan.specs)))
+    while pending:
+        available = [index for index in pending if parents[index] not in pending]
+        index = min(available, key=lambda item: (
+            0 if plan.specs[parents[item]].role == "hub" else
+            1 if item in grouped else 2 if plan.specs[item].role == "ring" else 3,
+            item))
+        order.append(index); pending.remove(index)
+    for index in order:
+        parent_index = parents[index]
+        while parent_index in dropped:
+            parent_index = parents[parent_index]
+        parent = room_by_spec[parent_index]
+        room = None
+        for _ in range(60):
+            if index < spine_count:
+                dx, dy = heading
+                sides = [(dx, dy), (-dy, dx), (dy, -dx)]
+                weights = (6, 2, 2)
+                side = rng.choices(sides, weights=weights, k=1)[0]
+                gap = rng.randrange(1, 4)
+            else:
+                counts = used_sides.setdefault(parent_index, {})
+                sides = ((1, 0), (-1, 0), (0, 1), (0, -1))
+                side = rng.choices(sides, weights=[1 / (1 + 5 * counts.get(s, 0))
+                                                   for s in sides], k=1)[0]
+                gap = rng.randrange(1, 4)
+            jitter = rng.randrange(-6, 7) if index < spine_count else rng.randrange(-11, 12)
+            candidate = adjacent(parent, sizes[index], side, gap, jitter)
+            if legal(candidate):
+                room = candidate
+                if index < spine_count:
+                    heading = side
+                else:
+                    counts[side] = counts.get(side, 0) + 1
+                break
+        if room is None:
+            # A crowded beat may need a second ring beyond its first wings;
+            # keep the graph parent local before conceding to global scatter.
+            for _ in range(120):
+                side = rng.choice(((1, 0), (-1, 0), (0, 1), (0, -1)))
+                candidate = adjacent(parent, sizes[index], side, rng.randrange(6, 13),
+                                     rng.randrange(-18, 19))
+                if legal(candidate):
+                    room = candidate
+                    break
+        if room is None:
+            rw, rh = sizes[index]
+            for _ in range(200):
+                candidate = Room(rng.randrange(3, 61 - rw), rng.randrange(3, 61 - rh), rw, rh)
+                if legal(candidate):
+                    room = candidate
+                    break
+        if room is None:
+            if index in plan.critical or index < spine_count:
+                raise ValueError("could not realize critical planned room")
+            dropped.add(index)
             continue
-        if not any(_overlaps(room, other) for other in result):
-            result.append(room)
-    if len(result) < 8:
-        raise ValueError("could not place enough rooms")
-    return result
+        rooms.append(room); kept.append(index); room_by_spec[index] = room
+
+    remap = {spec_index: room_index for room_index, spec_index in enumerate(kept)}
+
+    def survivor(index: int) -> int:
+        while index in dropped:
+            index = parents[index]
+        return index
+
+    edges = []
+    for a, b in plan.edges:
+        a, b = survivor(a), survivor(b)
+        edge = (remap[a], remap[b])
+        if edge[0] != edge[1] and edge not in edges and edge[::-1] not in edges:
+            edges.append(edge)
+    loop_edges = [(remap[survivor(a)], remap[survivor(b)]) for a, b in plan.loop_edges]
+    return PlacedPlan(rooms, kept, edges, loop_edges)
 
 
 def _carve_notches(tiles: list[int], rooms: list[Room], rng: random.Random,
@@ -281,94 +507,235 @@ def _add_pillars(tiles: list[int], room: Room, rng: random.Random,
             return
 
 
-def _tree(rooms: list[Room]) -> list[tuple[int, int]]:
-    connected = {0}
-    remaining = set(range(1, len(rooms)))
-    edges = []
-    while remaining:
-        _, a, b = min(
-            ((rooms[a].center[0] - rooms[b].center[0]) ** 2 +
-             (rooms[a].center[1] - rooms[b].center[1]) ** 2, a, b)
-            for a in connected for b in remaining
-        )
-        edges.append((a, b))
-        connected.add(b)
-        remaining.remove(b)
-    return edges
-
-
-def _loop_edges(rooms: list[Room], tree: list[tuple[int, int]], count: int) -> list[tuple[int, int]]:
-    existing = {tuple(sorted(edge)) for edge in tree}
-    pairs = sorted(
-        (((rooms[a].center[0] - rooms[b].center[0]) ** 2 +
-          (rooms[a].center[1] - rooms[b].center[1]) ** 2, a, b)
-         for a in range(len(rooms)) for b in range(a + 1, len(rooms))
-         if (a, b) not in existing),
-        key=lambda item: item[0],
-    )
-    return [(a, b) for _, a, b in pairs[:count]]
-
-
-def _carve_segment(tiles: list[int], path: list[tuple[int, int]],
-                   x: int, y: int, tx: int, ty: int, x_first: bool) -> tuple[int, int]:
-    """Carve one L between two points, axis order chosen by the caller."""
-    for horizontal in ((True, False) if x_first else (False, True)):
-        if horizontal:
-            while x != tx:
-                _set(tiles, x, y, FLOOR)
-                path.append((x, y))
-                x += 1 if tx > x else -1
-        else:
-            while y != ty:
-                _set(tiles, x, y, FLOOR)
-                path.append((x, y))
-                y += 1 if ty > y else -1
-    return x, y
-
-
 def _carve_connection(tiles: list[int], a: Room, b: Room,
                       rng: random.Random, complexity: int) -> list[tuple[int, int]]:
-    """Carve a winding corridor between two room centers.
+    """Carve the shortest rock-backed route between two clean thresholds."""
+    def portals(room: Room) -> list[tuple[tuple[int, int], tuple[int, int],
+                                           tuple[int, int]]]:
+        result = []
+        sides = [((room.x - 1, y), (room.x, y), (-1, 0))
+                 for y in range(room.y + 1, room.y + room.h - 1)]
+        sides += [((room.x + room.w, y), (room.x + room.w - 1, y), (1, 0))
+                  for y in range(room.y + 1, room.y + room.h - 1)]
+        sides += [((x, room.y - 1), (x, room.y), (0, -1))
+                  for x in range(room.x + 1, room.x + room.w - 1)]
+        sides += [((x, room.y + room.h), (x, room.y + room.h - 1), (0, 1))
+                  for x in range(room.x + 1, room.x + room.w - 1)]
+        for outer, inner, (dx, dy) in sides:
+            beyond = outer[0] + dx, outer[1] + dy
+            jambs = ((outer[0] - dy, outer[1] - dx),
+                     (outer[0] + dy, outer[1] + dx))
+            if (_is_floor(_at(tiles, *inner)) and _at(tiles, *outer) == WALL
+                    and _at(tiles, *beyond) == WALL
+                    and all(_at(tiles, *cell) == WALL for cell in jambs)):
+                result.append((outer, beyond, inner))
+        return result
 
-    A single L-hall makes every connection read as two straight runs, which
-    is why the floors navigate too easily. Threading the route through
-    deterministic jittered waypoints turns most connections into doglegs:
-    more corners, shorter straight runs (the report wants common straights
-    of 4-12 tiles and long sightlines only by explicit intent), and a more
-    maze-like read, while every segment stays orthogonal and fully carved.
-    """
-    ax, ay = a.center
-    bx, by = b.center
-    span = abs(ax - bx) + abs(ay - by)
-    waypoints: list[tuple[int, int]] = []
-    if span >= 8:
-        # Waypoints offset perpendicular to the travel axis, alternating
-        # sides: the corridor becomes an S-curve that genuinely detours
-        # instead of wandering the map and accidentally merging with other
-        # corridors into a shortcut web (which would make routes shorter,
-        # not mazier).
-        bends = 2 if complexity >= 3 and span >= 16 else 1
-        horizontal = abs(bx - ax) >= abs(by - ay)
-        amplitude = 3 + rng.randint(0, complexity + 2)
-        sign = rng.choice((-1, 1))
-        for step in range(1, bends + 1):
-            along = step / (bends + 1)
-            wx = round(ax + (bx - ax) * along)
-            wy = round(ay + (by - ay) * along)
-            if horizontal:
-                wy += sign * amplitude
+    pairs = [(pa, pb) for pa in portals(a) for pb in portals(b)]
+    rng.shuffle(pairs)
+    pairs.sort(key=lambda pair: abs(pair[0][0][0] - pair[1][0][0])
+               + abs(pair[0][0][1] - pair[1][0][1]))
+    directions = [(1, 0), (-1, 0), (0, 1), (0, -1)]
+    rng.shuffle(directions)
+    def find_route(start: tuple[int, int], goal: tuple[int, int]) -> list[tuple[int, int]] | None:
+        previous: dict[tuple[int, int], tuple[int, int] | None] = {start: None}
+        queue = deque([start])
+        while queue and goal not in previous:
+            x, y = queue.popleft()
+            for dx, dy in directions:
+                nxt = x + dx, y + dy
+                if nxt in previous or not (2 <= nxt[0] < GRID - 2 and 2 <= nxt[1] < GRID - 2):
+                    continue
+                if _at(tiles, *nxt) != WALL:
+                    continue
+                # A one-rock buffer stops unrelated routes and rooms from
+                # silently fusing before their planned door can separate them.
+                if (nxt != goal
+                        and any(_is_floor(_at(tiles, nxt[0] + sx, nxt[1] + sy))
+                                or _at(tiles, nxt[0] + sx, nxt[1] + sy) in DOORS
+                                for sx, sy in directions)):
+                    continue
+                previous[nxt] = (x, y); queue.append(nxt)
+        if goal not in previous:
+            return None
+        route = []
+        cell: tuple[int, int] | None = goal
+        while cell is not None:
+            route.append(cell); cell = previous[cell]
+        route.reverse()
+        return route
+
+    # Cheap clean thresholds are common; exhaust them before relaxing the
+    # rock buffer around a crowded hub.
+    for (outer_a, start, _), (outer_b, goal, _) in pairs:
+        route = find_route(start, goal)
+        if route is None:
+            continue
+        path = [outer_a] + route + [outer_b]
+        for x, y in path:
+            _set(tiles, x, y, FLOOR)
+        return path
+
+    source = {a.center}
+    queue = deque(source)
+    while queue:
+        x, y = queue.popleft()
+        for dx, dy in directions:
+            nxt = x + dx, y + dy
+            if nxt not in source and (_is_floor(_at(tiles, *nxt))
+                                      or _at(tiles, *nxt) in DOORS):
+                source.add(nxt); queue.append(nxt)
+    thresholds = []
+    for y in range(2, GRID - 2):
+        for x in range(2, GRID - 2):
+            if _at(tiles, x, y) != WALL:
+                continue
+            contacts = [(dx, dy) for dx, dy in directions
+                        if (x + dx, y + dy) in source]
+            if len(contacts) != 1:
+                continue
+            dx, dy = contacts[0]
+            beyond = x - dx, y - dy
+            jambs = ((x - dy, y - dx), (x + dy, y + dx))
+            if (_at(tiles, *beyond) == WALL
+                    and all(_at(tiles, *cell) == WALL for cell in jambs)):
+                thresholds.append(((x, y), (dx, dy)))
+    rng.shuffle(thresholds)
+    thresholds.sort(key=lambda item: abs(item[0][0] - b.center[0])
+                    + abs(item[0][1] - b.center[1]))
+
+    def threshold_route(start: tuple[int, int],
+                        source_side: tuple[int, int]) -> list[tuple[int, int]] | None:
+        previous: dict[tuple[int, int], tuple[int, int] | None] = {start: None}
+        queue = deque([start])
+        while queue:
+            x, y = queue.popleft()
+            for dx, dy in directions:
+                if (x, y) == start and (dx, dy) != (-source_side[0],
+                                                        -source_side[1]):
+                    continue
+                nxt = x + dx, y + dy
+                if (nxt in previous or not (2 <= nxt[0] < GRID - 2
+                                             and 2 <= nxt[1] < GRID - 2)
+                        or _at(tiles, *nxt) != WALL):
+                    continue
+                contacts = [(sx, sy) for sx, sy in directions
+                            if (_is_floor(_at(tiles, nxt[0] + sx, nxt[1] + sy))
+                                or _at(tiles, nxt[0] + sx, nxt[1] + sy) in DOORS)]
+                target = [(sx, sy) for sx, sy in contacts
+                          if (b.x <= nxt[0] + sx < b.x + b.w
+                              and b.y <= nxt[1] + sy < b.y + b.h)]
+                if contacts:
+                    # The target contact is only usable head-on: the
+                    # untouched side rocks become jambs for this exact seam.
+                    if (len(contacts) != 1 or len(target) != 1
+                            or (x, y) != (nxt[0] - target[0][0],
+                                         nxt[1] - target[0][1])):
+                        continue
+                    jambs = ((nxt[0] - target[0][1], nxt[1] - target[0][0]),
+                             (nxt[0] + target[0][1], nxt[1] + target[0][0]))
+                    if any(cell in previous or _at(tiles, *cell) != WALL
+                           for cell in jambs):
+                        continue
+                    previous[nxt] = (x, y)
+                    route = []
+                    cell: tuple[int, int] | None = nxt
+                    while cell is not None:
+                        route.append(cell); cell = previous[cell]
+                    route.reverse()
+                    for cell in route[:-1]:
+                        _set(tiles, *cell, FLOOR)
+                    _set(tiles, *nxt, DOOR_EW if target[0][0] else DOOR_NS)
+                    return route[1:]
+                previous[nxt] = (x, y); queue.append(nxt)
+        return None
+
+    # A relaxed route joins the intended room from the whole source component;
+    # its exact target threshold is doored instead of blended into the room.
+    for start, source_side in thresholds:
+        path = threshold_route(start, source_side)
+        if path is not None:
+            return path
+    # If the safe loop budget is exhausted, keep the existing reconvergence;
+    # forcing a center-line duplicate only opens a redundant sightline.
+    if b.center in source:
+        return []
+    # The true last resort may cross built components, but every transition
+    # is head-on through a rock cell that becomes a door, never open floor.
+    existing_open = {(x, y) for y in range(GRID) for x in range(GRID)
+                     if _is_floor(_at(tiles, x, y)) or _at(tiles, x, y) in DOORS}
+
+    def open_cell(cell: tuple[int, int]) -> bool:
+        return cell in existing_open
+
+    start_state = (a.center, (0, 0), False)
+    previous = {start_state: None}
+    queue = deque([start_state])
+    goal_state = None
+    while queue and goal_state is None:
+        (x, y), heading, forced = queue.popleft()
+        current_open = open_cell((x, y))
+        for dx, dy in directions:
+            if forced and (dx, dy) != heading:
+                continue
+            nxt = x + dx, y + dy
+            if not (2 <= nxt[0] < GRID - 2 and 2 <= nxt[1] < GRID - 2):
+                continue
+            nxt_open = open_cell(nxt)
+            if not nxt_open and _at(tiles, *nxt) != WALL:
+                continue
+            contacts = {(nxt[0] + sx, nxt[1] + sy) for sx, sy in directions
+                        if open_cell((nxt[0] + sx, nxt[1] + sy))}
+            if current_open and not nxt_open:
+                axis = {(x, y), (nxt[0] + dx, nxt[1] + dy)}
+                if (x, y) not in contacts or not contacts <= axis:
+                    continue
+                state = (nxt, (dx, dy), True)
+            elif not current_open and nxt_open:
+                current_contacts = {(x + sx, y + sy) for sx, sy in directions
+                                    if open_cell((x + sx, y + sy))}
+                axis = {nxt, (x - dx, y - dy)}
+                if (dx, dy) != heading or nxt not in current_contacts or not current_contacts <= axis:
+                    continue
+                state = (nxt, (dx, dy), False)
+            elif not current_open:
+                ahead = (nxt[0] + dx, nxt[1] + dy)
+                if contacts and contacts != {ahead}:
+                    continue
+                state = (nxt, (dx, dy), False)
             else:
-                wx += sign * amplitude
-            sign = -sign
-            waypoints.append((max(2, min(GRID - 3, wx)), max(2, min(GRID - 3, wy))))
-    waypoints.append((bx, by))
-    path: list[tuple[int, int]] = []
-    x, y = ax, ay
-    for tx, ty in waypoints:
-        x, y = _carve_segment(tiles, path, x, y, tx, ty, rng.random() < 0.5)
-    _set(tiles, x, y, FLOOR)
-    path.append((x, y))
-    return path
+                state = (nxt, (dx, dy), False)
+            if state in previous:
+                continue
+            previous[state] = ((x, y), heading, forced)
+            if nxt == b.center:
+                goal_state = state
+                break
+            queue.append(state)
+    if goal_state is None:
+        raise ValueError("fallback corridor cannot preserve door seams")
+    route = []
+    state = goal_state
+    while state is not None:
+        route.append(state[0]); state = previous[state]
+    route.reverse()
+    carved = []
+    for index, cell in enumerate(route[1:-1], 1):
+        if open_cell(cell):
+            continue
+        contacts = [neighbor for neighbor in ((cell[0] + 1, cell[1]),
+                                               (cell[0] - 1, cell[1]),
+                                               (cell[0], cell[1] + 1),
+                                               (cell[0], cell[1] - 1))
+                    if open_cell(neighbor)]
+        if contacts:
+            before, after = route[index - 1], route[index + 1]
+            code = DOOR_NS if before[0] == cell[0] == after[0] else DOOR_EW
+            _set(tiles, *cell, code)
+        else:
+            _set(tiles, *cell, FLOOR)
+        carved.append(cell)
+    return carved
 
 
 def _inside_room(rooms: list[Room], x: int, y: int) -> bool:
@@ -398,6 +765,9 @@ def _widen_corridors(tiles: list[int], rooms: list[Room], paths: list[list[tuple
             x, y = path[i]
             if _inside_room(rooms, x, y) or _adjacent_to_room(rooms, x, y):
                 continue
+            if any(_at(tiles, x + dx, y + dy) in DOORS
+                   for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1))):
+                continue
             px, py = path[i - 1]
             nx, ny = path[i + 1]
             horizontal = (px != x) or (nx != x)
@@ -409,6 +779,9 @@ def _widen_corridors(tiles: list[int], rooms: list[Room], paths: list[list[tuple
             else:
                 continue
             if _inside_room(rooms, wx, wy) or _adjacent_to_room(rooms, wx, wy):
+                continue
+            if any(_at(tiles, wx + dx, wy + dy) in DOORS
+                   for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1))):
                 continue
             if _at(tiles, wx, wy) == WALL:
                 _set(tiles, wx, wy, FLOOR)
@@ -503,8 +876,12 @@ def _door_candidate(tiles: list[int], rooms: list[Room],
 def _place_doors(config: CampaignConfig, tiles: list[int], things: list[int],
                  rooms: list[Room], paths: list[list[tuple[int, int]]],
                  rng: random.Random, start: tuple[int, int],
-                 exit_stand: tuple[int, int], allow_locks: bool = True) -> int:
-    candidates = [candidate for path in paths if (candidate := _door_candidate(tiles, rooms, path))]
+                 exit_stand: tuple[int, int], roles: list[str],
+                 reserved: set[tuple[int, int]],
+                 allow_locks: bool = True) -> int:
+    candidates = [candidate for path in paths
+                  if (candidate := _door_candidate(tiles, rooms, path))
+                  and candidate[:2] not in reserved]
     rng.shuffle(candidates)
     # Every viable room-to-room junction gets a door: sound zones (see
     # _assign_sound_zones) only split at door tiles, so leaving most
@@ -535,7 +912,7 @@ def _place_doors(config: CampaignConfig, tiles: list[int], things: list[int],
                 _set(tiles, x, y, 92 if code == DOOR_EW else 93)
             gated = exit_stand not in _reachable(tiles, start, locked_open=False,
                                                  extra_passable=pushwalls, blocked=rests)
-            key = _key_spot(tiles, rooms, trial, start) if gated else None
+            key = _key_spot(tiles, rooms, roles, trial, start) if gated else None
             if key:
                 locked = trial
                 break
@@ -562,7 +939,7 @@ def _door_zone(tiles: list[int], cell: tuple[int, int]) -> set[tuple[int, int]]:
     return seen
 
 
-def _key_spot(tiles: list[int], rooms: list[Room],
+def _key_spot(tiles: list[int], rooms: list[Room], roles: list[str],
               locked: tuple[tuple[int, int, int], ...],
               start: tuple[int, int]) -> tuple[int, int] | None:
     """Farthest reachable room center whose door-bounded region touches no
@@ -571,11 +948,12 @@ def _key_spot(tiles: list[int], rooms: list[Room],
     pre_lock = _reachable(tiles, start, locked_open=False)
     lock_sides = {(x + dx, y + dy) for x, y, _ in locked
                   for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1))}
-    candidates = sorted((room.center for room in rooms
-                         if room.center in pre_lock and room.center != start),
-                        key=lambda p: abs(p[0] - start[0]) + abs(p[1] - start[1]),
-                        reverse=True)
-    for center in candidates:
+    candidates = [(room.center, role) for room, role in zip(rooms, roles)
+                  if room.center in pre_lock and room.center != start]
+    candidates.sort(key=lambda item: (item[1] == "branch",
+                                      abs(item[0][0] - start[0]) + abs(item[0][1] - start[1])),
+                    reverse=True)
+    for center, _ in candidates:
         if not lock_sides & _door_zone(tiles, center):
             return center
     return None
@@ -625,8 +1003,70 @@ def _floor_components(tiles: list[int]) -> list[set[tuple[int, int]]]:
     return components
 
 
+def _critique(level: GeneratedMap) -> tuple[str, ...]:
+    components = _floor_components(level.tiles)
+    owner = {cell: index for index, component in enumerate(components) for cell in component}
+    graph_edges: set[tuple[int, int]] = set()
+    for index, tile in enumerate(level.tiles):
+        if tile not in DOORS:
+            continue
+        x, y = index % GRID, index // GRID
+        neighbors = {owner[cell] for cell in ((x + 1, y), (x - 1, y),
+                                              (x, y + 1), (x, y - 1))
+                     if cell in owner}
+        graph_edges.update(tuple(sorted(edge)) for edge in combinations(neighbors, 2))
+    links = {index: set() for index in range(len(components))}
+    for a, b in graph_edges:
+        links[a].add(b); links[b].add(a)
+    graph_components = 0
+    unseen = set(links)
+    while unseen:
+        graph_components += 1
+        queue = [unseen.pop()]
+        while queue:
+            for nxt in links[queue.pop()] & unseen:
+                unseen.remove(nxt); queue.append(nxt)
+    cycles = len(graph_edges) - len(components) + graph_components
+    sizes = sorted((len(component) for component in components), reverse=True)
+    total = sum(sizes) or 1
+    room_floor = {cell for room in level.rooms
+                  for y in range(room.y, room.y + room.h)
+                  for x in range(room.x, room.x + room.w)
+                  for cell in ((x, y),) if _is_floor(_at(level.tiles, x, y))}
+    all_floor = {(x, y) for y in range(GRID) for x in range(GRID)
+                 if _is_floor(_at(level.tiles, x, y))}
+    flags = []
+    if cycles == 0:
+        flags.append("no_loop")
+    if sizes and sizes[0] / total < 0.10:
+        flags.append("no_anchor")
+    if sum(sizes[:3]) / total < 0.25:
+        flags.append("flat_hierarchy")
+    if all_floor and len(all_floor - room_floor) / len(all_floor) > 0.45:
+        flags.append("corridor_heavy")
+    longest = 0
+    for horizontal in (True, False):
+        for fixed in range(GRID):
+            run = 0
+            for moving in range(GRID):
+                x, y = (moving, fixed) if horizontal else (fixed, moving)
+                run = run + 1 if _is_floor(_at(level.tiles, x, y)) else 0
+                longest = max(longest, run)
+    if longest > 21:
+        flags.append("long_sightline")
+    motif_counts = {motif: level.motif_rooms.count(motif) for motif in level.motifs}
+    if level.rooms and any(count / len(level.rooms) > 0.40
+                           for count in motif_counts.values()):
+        flags.append("motif_imbalance")
+    if (len(level.secret_variants) >= 3
+            and set(level.secret_variants) == {"closet"}):
+        flags.append("secret_monotony")
+    return tuple(flags)
+
+
 def _split_oversized_zones(tiles: list[int], rooms: list[Room], rng: random.Random,
-                           cap: int = 160, min_piece: int = 20) -> int:
+                           reserved: set[tuple[int, int]],
+                           cap: int = 110, min_piece: int = 12) -> int:
     """Corridors carved for unrelated room-to-room connections often end up
     flush against each other -- crossing, running alongside, or just
     touching -- at points no edge's own path ever scanned as a door
@@ -641,12 +1081,16 @@ def _split_oversized_zones(tiles: list[int], rooms: list[Room], rng: random.Rand
     placed = 0
     stuck: set[frozenset[tuple[int, int]]] = set()
     while True:
-        component = next((c for c in _floor_components(tiles)
+        components = _floor_components(tiles)
+        if len(components) >= ZONE_MAX - FLOOR + 1:
+            break
+        component = next((c for c in components
                           if len(c) > cap and frozenset(c) not in stuck), None)
         if component is None:
             break
         candidates = [(x, y) for x, y in component
-                     if not _inside_room(rooms, x, y) and _door_axis(tiles, x, y)]
+                     if (x, y) not in reserved and not _inside_room(rooms, x, y)
+                     and _door_axis(tiles, x, y)]
         rng.shuffle(candidates)
         # Room-adjacent chokepoints read as a real doorway; try those before
         # falling back to a stray mid-corridor pinch (same reasoning as
@@ -690,15 +1134,15 @@ def _assign_sound_zones(tiles: list[int]) -> int:
     return len(components)
 
 
-def _apply_wall_theme(tiles: list[int], rooms: list[Room], number: int,
+def _apply_wall_theme(tiles: list[int], rooms: list[Room], districts: list[int], number: int,
                       rng: random.Random) -> None:
     """Apply native WL6 materials without changing traversable geometry."""
     base, accents = WALL_THEMES[(number - 1) % len(WALL_THEMES)]
     for index, tile in enumerate(tiles):
         if tile == WALL:
             tiles[index] = base
-    for room_index, room in enumerate(rooms):
-        accent = accents[room_index % len(accents)]
+    for room, district in zip(rooms, districts):
+        accent = accents[district % len(accents)]
         other_accents = set(accents) - {accent}
         sides = (
             [(x, room.y - 1) for x in range(room.x - 1, room.x + room.w + 1)],
@@ -797,54 +1241,145 @@ def _place_elevator(tiles: list[int], room: Room, locked: bool = False) -> tuple
     raise ValueError("terminal room has no clear east/west wall for an elevator")
 
 
+def _pick_secret_variant(rng: random.Random, used: list[str]) -> str:
+    variants = [("closet", 0.40), ("vault", 0.25),
+                ("nested", 0.20), ("shortcut", 0.15)]
+    available = [(name, weight) for name, weight in variants
+                 if not (name in ("nested", "shortcut") and name in used)]
+    return rng.choices([name for name, _ in available],
+                       weights=[weight for _, weight in available], k=1)[0]
+
+
+def _secret_reward(rng: random.Random, depth: float,
+                   premium: bool = False, lesser: bool = False) -> int:
+    if lesser:
+        return rng.choices((AMMO, TREASURE[0], TREASURE[1]),
+                           weights=(4.0 - 2.5 * depth, 2.0, 1.5 + depth), k=1)[0]
+    if premium:
+        choices = (TREASURE[2], TREASURE[3], MACHINE_GUN, CHAINGUN, ONE_UP)
+        weights = (2.0, 1.5 + depth, 1.0 + depth, 0.4 + 2.5 * depth,
+                   0.05 + 0.8 * depth * depth)
+        return rng.choices(choices, weights=weights, k=1)[0]
+    choices = (AMMO, TREASURE[0], TREASURE[1], TREASURE[2], TREASURE[3],
+               MACHINE_GUN, CHAINGUN, ONE_UP)
+    weights = (4.5 * (1.0 - depth) + 0.2,
+               3.0 * (1.0 - depth) + 0.8,
+               2.4 * (1.0 - depth) + 0.8,
+               0.5 + 2.0 * depth, 0.4 + 2.5 * depth,
+               0.4 + 1.8 * depth, 0.1 + 2.2 * depth,
+               0.03 + 0.65 * depth * depth)
+    return rng.choices(choices, weights=weights, k=1)[0]
+
+
 def _place_secret(tiles: list[int], things: list[int], room: Room,
-                  rng: random.Random, secret_exit: bool = False) -> tuple[int, int] | None:
+                  rng: random.Random, variant: str, depth: float,
+                  secret_exit: bool = False) -> tuple[tuple[int, int], str] | None:
     px = room.x + room.w
     if px + 4 >= GRID - 1:
         return None
     # Sweep rows outward from the wall's midline so one crossing corridor
     # doesn't doom the whole room's secret.
     mid = room.y + room.h // 2
-    for py in sorted(range(room.y + 1, room.y + room.h - 1), key=lambda y: abs(y - mid)):
-        reward = _carve_secret_pocket(tiles, things, px, py, rng, secret_exit)
+    rows = sorted(range(room.y + 1, room.y + room.h - 1), key=lambda y: abs(y - mid))
+    for py in rows:
+        reward = _carve_secret_pocket(tiles, things, px, py, rng, secret_exit,
+                                      variant, depth)
         if reward:
-            return reward
+            return reward, variant
     return None
 
 
 def _carve_secret_pocket(tiles: list[int], things: list[int], px: int, py: int,
-                         rng: random.Random, secret_exit: bool) -> tuple[int, int] | None:
+                         rng: random.Random, secret_exit: bool,
+                         variant: str = "closet", depth: float = 0.5) -> tuple[int, int] | None:
     # Corridors and elevator bays may already cross this nominal room wall.
     # Never turn their floor back into a pushwall.
     if _at(tiles, px, py) != WALL or not _is_floor(_at(tiles, px - 1, py)):
         return None
-    cells = [(x, y) for x in range(px + 1, px + 4) for y in range(py - 1, py + 2)]
-    # The pocket keeps a one-tile rock margin on every exposed flank so it
-    # connects to nothing but its own pushwall. Without it, a pocket brushing
-    # a passing corridor leaks the reward -- and pushing the wall opens a
-    # route that can bypass a locked door entirely.
-    margin = [(px + 4, y) for y in range(py - 1, py + 2)]
-    margin += [(x, py - 2) for x in range(px + 1, px + 4)]
-    margin += [(x, py + 2) for x in range(px + 1, px + 4)]
-    margin += [(px, py - 1), (px, py + 1)]
-    if any(_at(tiles, x, y) != WALL for x, y in cells + margin):
+    if secret_exit and variant == "shortcut":
         return None
-    for x, y in cells:
-        _set(tiles, x, y, FLOOR)
+
+    def chamber(length: int) -> tuple[list[tuple[int, int]], list[tuple[int, int]]]:
+        cells = [(x, y) for x in range(px + 1, px + length + 1)
+                 for y in range(py - 1, py + 2)]
+        margin = [(px + length + 1, y) for y in range(py - 1, py + 2)]
+        margin += [(x, py - 2) for x in range(px + 1, px + length + 1)]
+        margin += [(x, py + 2) for x in range(px + 1, px + length + 1)]
+        margin += [(px, py - 1), (px, py + 1)]
+        return cells, margin
+
+    if variant == "shortcut":
+        layout = None
+        lengths = list(range(4, 9))
+        rng.shuffle(lengths)
+        for length in lengths:
+            cells = ([(x, y) for x in range(px + 1, px + 4)
+                      for y in range(py - 1, py + 2)]
+                     + [(x, py) for x in range(px + 4, px + length + 1)])
+            margin = [(x, py + side) for x in range(px + 4, px + length + 1)
+                      for side in (-1, 1)]
+            margin += [(x, py - 2) for x in range(px + 1, px + 4)]
+            margin += [(x, py + 2) for x in range(px + 1, px + 4)]
+            margin += [(px, py - 1), (px, py + 1)]
+            target = px + length + 1, py
+            if (_is_floor(_at(tiles, *target)) and _at(things, *target) == 0
+                    and all(_at(tiles, x, y) == WALL for x, y in cells + margin)):
+                layout = cells, target, length
+                break
+        if layout is None:
+            return None
+        cells, _, length = layout
+        for cell in cells:
+            _set(tiles, *cell, FLOOR)
+        reward = (px + length, py)
+        _set(things, *reward, _secret_reward(rng, depth))
+    elif variant == "nested":
+        cells, margin = chamber(7)
+        # The wall between the two chambers remains solid until its own
+        # push, while the shared outer margin protects the complete pair.
+        cells.remove((px + 4, py))
+        if any(_at(tiles, x, y) != WALL for x, y in cells + margin):
+            return None
+        for cell in cells:
+            _set(tiles, *cell, FLOOR)
+        _set(things, px + 4, py, PUSHWALL)
+        lesser = (px + 2, py + rng.choice((-1, 1)))
+        reward = (px + 7, py + rng.choice((-1, 1)))
+        _set(things, *lesser, _secret_reward(rng, depth, lesser=True))
+        _set(things, *reward, _secret_reward(rng, depth, premium=True))
+        if secret_exit:
+            _set(tiles, px + 8, py, ELEVATOR_TILE)
+            _set(tiles, px + 7, py, SECRET_EXIT_ZONE)
+    else:
+        length = rng.randrange(4, 6) if variant == "vault" else 3
+        cells, margin = chamber(length)
+        if any(_at(tiles, x, y) != WALL for x, y in cells + margin):
+            return None
+        for cell in cells:
+            _set(tiles, *cell, FLOOR)
+        if variant == "vault":
+            guard = (px + length - (1 if secret_exit else 0), py)
+            if abs(guard[0] - px) < 3:
+                guard = (px + length, py)
+            _set(things, *guard, rng.choice(GUARDS))
+            spots = [(px + length, py - 1), (px + length, py + 1),
+                     (px + length - 1, py + rng.choice((-1, 1)))]
+            count = rng.randrange(2, 4)
+            for spot in spots[:count]:
+                _set(things, *spot, _secret_reward(rng, depth, premium=depth > 0.65))
+            reward = spots[0]
+        else:
+            # The pushed wall settles on the center track; the reward stays
+            # visible and reachable one cell to the side of that backstop.
+            reward = (px + 2, py + rng.choice((-1, 1)))
+            _set(things, *reward, _secret_reward(rng, depth))
+        if secret_exit:
+            # Native secret exits are an elevator switch with floor code 107
+            # in front; the translator rewrites it into Exit_Secret.
+            _set(tiles, px + length + 1, py, ELEVATOR_TILE)
+            _set(tiles, px + length, py, SECRET_EXIT_ZONE)
     _set(tiles, px, py, WALL)
     _set(things, px, py, PUSHWALL)
-    # The pushed wall slides two tiles east and settles on (px + 2, py), so
-    # nothing collectible may sit on that track: the reward goes one cell to
-    # the side, where it stays visible and reachable around the settled slab.
-    reward = (px + 2, py + rng.choice((-1, 1)))
-    _set(things, *reward, rng.choice(TREASURE + (MACHINE_GUN, CHAINGUN)))
-    if secret_exit:
-        # Native secret exits are an elevator switch with floor code 107 in
-        # front of it: the translator's modzone rewrites that switch's
-        # Exit_Normal trigger into Exit_Secret. The switch goes into the
-        # pocket's back wall, one step past the settled pushwall.
-        _set(tiles, px + 4, py, ELEVATOR_TILE)
-        _set(tiles, px + 3, py, SECRET_EXIT_ZONE)
     return reward
 
 
@@ -867,7 +1402,7 @@ def _floor_distances(tiles: list[int], start: tuple[int, int]) -> dict[tuple[int
 def _break_long_sightlines(tiles: list[int], things: list[int], rooms: list[Room],
                            reserved: set[tuple[int, int]], rng: random.Random,
                            start: tuple[int, int],
-                           max_run: int = 16) -> int:
+                           max_run: int = 21) -> int:
     centers = {room.center for room in rooms}
     doors = {(x, y) for y in range(GRID) for x in range(GRID)
              if _at(tiles, x, y) in DOORS}
@@ -916,6 +1451,53 @@ def _break_long_sightlines(tiles: list[int], things: list[int], rooms: list[Room
                 placed += 1
                 changed = True
                 break
+            if changed:
+                break
+            for _, (x, y) in candidates:
+                axis = _door_axis(tiles, x, y)
+                if (not axis or (x, y) in centers or (x, y) in reserved
+                        or _at(things, x, y) or _inside_room(rooms, x, y)
+                        or any(abs(x - dx) <= 1 and abs(y - dy) <= 1
+                               for dx, dy in doors)):
+                    continue
+                _set(tiles, x, y, axis)
+                doors.add((x, y)); placed += 1; changed = True
+                break
+            if changed:
+                break
+            vertical = run[0][0] == run[-1][0]
+            for _, (x, y) in candidates:
+                sides = ((1, 0), (-1, 0)) if vertical else ((0, 1), (0, -1))
+                for sx, sy in sides:
+                    wall_cell = x + sx, y + sy
+                    outer = x - sx, y - sy
+                    far = x + 2 * sx, y + 2 * sy
+                    along = ((0, 1), (0, -1)) if vertical else ((1, 0), (-1, 0))
+                    if ({(x, y), wall_cell} & (centers | reserved)
+                            or _at(things, x, y) or _at(things, *wall_cell)
+                            or _inside_room(rooms, x, y) or _inside_room(rooms, *wall_cell)
+                            or any(abs(x - dx) <= 1 and abs(y - dy) <= 1
+                                   for dx, dy in doors)
+                            or _at(tiles, *outer) != WALL or _at(tiles, *far) != WALL
+                            or not all(_is_floor(_at(tiles, x + dx, y + dy))
+                                       and _is_floor(_at(tiles, wall_cell[0] + dx,
+                                                        wall_cell[1] + dy))
+                                       for dx, dy in along)):
+                        continue
+                    wall_original = _at(tiles, *wall_cell)
+                    door_original = _at(tiles, x, y)
+                    _set(tiles, *wall_cell, WALL)
+                    _set(tiles, x, y, DOOR_NS if vertical else DOOR_EW)
+                    if _reachable(tiles, start, locked_open=True) != baseline - {wall_cell}:
+                        _set(tiles, *wall_cell, wall_original)
+                        _set(tiles, x, y, door_original)
+                        continue
+                    # A wall-and-door crossbar is the safe repair for a
+                    # two-wide hall where an island pillar cannot fit.
+                    doors.add((x, y)); placed += 1; changed = True
+                    break
+                if changed:
+                    break
             if changed:
                 break
         if not changed:
@@ -1159,8 +1741,13 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
     tiles = [WALL] * (GRID * GRID)
     things = [0] * (GRID * GRID)
     complexity = int(config.layout_complexity)
-    count = min(24, 13 + 2 * complexity + number // 3)
-    rooms = _rooms(rng, count)
+    plan = _plan_floor(rng, complexity, number)
+    placed = _place_planned_rooms(rng, plan)
+    rooms = placed.rooms
+    edges = placed.edges
+    specs = [plan.specs[index] for index in placed.spec_indices]
+    roles = [spec.role for spec in specs]
+    districts = [spec.district for spec in specs]
     for room in rooms:
         for y in range(room.y, room.y + room.h):
             for x in range(room.x, room.x + room.w):
@@ -1169,11 +1756,6 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
     _carve_alcoves(tiles, rooms, rng)
     for room in rooms:
         _add_pillars(tiles, room, rng)
-    tree_edges = _tree(rooms)
-    # A few loop corridors give real route choices, but every loop is also
-    # a shortcut that shrinks the critical path, so they stay scarce.
-    loops = _loop_edges(rooms, tree_edges, max(0, complexity - 2))
-    edges = tree_edges + loops
     paths = [_carve_connection(tiles, rooms[a], rooms[b], rng, complexity) for a, b in edges]
     _widen_corridors(tiles, rooms, paths, rng)
     start = rooms[0].center
@@ -1181,9 +1763,11 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
     is_boss = number == 9
     exit_room = None
     exit_stand = None
-    # Prefer the farthest room, but fall back through the distance order:
-    # a corridor may have crossed every east/west wall of the first choice.
-    for room_index in _rooms_by_distance(rooms, edges):
+    # The planned terminus is legible; crossed walls still need a safe sweep.
+    exit_index = roles.index("exit")
+    exit_order = [exit_index] + [index for index in _rooms_by_distance(rooms, edges)
+                                 if index != exit_index]
+    for room_index in exit_order:
         try:
             exit_stand = _place_elevator(tiles, rooms[room_index], locked=is_boss)
             exit_room = rooms[room_index]
@@ -1194,6 +1778,10 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
         raise ValueError("no room can host the exit elevator")
     reserved = {start, exit_stand}
     rewards: list[tuple[int, int]] = []
+    secret_variants: list[str] = []
+    floor_distances = _floor_distances(tiles, start)
+    room_distances = {room: floor_distances.get(room.center, 0) for room in rooms}
+    max_room_distance = max(room_distances.values(), default=1) or 1
     # Report's secret budget is 2-6 per standard floor; scale directly with
     # the intensity dial instead of undershooting to 1 at the low end.
     target_secrets = max(2, int(config.secrets))
@@ -1201,19 +1789,73 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
     # wall after the elevator has been carved.
     candidates = [room for room in rooms[1:] if room != exit_room]
     rng.shuffle(candidates)
-    for room in candidates:
-        if len(rewards) >= target_secrets:
+    while len(rewards) < target_secrets and candidates:
+        variant = _pick_secret_variant(rng, secret_variants)
+        placed_secret = None
+        host = None
+        for room in candidates:
+            placed_secret = _place_secret(tiles, things, room, rng, variant,
+                                          room_distances[room] / max_room_distance,
+                                          secret_exit and not rewards)
+            if placed_secret:
+                host = room
+                break
+        # A slot whose larger footprint fits nowhere still gets the proven
+        # baseline experience rather than silently shrinking the budget.
+        if placed_secret is None and variant != "closet":
+            for room in candidates:
+                placed_secret = _place_secret(tiles, things, room, rng, "closet",
+                                              room_distances[room] / max_room_distance,
+                                              secret_exit and not rewards)
+                if placed_secret:
+                    host = room
+                    break
+        if placed_secret:
+            reward, realized_variant = placed_secret
+            rewards.append(reward); secret_variants.append(realized_variant)
+            reserved.add(reward)
+            candidates.remove(host)
+        else:
             break
-        reward = _place_secret(tiles, things, room, rng, secret_exit and not rewards)
+    # Dense motifs can consume every nominal east wall; a rock-backed hall
+    # threshold is a safe last host with the same push direction and margin.
+    reachable_walls = _reachable(tiles, start, locked_open=True)
+    fallback_walls = [(x, y) for y in range(3, GRID - 3) for x in range(3, GRID - 4)
+                      if _at(tiles, x, y) == WALL and (x - 1, y) in reachable_walls]
+    rng.shuffle(fallback_walls)
+    while len(rewards) < target_secrets:
+        variant = _pick_secret_variant(rng, secret_variants)
+        reward = None
+        for px, py in fallback_walls:
+            approach_distance = floor_distances.get((px - 1, py), 0)
+            reward = _carve_secret_pocket(
+                tiles, things, px, py, rng, secret_exit and not rewards, variant,
+                min(1.0, approach_distance / max_room_distance))
+            if reward:
+                break
+        if reward is None and variant != "closet":
+            variant = "closet"
+            for px, py in fallback_walls:
+                approach_distance = floor_distances.get((px - 1, py), 0)
+                reward = _carve_secret_pocket(
+                    tiles, things, px, py, rng, secret_exit and not rewards, variant,
+                    min(1.0, approach_distance / max_room_distance))
+                if reward:
+                    break
         if reward:
-            rewards.append(reward); reserved.add(reward)
+            rewards.append(reward); secret_variants.append(variant); reserved.add(reward)
+        else:
+            break
+    reserved.update((index % GRID - 1, index // GRID)
+                    for index, thing in enumerate(things) if thing == PUSHWALL)
     _carve_reward_stubs(tiles, things, rooms, paths, reserved, rng, complexity)
-    locks = _place_doors(config, tiles, things, rooms, paths, rng, start, exit_stand,
+    locks = _place_doors(config, tiles, things, rooms, paths, rng, start, exit_stand, roles,
+                         reserved,
                          allow_locks=not is_boss)
-    _split_oversized_zones(tiles, rooms, rng)
+    _break_long_sightlines(tiles, things, rooms, reserved, rng, start)
+    _split_oversized_zones(tiles, rooms, rng, reserved)
     if sum(tile in DOORS for tile in tiles) > 56:
         raise ValueError("door budget exceeded")
-    _break_long_sightlines(tiles, things, rooms, reserved, rng, start)
     if is_boss:
         boss_room = max((room for room in rooms[1:] if room != exit_room), key=lambda room: room.w * room.h)
         _place_boss(tiles, things, boss_room, reserved)
@@ -1223,11 +1865,16 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
     _ensure_early_heal(tiles, things, rooms, start, reserved, rng)
     _place_decorations(rooms, tiles, things, reserved, start, rng)
     _assign_sound_zones(tiles)
-    _apply_wall_theme(tiles, rooms, number, rng)
+    _apply_wall_theme(tiles, rooms, districts, number, rng)
     _hint_secrets(tiles, things, number, rng)
-    result = GeneratedMap(number, tiles, things, start, exit_stand, rewards, seed,
-                          secret_exit, locks, is_boss, enemy_tiers)
+    result = GeneratedMap(number=number, tiles=tiles, things=things, start=start,
+                          exit_stand=exit_stand, secret_rewards=rewards, seed=seed,
+                          has_secret_exit=secret_exit, locked_doors=locks, boss=is_boss,
+                          enemy_tiers=enemy_tiers, motifs=plan.motifs,
+                          motif_rooms=tuple(spec.motif for spec in specs),
+                          secret_variants=tuple(secret_variants), rooms=tuple(rooms))
     validate_map(result)
+    result.critique = _critique(result)
     return result
 
 
@@ -1263,20 +1910,35 @@ def validate_map(level: GeneratedMap) -> None:
     # Each pushed wall slides two tiles east and permanently occupies its
     # resting cell, so rewards are validated against the post-push layout.
     rests = {(x + 2, y) for x, y in pushwalls}
-    baseline = _reachable(level.tiles, level.start, locked_open=True)
     for x, y in pushwalls:
         if _is_floor(_at(level.tiles, x, y)):
             raise ValueError("pushwall trigger is not on a solid wall")
         if not _is_floor(_at(level.tiles, x - 1, y)):
             raise ValueError("pushwall has no movement clearance")
-        if (x - 1, y) not in baseline:
-            raise ValueError("pushwall cannot be approached")
+        if not all(_is_floor(_at(level.tiles, x + step, y)) for step in (1, 2)):
+            raise ValueError("pushwall has no two-tile backstop")
         if _at(level.tiles, x, y) not in DECOR_WALLS:
             raise ValueError("pushwall is not hinted by a decor wall tile")
+    # Nested secrets become approachable in sequence. Simulate each push at
+    # its real two-tile travel distance rather than pretending the inner wall
+    # must be reachable while its outer wall is still closed.
+    pending = set(pushwalls)
+    pushed: set[tuple[int, int]] = set()
+    while pending:
+        opened = _reachable(level.tiles, level.start, locked_open=True,
+                            extra_passable=pushed,
+                            blocked={(x + 2, y) for x, y in pushed})
+        ready = sorted((wall for wall in pending
+                        if (wall[0] - 1, wall[1]) in opened),
+                       key=lambda cell: (cell[1], cell[0]))
+        if not ready:
+            raise ValueError("pushwall cannot be approached")
+        wall = ready[0]
+        pending.remove(wall); pushed.add(wall)
     opened = _reachable(level.tiles, level.start, locked_open=True,
-                        extra_passable=set(pushwalls), blocked=rests)
+                        extra_passable=pushed, blocked=rests)
     for reward in level.secret_rewards:
-        if _at(level.things, *reward) not in TREASURE + (MACHINE_GUN, CHAINGUN):
+        if _at(level.things, *reward) not in (AMMO,) + TREASURE + (MACHINE_GUN, CHAINGUN, ONE_UP):
             raise ValueError("secret is missing a valuable reward")
         if reward in rests:
             raise ValueError("secret reward sits on the pushwall's resting cell")
@@ -1406,14 +2068,25 @@ def generate_campaign(config: CampaignConfig, output: Path,
         if cancelled and cancelled():
             raise GenerationCancelled("campaign generation cancelled")
         last_error = None
+        candidates: list[GeneratedMap] = []
         for attempt in range(50):
             try:
-                levels.append(generate_map(config, number, attempt, number == secret_from))
-                break
+                candidate = generate_map(config, number, attempt, number == secret_from)
             except ValueError as error:
                 last_error = error
+                continue
+            candidates.append(candidate)
+            if not candidate.critique:
+                levels.append(candidate)
+                break
+            if len(candidates) == 3:
+                levels.append(min(candidates, key=lambda level: len(level.critique)))
+                break
         else:
-            raise RuntimeError(f"floor {number} failed generation: {last_error}")
+            if candidates:
+                levels.append(min(candidates, key=lambda level: len(level.critique)))
+            else:
+                raise RuntimeError(f"floor {number} failed generation: {last_error}")
         if progress:
             progress(number, 10)
     manifest = {
@@ -1424,6 +2097,9 @@ def generate_campaign(config: CampaignConfig, output: Path,
                     "locked_doors": level.locked_doors,
                     "boss": level.boss,
                     "enemy_tiers": level.enemy_tiers,
+                    "motifs": level.motifs,
+                    "secret_variants": level.secret_variants,
+                    "critique": level.critique,
                     "validation": {
                         "passed": True,
                         "checks": ["bounds", "connectivity", "door_axes", "elevator",
