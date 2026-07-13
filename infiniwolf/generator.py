@@ -1254,17 +1254,102 @@ def _assign_sound_zones(tiles: list[int]) -> int:
     return len(components)
 
 
+def _assign_area_themes(tiles: list[int], rooms: list[Room], districts: list[int],
+                        rng: random.Random, number: int
+                        ) -> tuple[dict[tuple[int, int], int],
+                                   dict[int, tuple[int, tuple[int, ...]]]]:
+    """Choose one wall family per door-bounded area without exposing seams.
+
+    A bare wall shared by two floor components joins their theme groups before
+    painting.  Different groups can therefore meet only at an actual door.
+    """
+    components = _floor_components(tiles)
+    owner = {cell: index for index, component in enumerate(components)
+             for cell in component}
+    parents = list(range(len(components)))
+
+    def find(component: int) -> int:
+        while parents[component] != component:
+            parents[component] = parents[parents[component]]
+            component = parents[component]
+        return component
+
+    def union(first: int, second: int) -> None:
+        first, second = find(first), find(second)
+        if first != second:
+            parents[second] = first
+
+    for index, tile in enumerate(tiles):
+        if tile != WALL:
+            continue
+        x, y = index % GRID, index // GRID
+        neighbors = {owner[cell] for cell in ((x + 1, y), (x - 1, y),
+                                              (x, y + 1), (x, y - 1))
+                     if cell in owner}
+        for first, second in combinations(sorted(neighbors), 2):
+            union(first, second)
+
+    component_of = {cell: find(component) for cell, component in owner.items()}
+    groups = sorted(set(component_of.values()))
+    votes: dict[int, dict[int, int]] = {group: {} for group in groups}
+    for room, district in zip(rooms, districts):
+        group = component_of[room.center]
+        votes[group][district] = votes[group].get(district, 0) + 1
+    assigned = {group: min(district for district, count in tally.items()
+                           if count == max(tally.values()))
+                for group, tally in votes.items() if tally}
+
+    links = {group: set() for group in groups}
+    for index, tile in enumerate(tiles):
+        if tile not in DOORS:
+            continue
+        x, y = index % GRID, index // GRID
+        neighbors = {component_of[cell] for cell in ((x + 1, y), (x - 1, y),
+                                                       (x, y + 1), (x, y - 1))
+                     if cell in component_of}
+        for first, second in combinations(sorted(neighbors), 2):
+            links[first].add(second); links[second].add(first)
+    queue = deque(sorted(assigned))
+    while queue:
+        group = queue.popleft()
+        for neighbor in sorted(links[group]):
+            if neighbor not in assigned:
+                assigned[neighbor] = assigned[group]
+                queue.append(neighbor)
+    for group in groups:
+        assigned.setdefault(group, 0)
+
+    distinct_districts = sorted(set(districts))
+    deduped = list({theme[0]: theme for theme in WALL_THEMES}.values())
+    if number == 10 and rng.random() < 0.25:
+        chosen = [FLOOR_TEN_STONE_THEME] + rng.sample(
+            deduped, k=len(distinct_districts) - 1)
+    else:
+        chosen = rng.sample(deduped, k=len(distinct_districts))
+    rng.shuffle(chosen)
+    theme_by_district = dict(zip(distinct_districts, chosen))
+    group_theme = {group: theme_by_district[assigned[group]] for group in groups}
+    return component_of, group_theme
+
+
 def _apply_wall_theme(tiles: list[int], things: list[int], rooms: list[Room],
-                      districts: list[int], theme: tuple[int, tuple[int, ...]],
+                      districts: list[int], component_of: dict[tuple[int, int], int],
+                      group_theme: dict[int, tuple[int, tuple[int, ...]]],
                       rng: random.Random) -> None:
     """Apply native WL6 materials without changing traversable geometry."""
-    base, accents = theme
     for index, tile in enumerate(tiles):
-        if tile == WALL:
-            tiles[index] = base
-    if not accents:
-        return
+        if tile != WALL:
+            continue
+        x, y = index % GRID, index // GRID
+        group = next((component_of[cell] for cell in ((x + 1, y), (x - 1, y),
+                                                       (x, y + 1), (x, y - 1))
+                      if cell in component_of), None)
+        if group is not None:
+            tiles[index] = group_theme[group][0]
     for room, district in zip(rooms, districts):
+        base, accents = group_theme[component_of[room.center]]
+        if not accents:
+            continue
         accent = accents[district % len(accents)]
         other_accents = set(accents) - {accent}
         sides = (
@@ -1311,16 +1396,24 @@ def _apply_wall_theme(tiles: list[int], things: list[int], rooms: list[Room],
                 _set(tiles, x, y, accent)
 
 
-def _hint_secrets(tiles: list[int], things: list[int], theme: tuple[int, tuple[int, ...]],
+def _hint_secrets(tiles: list[int], things: list[int],
+                  component_of: dict[tuple[int, int], int],
+                  group_theme: dict[int, tuple[int, tuple[int, ...]]],
                   rng: random.Random) -> None:
     """Hang a landmark decor tile (banner, portrait, insignia) on every
     pushwall, the way the original episodes telegraph most of theirs. Runs
     after _apply_wall_theme so the theme can't repaint the hint, and prefers
     the floor theme's own decor accents so the hint matches the material."""
-    _, accents = theme
-    hints = tuple(accent for accent in accents if accent in DECOR_WALLS) or SECRET_HINTS
     for index, thing in enumerate(things):
-        if thing == PUSHWALL:
+        if thing != PUSHWALL:
+            continue
+        x, y = index % GRID, index // GRID
+        group = next((component_of[cell] for cell in ((x + 1, y), (x - 1, y),
+                                                       (x, y + 1), (x, y - 1))
+                      if cell in component_of), None)
+        if group is not None:
+            _, accents = group_theme[group]
+            hints = tuple(accent for accent in accents if accent in DECOR_WALLS) or SECRET_HINTS
             tiles[index] = rng.choice(hints)
 
 
@@ -2304,10 +2397,9 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
     _ensure_early_heal(tiles, things, rooms, start, reserved, rng)
     _place_decorations(rooms, tiles, things, reserved, start, rng, roles=roles, specs=specs)
     _assign_sound_zones(tiles)
-    theme = (FLOOR_TEN_STONE_THEME if number == 10 and rng.random() < 0.25
-             else WALL_THEMES[rng.randrange(len(WALL_THEMES))])
-    _apply_wall_theme(tiles, things, rooms, districts, theme, rng)
-    _hint_secrets(tiles, things, theme, rng)
+    component_of, group_theme = _assign_area_themes(tiles, rooms, districts, rng, number)
+    _apply_wall_theme(tiles, things, rooms, districts, component_of, group_theme, rng)
+    _hint_secrets(tiles, things, component_of, group_theme, rng)
     result = GeneratedMap(number=number, tiles=tiles, things=things, start=start,
                           exit_stand=exit_stand, secret_rewards=rewards, seed=seed,
                           has_secret_exit=secret_exit, locked_doors=locks, boss=is_boss,

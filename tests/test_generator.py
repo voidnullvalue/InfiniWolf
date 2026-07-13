@@ -179,18 +179,38 @@ class GeneratorTests(unittest.TestCase):
     def test_plain_blue_wall_theme_has_no_accent_leakage(self):
         room = Room(10, 10, 4, 3)
         tiles = [WALL] * (GRID * GRID)
-        _apply_wall_theme(tiles, [0] * len(tiles), [room], [0], (40, ()), random.Random(0))
+        component_of = {}
+        for y in range(room.y, room.y + room.h):
+            for x in range(room.x, room.x + room.w):
+                tiles[y * GRID + x] = FLOOR
+                component_of[x, y] = 0
+        _apply_wall_theme(tiles, [0] * len(tiles), [room], [0], component_of,
+                          {0: (40, ())}, random.Random(0))
         cells = ({(x, room.y - 1) for x in range(room.x - 1, room.x + room.w + 1)}
                  | {(x, room.y + room.h) for x in range(room.x - 1, room.x + room.w + 1)}
                  | {(room.x - 1, y) for y in range(room.y, room.y + room.h)}
                  | {(room.x + room.w, y) for y in range(room.y, room.y + room.h)})
-        self.assertTrue(all(_at(tiles, *cell) == 40 for cell in cells))
+        # The four outer corners (diagonal to the room, touching no floor cell
+        # on any of their 4 faces) are never painted -- they have no face a
+        # player standing in an open cell could ever see, matching the same
+        # "never rendered, left as literal WALL" treatment as deep interior
+        # rock in _apply_wall_theme's phase 1.
+        corners = {(room.x - 1, room.y - 1), (room.x + room.w, room.y - 1),
+                   (room.x - 1, room.y + room.h), (room.x + room.w, room.y + room.h)}
+        self.assertTrue(all(_at(tiles, *cell) == 40 for cell in cells - corners))
 
     def test_blue_insignia_panels_are_single_landmarks_not_room_material(self):
         self.assertTrue({34, 36} <= DECOR_WALLS)
         rooms = [Room(10, 10, 4, 3), Room(30, 30, 4, 3)]
         tiles = [WALL] * (GRID * GRID)
-        _apply_wall_theme(tiles, [0] * len(tiles), rooms, [0, 1], (40, (34, 36)), random.Random(0))
+        component_of = {}
+        for group, room in enumerate(rooms):
+            for y in range(room.y, room.y + room.h):
+                for x in range(room.x, room.x + room.w):
+                    tiles[y * GRID + x] = FLOOR
+                    component_of[x, y] = group
+        _apply_wall_theme(tiles, [0] * len(tiles), rooms, [0, 1], component_of,
+                          {0: (40, (34, 36)), 1: (40, (34, 36))}, random.Random(0))
         for room, tile in zip(rooms, (34, 36)):
             cells = ({(x, room.y - 1) for x in range(room.x - 1, room.x + room.w + 1)}
                      | {(x, room.y + room.h) for x in range(room.x - 1, room.x + room.w + 1)}

@@ -13,7 +13,8 @@ from infiniwolf.config import CampaignConfig
 from infiniwolf.generator import (DOGS, DOOR_ELEVATOR, DOOR_EW, DOOR_GOLD_EW, DOOR_NS, DOORS,
                                    ELEVATOR_TILE, FLOOR, GRID, GUARDS, OFFICERS, SS,
                                    SECRET_EXIT_ZONE, STATIC_BLOCKING, ZONE_MAX, _at,
-                                   _floor_components, _is_floor, generate_map)
+                                   _floor_components, _is_floor, FLOOR_TEN_STONE_THEME,
+                                   WALL_THEMES, generate_map)
 
 
 def _generate_with_retries(config: CampaignConfig, floor: int, attempts: int = 50):
@@ -223,6 +224,91 @@ class TopologyRegressionTests(unittest.TestCase):
                         before is not None and before == after,
                         f"seed={seed!r} floor={floor}: plain door at ({x},{y}) "
                         "has a floor-only walkaround")
+
+
+class AreaThemeRegressionTests(unittest.TestCase):
+    def test_wall_material_never_leaks_across_a_non_door_boundary(self):
+        """A wall-plane tile may touch only one final material region.
+
+        This is intentionally geometric: it proves the containment guarantee
+        independently of the texture values selected for those regions.
+        """
+        theme_tiles = ({tile for base, accents in WALL_THEMES
+                        for tile in (base, *accents)}
+                       | {FLOOR_TEN_STONE_THEME[0]})
+        for seed in REGRESSION_SEEDS:
+            config = CampaignConfig(seed=seed)
+            for floor in (2, 5, 8):
+                level = _generate_with_retries(config, floor)
+                components = _floor_components(level.tiles)
+                owner = {cell: index for index, component in enumerate(components)
+                         for cell in component}
+                parents = list(range(len(components)))
+
+                def find(component):
+                    while parents[component] != component:
+                        parents[component] = parents[parents[component]]
+                        component = parents[component]
+                    return component
+
+                def union(first, second):
+                    first, second = find(first), find(second)
+                    if first != second:
+                        parents[second] = first
+
+                for index, tile in enumerate(level.tiles):
+                    if tile not in theme_tiles:
+                        continue
+                    x, y = index % GRID, index // GRID
+                    neighbors = {owner[cell] for cell in ((x + 1, y), (x - 1, y),
+                                                          (x, y + 1), (x, y - 1))
+                                 if cell in owner}
+                    if neighbors:
+                        first = min(neighbors)
+                        for other in neighbors - {first}:
+                            union(first, other)
+                for index, tile in enumerate(level.tiles):
+                    if tile not in theme_tiles:
+                        continue
+                    x, y = index % GRID, index // GRID
+                    neighbors = {find(owner[cell]) for cell in ((x + 1, y), (x - 1, y),
+                                                                (x, y + 1), (x, y - 1))
+                                 if cell in owner}
+                    self.assertLessEqual(
+                        len(neighbors), 1,
+                        f"seed={seed!r} floor={floor}: wall tile at ({x},{y}) "
+                        f"touches material groups {sorted(neighbors)}")
+
+    def test_theme_regions_do_not_mix_material_families(self):
+        """Every wall material touching one floor component shares a family."""
+        families = [set(accents) | {base}
+                    for base, accents in WALL_THEMES + (FLOOR_TEN_STONE_THEME,)]
+        theme_tiles = set().union(*families)
+        bases = {base for base, _ in WALL_THEMES} | {FLOOR_TEN_STONE_THEME[0]}
+        seen_multiple = False
+        for seed in REGRESSION_SEEDS:
+            config = CampaignConfig(seed=seed)
+            for floor in (2, 5, 8):
+                level = _generate_with_retries(config, floor)
+                components = _floor_components(level.tiles)
+                owner = {cell: index for index, component in enumerate(components)
+                         for cell in component}
+                materials = {index: set() for index in range(len(components))}
+                for index, tile in enumerate(level.tiles):
+                    if tile not in theme_tiles:
+                        continue
+                    x, y = index % GRID, index // GRID
+                    for cell in ((x + 1, y), (x - 1, y), (x, y + 1), (x, y - 1)):
+                        if cell in owner:
+                            materials[owner[cell]].add(tile)
+                seen_multiple |= len({tile for tiles in materials.values()
+                                      for tile in tiles if tile in bases}) > 1
+                for component, tiles in materials.items():
+                    self.assertTrue(
+                        any(tiles <= family for family in families),
+                        f"seed={seed!r} floor={floor}: component {component} "
+                        f"mixes wall materials {sorted(tiles)}")
+        self.assertTrue(seen_multiple, "no regression level used multiple base materials")
 
 
 if __name__ == "__main__":
