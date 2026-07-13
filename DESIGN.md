@@ -61,7 +61,7 @@ Scans horizontal and vertical open runs; anything longer than 21 tiles gets a de
 ECWolf uses the floor tile code as the sound-propagation zone identifier. `_assign_sound_zones` flood-fills contiguous rooms with a shared zone code so a single alerted guard raises everyone in that acoustic pocket, and neighbouring zones stay silent. `_split_oversized_zones` breaks any single zone that grew beyond the safe cap so alerting one guard cannot cascade the whole floor.
 
 ### 6.4 Wall theming (`_apply_wall_theme`)
-District determines which `WALL_THEMES` entry is used; `DECOR_WALLS` are inserted only as accents (portraits, banners, insignia, and the skeleton cage), never as room material, following original-episode conventions. The blue-stone cellblock landmark uses plain bars nine times out of ten and the skeleton variant once. `SECRET_HINTS` covers the fallback banner/portrait tiles used on pushwalls when a floor's theme lacks a decor accent of its own.
+District determines which `WALL_THEMES` entry is used; `DECOR_WALLS` are inserted only as accents (portraits, banners, insignia, and the skeleton cage), never as room material, following original-episode conventions. Plain blue panels and the blue insignia panels are separate themes; mottled BSTONEB masonry is a rare floor-10-only material. The blue-stone cellblock landmark uses plain bars nine times out of ten and the skeleton variant once. `SECRET_HINTS` covers the fallback banner/portrait tiles used on pushwalls when a floor's theme lacks a decor accent of its own.
 
 ## 7. Population placement (`_place_population`)
 

@@ -1,6 +1,7 @@
 from collections import Counter
 import json
 from pathlib import Path
+import random
 import tempfile
 import unittest
 import zipfile
@@ -8,8 +9,9 @@ import zipfile
 from infiniwolf.config import CampaignConfig, Intensity
 from infiniwolf.generator import GenerationCancelled, generate_campaign, generate_map, validate_map, validate_package
 from infiniwolf.generator import (BOSSES, DECOR_WALLS, DOGS, ELEVATOR_TILE, FAKE_HITLER,
-                                   GHOSTS, GOLD_KEY, GUARDS, KEY_DROP_BOSSES, OFFICERS, SS,
-                                   SECRET_EXIT_ZONE, WALL_THEMES, _at, _reachable)
+                                   GHOSTS, GOLD_KEY, GRID, GUARDS, KEY_DROP_BOSSES, OFFICERS,
+                                   Room, SECRET_EXIT_ZONE, SS, WALL, WALL_THEMES,
+                                   _apply_wall_theme, _at, _reachable)
 from infiniwolf.generator import FLOOR, ZONE_MAX
 
 
@@ -142,8 +144,9 @@ class GeneratorTests(unittest.TestCase):
         whichever one floor number used to select that entry."""
         families = (
             {1, 2, 3, 4},        # grey stone: GSTONEA1/B1, GSTFLAG1, GSTHTLR1
-            {8, 9, 7, 41},       # blue stone: BSTONEA1/B1, BSTCELB1, BSTSIGN1
-            {40, 9, 34, 36},     # blue wall: BLUWALL1, BSTONEB1, BLUSKUL1, BLUSWAS1
+            {8, 7, 41},          # blue stone: BSTONEA1, BSTCELB1, BSTSIGN1
+            {40, 34, 36},        # blue wall: BLUWALL1, BLUSKUL1, BLUSWAS1
+            {9},                 # rare floor-10 masonry: BSTONEB1
             {12, 10, 11, 23},    # wood: WOOD1, WODEAGL1, WODHTLR1, WODCROS1
             {15, 14},            # metal: METAL1, METLSGN1
             {17, 18, 20},        # brick: BRICK1, BRIKWRT1, BRIKEGL1
@@ -172,6 +175,39 @@ class GeneratorTests(unittest.TestCase):
                          | {(room.x + room.w, y) for y in range(room.y, room.y + room.h)})
                 wall_ring = [_at(level.tiles, *cell) for cell in cells]
                 self.assertLessEqual(wall_ring.count(7), 1)
+
+    def test_plain_blue_wall_theme_has_no_accent_leakage(self):
+        room = Room(10, 10, 4, 3)
+        tiles = [WALL] * (GRID * GRID)
+        _apply_wall_theme(tiles, [0] * len(tiles), [room], [0], (40, ()), random.Random(0))
+        cells = ({(x, room.y - 1) for x in range(room.x - 1, room.x + room.w + 1)}
+                 | {(x, room.y + room.h) for x in range(room.x - 1, room.x + room.w + 1)}
+                 | {(room.x - 1, y) for y in range(room.y, room.y + room.h)}
+                 | {(room.x + room.w, y) for y in range(room.y, room.y + room.h)})
+        self.assertTrue(all(_at(tiles, *cell) == 40 for cell in cells))
+
+    def test_blue_insignia_panels_are_single_landmarks_not_room_material(self):
+        self.assertTrue({34, 36} <= DECOR_WALLS)
+        rooms = [Room(10, 10, 4, 3), Room(30, 30, 4, 3)]
+        tiles = [WALL] * (GRID * GRID)
+        _apply_wall_theme(tiles, [0] * len(tiles), rooms, [0, 1], (40, (34, 36)), random.Random(0))
+        for room, tile in zip(rooms, (34, 36)):
+            cells = ({(x, room.y - 1) for x in range(room.x - 1, room.x + room.w + 1)}
+                     | {(x, room.y + room.h) for x in range(room.x - 1, room.x + room.w + 1)}
+                     | {(room.x - 1, y) for y in range(room.y, room.y + room.h)}
+                     | {(room.x + room.w, y) for y in range(room.y, room.y + room.h)})
+            wall_ring = [_at(tiles, *cell) for cell in cells]
+            self.assertEqual(wall_ring.count(tile), 1)
+
+    def test_blue_stone_masonry_is_floor_ten_only(self):
+        for number in range(1, 10):
+            for seed in range(2):
+                self.assertNotIn(9, generate_map(CampaignConfig(seed=seed), number).tiles)
+
+    def test_blue_stone_masonry_can_appear_on_floor_ten(self):
+        seen_masonry = any(9 in generate_map(CampaignConfig(seed=seed), 10).tiles
+                           for seed in range(16))
+        self.assertTrue(seen_masonry)
 
     def test_wall_theme_varies_by_seed_not_just_floor_number(self):
         dominant = set()

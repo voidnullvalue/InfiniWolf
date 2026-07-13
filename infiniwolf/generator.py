@@ -123,14 +123,21 @@ AMMO_COST = {family: cost for _, family, _, cost in ENEMY_FAMILIES}
 # piece, not a generic wall -- it must never be the base fill for an entire
 # floor. It's demoted to a room accent here so only the districts that land
 # on it get a cellblock-styled room; the base stays the plain blue stone (8).
+# BLUSKUL (34) and BLUSWAS (36) are likewise DECOR_WALLS landmarks, kept in
+# their own blue-panel theme rather than mixed into the plain BLUWALL material.
 WALL_THEMES = (
     (1, (2, 3, 4)),        # grey stone: GSTONEA/B + flag/portrait decor
-    (8, (9, 7, 41)),       # blue stone: BSTONEA/B + cellblock accent + sign decor
-    (40, (9, 34, 36)),     # blue wall: BLUWALL + blue stone alt + skull/swastika decor
+    (8, (7, 41)),          # blue stone: BSTONEA + cellblock accent + sign decor
+    (40, ()),              # blue wall: BLUWALL plain panel/brick only
+    (40, (34, 36)),        # blue insignia: BLUWALL + BLUSKUL/BLUSWAS landmark decor
     (12, (10, 11, 23)),    # wood: WOOD1 + eagle/portrait/cross decor
     (15, (14,)),           # metal: METAL1 + sign decor
     (17, (18, 20)),        # brick: BRICK1 + writing/eagle decor
 )
+# BSTONEB (9) is mottled blue-stone masonry, distinct from the BLUWALL panel.
+# Keep it out of the normal pool: floor 10 occasionally uses it as a rare bare
+# material, while floors 1--9 never do.
+FLOOR_TEN_STONE_THEME = (9, ())
 # Landmark decoration tiles (portraits, banners, insignia, signage/graffiti):
 # these should read as a single accent set into an otherwise plain wall, the
 # way they're used in the original game, never as the material of an entire
@@ -1222,12 +1229,15 @@ def _assign_sound_zones(tiles: list[int]) -> int:
 
 
 def _apply_wall_theme(tiles: list[int], things: list[int], rooms: list[Room],
-                      districts: list[int], theme_index: int, rng: random.Random) -> None:
+                      districts: list[int], theme: tuple[int, tuple[int, ...]],
+                      rng: random.Random) -> None:
     """Apply native WL6 materials without changing traversable geometry."""
-    base, accents = WALL_THEMES[theme_index]
+    base, accents = theme
     for index, tile in enumerate(tiles):
         if tile == WALL:
             tiles[index] = base
+    if not accents:
+        return
     for room, district in zip(rooms, districts):
         accent = accents[district % len(accents)]
         other_accents = set(accents) - {accent}
@@ -1275,13 +1285,13 @@ def _apply_wall_theme(tiles: list[int], things: list[int], rooms: list[Room],
                 _set(tiles, x, y, accent)
 
 
-def _hint_secrets(tiles: list[int], things: list[int], theme_index: int,
+def _hint_secrets(tiles: list[int], things: list[int], theme: tuple[int, tuple[int, ...]],
                   rng: random.Random) -> None:
     """Hang a landmark decor tile (banner, portrait, insignia) on every
     pushwall, the way the original episodes telegraph most of theirs. Runs
     after _apply_wall_theme so the theme can't repaint the hint, and prefers
     the floor theme's own decor accents so the hint matches the material."""
-    _, accents = WALL_THEMES[theme_index]
+    _, accents = theme
     hints = tuple(accent for accent in accents if accent in DECOR_WALLS) or SECRET_HINTS
     for index, thing in enumerate(things):
         if thing == PUSHWALL:
@@ -2241,9 +2251,10 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
     _ensure_early_heal(tiles, things, rooms, start, reserved, rng)
     _place_decorations(rooms, tiles, things, reserved, start, rng, roles=roles, specs=specs)
     _assign_sound_zones(tiles)
-    theme_index = rng.randrange(len(WALL_THEMES))
-    _apply_wall_theme(tiles, things, rooms, districts, theme_index, rng)
-    _hint_secrets(tiles, things, theme_index, rng)
+    theme = (FLOOR_TEN_STONE_THEME if number == 10 and rng.random() < 0.25
+             else WALL_THEMES[rng.randrange(len(WALL_THEMES))])
+    _apply_wall_theme(tiles, things, rooms, districts, theme, rng)
+    _hint_secrets(tiles, things, theme, rng)
     result = GeneratedMap(number=number, tiles=tiles, things=things, start=start,
                           exit_stand=exit_stand, secret_rewards=rewards, seed=seed,
                           has_secret_exit=secret_exit, locked_doors=locks, boss=is_boss,
