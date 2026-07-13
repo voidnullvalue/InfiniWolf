@@ -223,6 +223,92 @@ def _decor_theme(role: str, tier: str) -> str:
     if role == "relief":
         return "lounge"
     return "barracks"   # beat, branch, ring, hub, filler
+
+
+# A floor's "base variant": one named bundle of the parameters that used to
+# be hard-coded module constants, so consecutive floors read as different
+# places (a cramped catacomb, a stately hall) instead of re-rolls of one
+# recipe. Every default equals the previous constant, so a default-valued
+# variant reproduces the pre-variant generator's behavior knob-for-knob.
+@dataclass(frozen=True, slots=True)
+class FloorVariant:
+    name: str
+    notch_chance: float = 0.35        # _carve_notches
+    alcove_chance: float = 0.30       # _carve_alcoves
+    pillar_chance: float = 0.40       # _add_pillars
+    widen_chance: float = 0.80        # _widen_corridors
+    hall_chance: float = 0.25         # _plan_floor spine-beat tier roll
+    closet_weight: float = 0.45       # _plan_floor filler closet-vs-branch
+    extra_motif_chance: float = 0.35  # _plan_floor motif budget roll
+    motif_pref: tuple[str, ...] = ()  # motifs promoted ahead of the shuffle
+    # Allowed WALL_THEMES base tiles; () = all. Must keep at least as many
+    # bases as the floor has districts (up to 3) or the pool is ignored.
+    theme_pool: tuple[int, ...] = ()
+    jail_probability: float = JAIL_CANDIDATE_PROBABILITY
+    decor_density: float = 1.0        # scales blocking/open decor budgets
+    # Remaps applied to _decor_theme's result (never to jail rooms).
+    decor_overrides: tuple[tuple[str, str], ...] = ()
+
+
+FLOOR_VARIANT_ROTATION = (
+    # Tidy military bunker: hard materials, sparse cells, guard fittings.
+    FloorVariant("garrison", pillar_chance=0.5, jail_probability=0.15,
+                 theme_pool=(1, 15, 17),
+                 decor_overrides=(("barracks", "guardpost"),)),
+    # Cramped dungeon: bitten-into rooms, narrow halls, cellblocks, gore.
+    FloorVariant("catacombs", notch_chance=0.5, alcove_chance=0.5,
+                 widen_chance=0.55, jail_probability=0.6,
+                 theme_pool=(8, 1, 17), decor_density=0.7,
+                 decor_overrides=(("lounge", "barracks"),)),
+    # Stately galleries: long halls, colonnades, wood and insignia panels.
+    FloorVariant("grand-halls", hall_chance=0.4, extra_motif_chance=0.6,
+                 motif_pref=("gallery",), pillar_chance=0.6, widen_chance=1.0,
+                 theme_pool=(12, 40, 1), decor_density=1.25,
+                 decor_overrides=(("barracks", "lounge"),)),
+    # Supply depot: closet-heavy plan, loading niches, barrels everywhere.
+    FloorVariant("storehouse", closet_weight=0.65, alcove_chance=0.45,
+                 jail_probability=0.0, theme_pool=(17, 15, 12),
+                 decor_density=1.15,
+                 decor_overrides=(("barracks", "storage"), ("lounge", "storage"))),
+    # Officers' quarters: smooth walls, wide halls, lived-in furniture.
+    FloorVariant("quarters", notch_chance=0.2, widen_chance=0.9,
+                 theme_pool=(12, 40, 1), decor_density=1.1,
+                 decor_overrides=(("guardpost", "lounge"),)),
+)
+# Floors 9 and 10 keep their purpose-built inline treatments (boss arena,
+# treasure vault); the forced variants exist so every floor has a named
+# identity in the manifest and the decoration hooks apply uniformly.
+VARIANT_STRONGHOLD = FloorVariant("stronghold")
+VARIANT_VAULT = FloorVariant("vault")
+
+# In-game display flavor for mapinfo level names.
+_VARIANT_TITLES = {
+    "garrison": "The Garrison",
+    "catacombs": "The Catacombs",
+    "grand-halls": "Grand Halls",
+    "storehouse": "The Storehouse",
+    "quarters": "Officers' Quarters",
+    "stronghold": "The Stronghold",
+    "vault": "Treasure Vault",
+}
+
+
+def _variant_sequence(config: CampaignConfig) -> tuple[FloorVariant, ...]:
+    """The campaign's per-floor variants, a pure function of the seed.
+
+    Each pick draws from its own variant_seed and excludes the previous
+    floor's pick, so consecutive floors always differ and floor N's variant
+    is derivable without generating floors 1..N-1. Floors 9/10 are the
+    forced boss/vault identities."""
+    picks: list[FloorVariant] = []
+    for floor in range(1, 9):
+        rng = random.Random(config.variant_seed(floor))
+        pool = [variant for variant in FLOOR_VARIANT_ROTATION
+                if not picks or variant.name != picks[-1].name]
+        picks.append(rng.choice(pool))
+    return tuple(picks) + (VARIANT_STRONGHOLD, VARIANT_VAULT)
+
+
 CEILINGS = ("#383838", "#202840", "#402828", "#303820", "#382840")
 MUSIC = ("GETTHEM", "SEARCHN", "POW", "SUSPENSE", "WARMARCH", "NAZI_OMI")
 
@@ -291,6 +377,7 @@ class GeneratedMap:
     rooms: tuple[Room, ...] = ()
     edges: tuple[tuple[int, int], ...] = ()
     jail_rooms: frozenset[int] = frozenset()
+    variant: str = ""
 
 
 def _at(plane: list[int], x: int, y: int) -> int:
@@ -311,10 +398,12 @@ def _overlaps(a: Room, b: Room, pad: int = 2) -> bool:
                 a.y + a.h + pad <= b.y or b.y + b.h + pad <= a.y)
 
 
-def _plan_floor(rng: random.Random, complexity: int, number: int) -> FloorPlan:
+def _plan_floor(rng: random.Random, complexity: int, number: int,
+                variant: FloorVariant | None = None) -> FloorPlan:
+    variant = variant or FloorVariant("default")
     spine_count = min(8, 5 + (complexity + 1) // 2 + (number >= 6))
     beat_count = spine_count - 4
-    tiers = ["standard"] + [("hall" if rng.random() < 0.25 else "standard")
+    tiers = ["standard"] + [("hall" if rng.random() < variant.hall_chance else "standard")
                             for _ in range(beat_count)]
     tiers += ["anchor", rng.choice(("closet", "standard")), "standard"]
     roles = ["start"] + ["beat"] * beat_count + ["climax", "relief", "exit"]
@@ -327,10 +416,14 @@ def _plan_floor(rng: random.Random, complexity: int, number: int) -> FloorPlan:
     loops: list[tuple[int, int]] = []
     critical = set(range(spine_count))
     groups: list[tuple[int, ...]] = []
-    budget = min(3, 1 + (complexity >= 3) + (rng.random() < 0.35))
+    budget = min(3, 1 + (complexity >= 3) + (rng.random() < variant.extra_motif_chance))
     motifs = ["ring"]
     remaining = ["hub", "wings", "gallery"]
     rng.shuffle(remaining)
+    for preferred in reversed(variant.motif_pref):
+        if preferred in remaining:
+            remaining.remove(preferred)
+            remaining.insert(0, preferred)
     motifs += remaining[:budget - 1]
 
     # The first motif always spends topology budget on a real reconvergence.
@@ -384,7 +477,7 @@ def _plan_floor(rng: random.Random, complexity: int, number: int) -> FloorPlan:
         else:
             degrees = [sum(index in edge for edge in edges) for index in middle_beats]
             parent = rng.choices(middle_beats, weights=[1 / degree for degree in degrees], k=1)[0]
-        role = "closet" if rng.random() < 0.45 else "branch"
+        role = "closet" if rng.random() < variant.closet_weight else "branch"
         tier = "closet" if role == "closet" else rng.choice(("standard", "standard", "hall"))
         node = len(specs)
         specs.append(RoomSpec(role, tier, specs[parent].district, "filler"))
@@ -1457,7 +1550,8 @@ def _assign_sound_zones(tiles: list[int]) -> int:
 
 
 def _assign_area_themes(tiles: list[int], rooms: list[Room], districts: list[int],
-                        rng: random.Random, number: int
+                        rng: random.Random, number: int,
+                        theme_pool: tuple[int, ...] = ()
                         ) -> tuple[dict[tuple[int, int], int],
                                    dict[int, tuple[int, tuple[int, ...]]]]:
     """Choose one wall family per door-bounded area without exposing seams.
@@ -1523,6 +1617,12 @@ def _assign_area_themes(tiles: list[int], rooms: list[Room], districts: list[int
 
     distinct_districts = sorted(set(districts))
     deduped = list({theme[0]: theme for theme in WALL_THEMES}.values())
+    if theme_pool:
+        pooled = [theme for theme in deduped if theme[0] in theme_pool]
+        # A pool too small to give every district its own material would
+        # crash rng.sample; fall back to the full roster instead.
+        if len(pooled) >= len(distinct_districts):
+            deduped = pooled
     if number == 10 and rng.random() < 0.25:
         chosen = [FLOOR_TEN_STONE_THEME] + rng.sample(
             deduped, k=len(distinct_districts) - 1)
@@ -1537,7 +1637,9 @@ def _assign_area_themes(tiles: list[int], rooms: list[Room], districts: list[int
 def _select_jail_rooms(rooms: list[Room], districts: list[int],
                        component_of: dict[tuple[int, int], int],
                        group_theme: dict[int, tuple[int, tuple[int, ...]]],
-                       tiles: list[int], rng: random.Random) -> frozenset[int]:
+                       tiles: list[int], rng: random.Random,
+                       jail_probability: float = JAIL_CANDIDATE_PROBABILITY
+                       ) -> frozenset[int]:
     """Pick blue-stone rooms with a long enough unpainted wall for cells."""
     selected = []
     for ridx, room in enumerate(rooms):
@@ -1556,7 +1658,7 @@ def _select_jail_rooms(rooms: list[Room], districts: list[int],
             for cell in side:
                 run = run + 1 if _at(tiles, *cell) == WALL else 0
                 longest = max(longest, run)
-        if longest >= 5 and rng.random() < JAIL_CANDIDATE_PROBABILITY:
+        if longest >= 5 and rng.random() < jail_probability:
             selected.append(ridx)
     return frozenset(selected)
 
@@ -1565,8 +1667,14 @@ def _apply_wall_theme(tiles: list[int], things: list[int], rooms: list[Room],
                       districts: list[int], component_of: dict[tuple[int, int], int],
                       group_theme: dict[int, tuple[int, tuple[int, ...]]],
                       rng: random.Random,
-                      jail_rooms: frozenset[int] = frozenset()) -> None:
-    """Apply native WL6 materials without changing traversable geometry."""
+                      jail_rooms: frozenset[int] = frozenset()
+                      ) -> dict[int, list[tuple[int, int]]]:
+    """Apply native WL6 materials without changing traversable geometry.
+
+    Returns each room's landmark decor-wall cells (portraits, banners,
+    insignia) so the decoration pass can frame them with furniture instead
+    of placing pieces mid-room."""
+    landmark_cells: dict[int, list[tuple[int, int]]] = {}
     for index, tile in enumerate(tiles):
         if tile != WALL:
             continue
@@ -1616,27 +1724,50 @@ def _apply_wall_theme(tiles: list[int], things: list[int], rooms: list[Room],
         accent = accents[district % len(accents)]
         other_accents = set(accents) - {accent}
         if accent in DECOR_WALLS:
-            # A single landmark tile, centered on its longest clean wall run
-            # so it reads as a deliberately hung picture, not a random
-            # jitter -- never the material for the whole room.
-            runs = [[cell for cell in side if _at(tiles, *cell) == base] for side in sides]
+            # Landmark tiles hang like pictures on the longest clean
+            # (contiguous, same-base) wall run -- never the material for the
+            # whole room. Short runs get one centered tile; longer runs get a
+            # mirrored pair, and the longest a center-plus-pair triplet, so a
+            # dressed wall reads as deliberately symmetric composition.
+            runs: list[list[tuple[int, int]]] = []
+            for side in sides:
+                current: list[tuple[int, int]] = []
+                for cell in side:
+                    if _at(tiles, *cell) == base:
+                        current.append(cell)
+                    elif current:
+                        runs.append(current)
+                        current = []
+                if current:
+                    runs.append(current)
             run = max(runs, key=len, default=[])
             if run:
-                x, y = run[len(run) // 2]
-                landmark = rng.choices((5, 7), weights=(9, 1))[0] if accent == 7 else accent
-                _set(tiles, x, y, landmark)
-                # Plain bars sometimes get the loose remains that distinguish a
-                # neglected cellblock without turning the wall texture itself
-                # into a room-wide skeleton set piece.
-                if landmark == 5 and rng.random() < 0.3:
-                    interior = [(nx, ny) for nx, ny in ((x - 1, y), (x + 1, y),
-                                                         (x, y - 1), (x, y + 1))
-                                if room.x <= nx < room.x + room.w
-                                and room.y <= ny < room.y + room.h
-                                and _is_floor(_at(tiles, nx, ny))
-                                and _at(things, nx, ny) == 0]
-                    if interior:
-                        _set(things, *rng.choice(interior), rng.choice((42, 64, 65, 66)))
+                mid = len(run) // 2
+                if accent == 7 or len(run) < 9:
+                    # The caged-skeleton set piece stays singular.
+                    spots = [run[mid]]
+                elif len(run) < 13:
+                    offset = max(2, len(run) // 4)
+                    spots = [run[mid - offset], run[mid + offset]]
+                else:
+                    offset = max(3, len(run) // 4)
+                    spots = [run[mid - offset], run[mid], run[mid + offset]]
+                for x, y in spots:
+                    landmark = rng.choices((5, 7), weights=(9, 1))[0] if accent == 7 else accent
+                    _set(tiles, x, y, landmark)
+                    landmark_cells.setdefault(ridx, []).append((x, y))
+                    # Plain bars sometimes get the loose remains that distinguish a
+                    # neglected cellblock without turning the wall texture itself
+                    # into a room-wide skeleton set piece.
+                    if landmark == 5 and rng.random() < 0.3:
+                        interior = [(nx, ny) for nx, ny in ((x - 1, y), (x + 1, y),
+                                                             (x, y - 1), (x, y + 1))
+                                    if room.x <= nx < room.x + room.w
+                                    and room.y <= ny < room.y + room.h
+                                    and _is_floor(_at(tiles, nx, ny))
+                                    and _at(things, nx, ny) == 0]
+                        if interior:
+                            _set(things, *rng.choice(interior), rng.choice((42, 64, 65, 66)))
             continue
         for side in sides:
             for x, y in side:
@@ -1651,6 +1782,7 @@ def _apply_wall_theme(tiles: list[int], things: list[int], rooms: list[Room],
                        for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1))):
                     continue
                 _set(tiles, x, y, accent)
+    return landmark_cells
 
 
 def _hint_secrets(tiles: list[int], things: list[int],
@@ -2378,12 +2510,54 @@ def _ensure_early_heal(tiles: list[int], things: list[int], rooms: list[Room],
         _set(things, *rng.choice(candidates), FOOD)
 
 
+# Items that read as a deliberate matched pair when mirrored beside a door
+# or under a landmark wall: plants, lamps, pillars, vases, and barrels.
+_FRAMEABLE = frozenset({24, 26, 30, 31, 34, 35, 58})
+
+
+@dataclass(frozen=True, slots=True)
+class RoomAnchors:
+    """Composition anchors decoration builds around instead of free scatter."""
+    # ((entry cell, inward unit vector), ...) for every doorway into the room.
+    door_entries: tuple[tuple[tuple[int, int], tuple[int, int]], ...]
+    # Entry cells plus one cell straight in: reachability alone still lets
+    # furniture jam a doorway visually, so these ban all blocking decor.
+    keep_clear: frozenset[tuple[int, int]]
+    corners: tuple[tuple[int, int], ...]
+    wall_midcells: tuple[tuple[int, int], ...]
+
+
+def _room_anchors(room: Room, tiles: list[int]) -> RoomAnchors:
+    entries: list[tuple[tuple[int, int], tuple[int, int]]] = []
+    for x in range(room.x, room.x + room.w):
+        for y, outward in ((room.y, -1), (room.y + room.h - 1, 1)):
+            if (_at(tiles, x, y + outward) in DOORS
+                    and _is_floor(_at(tiles, x, y))):
+                entries.append(((x, y), (0, -outward)))
+    for y in range(room.y, room.y + room.h):
+        for x, outward in ((room.x, -1), (room.x + room.w - 1, 1)):
+            if (_at(tiles, x + outward, y) in DOORS
+                    and _is_floor(_at(tiles, x, y))):
+                entries.append(((x, y), (-outward, 0)))
+    clear = set()
+    for (ex, ey), (ix, iy) in entries:
+        clear.add((ex, ey))
+        clear.add((ex + ix, ey + iy))
+    cx, cy = room.center
+    corners = ((room.x + 1, room.y + 1), (room.x + room.w - 2, room.y + 1),
+               (room.x + 1, room.y + room.h - 2),
+               (room.x + room.w - 2, room.y + room.h - 2))
+    midcells = ((cx, room.y + 1), (cx, room.y + room.h - 2),
+                (room.x + 1, cy), (room.x + room.w - 2, cy))
+    return RoomAnchors(tuple(entries), frozenset(clear), corners, midcells)
+
+
 def _place_zoned(room: Room,
                  zones: tuple[tuple[tuple[int, ...], tuple[int, ...]],
                               tuple[tuple[int, ...], tuple[int, ...]]],
                  free: set[tuple[int, int]], blocked_cells: set[tuple[int, int]],
                  reserved: set[tuple[int, int]], things: list[int], rng: random.Random,
-                 try_place, blocking_budget: int) -> None:
+                 try_place, blocking_budget: int, place_open=None) -> None:
     """Cluster two compatible furniture concepts on opposite room halves."""
     cx, cy = room.center
     horizontal = room.w >= room.h
@@ -2420,11 +2594,26 @@ def _place_zoned(room: Room,
     for zone_index, ((_, open_items), budget) in enumerate(zip(zones, open_budgets)):
         loose = [cell for cell in free - reserved
                  if in_zone(cell, zone_index == 0) and _at(things, *cell) == 0]
-        rng.shuffle(loose)
-        for cell in loose[:rng.randrange(0, budget + 1)]:
-            _set(things, *cell, rng.choice(open_items))
-            reserved.add(cell)
-            free.discard(cell)
+
+        # Prefer cells beside this zone's furniture cluster, then wall-hugging
+        # cells, so themed clutter reads as attached to its concept rather
+        # than sprinkled across the half.
+        def _rank(cell: tuple[int, int]) -> tuple[int, int, float]:
+            beside = any((cell[0] + dx, cell[1] + dy) in blocked_cells
+                         for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)))
+            inset = min(cell[0] - room.x, room.x + room.w - 1 - cell[0],
+                        cell[1] - room.y, room.y + room.h - 1 - cell[1])
+            return (0 if beside else 1, inset, rng.random())
+
+        loose.sort(key=_rank)
+        for cell in loose[:max(1, rng.randrange(0, budget + 1)) if budget else 0]:
+            item = rng.choice(open_items)
+            if place_open is not None:
+                place_open(cell, item)
+            else:
+                _set(things, *cell, item)
+                reserved.add(cell)
+                free.discard(cell)
 
 
 def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
@@ -2432,24 +2621,42 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
                        rng: random.Random,
                        roles: list[str] | None = None,
                        specs: list | None = None,
-                       jail_rooms: frozenset[int] = frozenset()) -> None:
+                       jail_rooms: frozenset[int] = frozenset(),
+                       density: float = 1.0,
+                       theme_overrides: tuple[tuple[str, str], ...] = (),
+                       landmarks: dict[int, list[tuple[int, int]]] | None = None,
+                       paths: list[list[tuple[int, int]]] | None = None) -> None:
     """Place purposeful, themed furniture in rooms following community-map patterns.
 
-    Blocking statics go in deliberate arrangements (pillar pairs, corner
-    clusters, entry flanking, or occasional partial dividers) chosen to match
-    the room's role and tier.  Reachability is checked before any blocking item
-    is committed, so furniture can never wall the player out of any area.
-    Open (non-solid) items are placed loosely but still theme-appropriate.
+    Blocking statics go in deliberate arrangements (landmark-wall frames,
+    doorway flanks, pillar pairs, corner clusters, banquet rows, or occasional
+    partial dividers) chosen to match the room's role and tier and anchored to
+    the room's own features rather than scattered on free cells. Reachability
+    is checked before any blocking item is committed, so furniture can never
+    wall the player out of any area, and doorway approach cells stay clear so
+    an entrance never reads furniture-jammed. Open (non-solid) items are
+    anchored too: ceiling fixtures on the center axis, clutter beside
+    furniture or wall midpoints, rhythm lights down long corridors, and one
+    niche piece in each small dead-end alcove pocket.
     """
     baseline = len(_reachable(tiles, start, locked_open=True))
     blocked_cells: set[tuple[int, int]] = set()
     _roles = roles or ["beat"] * len(rooms)
     _tiers = [s.tier for s in specs] if specs else ["standard"] * len(rooms)
+    overrides = dict(theme_overrides)
+    # Engine statics soft cap (DESIGN §9.1): treasure, pickups, and keys
+    # already on the plane count against it; decoration consumes only what
+    # headroom remains instead of racing the 400 hard limit.
+    static_headroom = 320 - sum(1 for thing in things if 23 <= thing <= 74)
 
     for ridx, room in enumerate(rooms):
         role = _roles[ridx] if ridx < len(_roles) else "beat"
         tier = _tiers[ridx] if ridx < len(_tiers) else "standard"
-        theme = "jail" if ridx in jail_rooms else _decor_theme(role, tier)
+        if ridx in jail_rooms:
+            theme = "jail"
+        else:
+            theme = _decor_theme(role, tier)
+            theme = overrides.get(theme, theme)
 
         if room.w < 5 or room.h < 5:
             continue
@@ -2463,14 +2670,31 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
                     if _is_floor(_at(tiles, x, y))}
         free: set[tuple[int, int]] = {cell for cell in interior - reserved
                                       if _at(things, *cell) == 0}
+        anchors = _room_anchors(room, tiles)
+        keep_clear = set(anchors.keep_clear)
+        # The outermost floor ring is excluded from `interior` (and thus from
+        # every legacy pattern), but wall-flush anchors -- door flanks and
+        # landmark frames -- live exactly there, so track it separately.
+        ring = ({(x, y) for x in range(room.x, room.x + room.w)
+                 for y in (room.y, room.y + room.h - 1)}
+                | {(x, y) for x in (room.x, room.x + room.w - 1)
+                   for y in range(room.y, room.y + room.h)})
+        edge_free = {cell for cell in ring - reserved
+                     if _is_floor(_at(tiles, *cell)) and _at(things, *cell) == 0}
 
         def _near_wall(x: int, y: int) -> bool:
             return (x <= room.x + 2 or x >= room.x + room.w - 3
                     or y <= room.y + 2 or y >= room.y + room.h - 3)
 
         def _try_place(cells: list[tuple[int, int]], item: int) -> bool:
-            """Commit a blocking group if all cells are free and reachability holds."""
-            if not all(c in free for c in cells):
+            """Commit a blocking group if all cells are free, no doorway
+            approach is jammed, statics headroom remains, and reachability
+            holds."""
+            nonlocal static_headroom
+            if static_headroom < len(cells):
+                return False
+            if not all((c in free or c in edge_free) and c not in keep_clear
+                       for c in cells):
                 return False
             candidate = blocked_cells | set(cells)
             if len(_reachable(tiles, start, locked_open=True, blocked=candidate)) < baseline - len(candidate):
@@ -2479,11 +2703,58 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
                 _set(things, *c, item)
                 reserved.add(c)
                 blocked_cells.add(c)
+                room_blocked.append(c)
                 free.discard(c)
+                edge_free.discard(c)
+            static_headroom -= len(cells)
             return True
 
-        pair_budget = 2 if room.w >= 8 and room.h >= 8 else 1
+        def _place_open(cell: tuple[int, int], item: int) -> bool:
+            """Commit one non-solid item; only occupancy and headroom apply."""
+            nonlocal static_headroom
+            if static_headroom <= 0 or _at(things, *cell) != 0:
+                return False
+            _set(things, *cell, item)
+            reserved.add(cell)
+            free.discard(cell)
+            edge_free.discard(cell)
+            static_headroom -= 1
+            return True
+
+        pair_budget = max(1, round((2 if room.w >= 8 and room.h >= 8 else 1) * density))
         pairs_placed = 0
+        room_blocked: list[tuple[int, int]] = []
+        frame_pool = tuple(item for item in blocking if item in _FRAMEABLE) or blocking
+
+        # --- Vignette: frame a landmark wall (portrait, banner, insignia) ---
+        # The wall pass hangs its landmarks symmetrically; a matched pair of
+        # plants/lamps beneath one turns that wall into a composed set piece
+        # and keeps the furniture from floating mid-room. The cell directly
+        # in front stays clear so the frame never hides the picture.
+        for lx, ly in (landmarks or {}).get(ridx, ()):
+            if pairs_placed >= pair_budget:
+                break
+            inward = next(((dx, dy) for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1))
+                           if room.x <= lx + dx < room.x + room.w
+                           and room.y <= ly + dy < room.y + room.h), None)
+            if inward is None:
+                continue
+            ix, iy = inward
+            front = (lx + ix, ly + iy)
+            keep_clear.add(front)
+            flanks = [(front[0] + iy, front[1] + ix), (front[0] - iy, front[1] - ix)]
+            if _try_place(flanks, rng.choice(frame_pool)):
+                pairs_placed += 1
+
+        # --- Vignette: matched pair flanking a doorway ---
+        if pairs_placed < pair_budget and anchors.door_entries and rng.random() < 0.4:
+            entries = list(anchors.door_entries)
+            rng.shuffle(entries)
+            for (ex, ey), (ix, iy) in entries:
+                flanks = [(ex + iy, ey + ix), (ex - iy, ey - ix)]
+                if _try_place(flanks, rng.choice(frame_pool)):
+                    pairs_placed += 1
+                    break
 
         # --- Pattern: partial divider (community-map technique, rare) ---
         # A row of pillars or plants that visually subdivides a large room
@@ -2510,15 +2781,14 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
                     if len(cells) >= 2 and _try_place(cells, div_item):
                         pairs_placed = pair_budget
 
-        # --- Pattern: corner barrel cluster (storage rooms) ---
-        if pairs_placed < pair_budget and theme == "storage":
+        # --- Pattern: corner stash cluster (storage always; battle-worn
+        # barracks and bare jail cells occasionally) with a spill of loose
+        # pots or blood beside it so the pile reads lived-in, not staged ---
+        if pairs_placed < pair_budget and (
+                theme == "storage"
+                or (theme in ("barracks", "jail") and rng.random() < 0.35)):
             item = rng.choice(blocking)
-            corners = [
-                (room.x + 1, room.y + 1),
-                (room.x + room.w - 2, room.y + 1),
-                (room.x + 1, room.y + room.h - 2),
-                (room.x + room.w - 2, room.y + room.h - 2),
-            ]
+            corners = list(anchors.corners)
             rng.shuffle(corners)
             for cornx, corny in corners:
                 nx = cornx + (1 if cornx < cx else -1)
@@ -2527,6 +2797,11 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
                            if c in free][:2]
                 if len(cluster) == 2 and _try_place(cluster, item):
                     pairs_placed += 1
+                    spill = [(x + dx, y + dy) for x, y in cluster
+                             for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1))
+                             if (x + dx, y + dy) in free]
+                    if spill:
+                        _place_open(rng.choice(spill), 61 if theme == "jail" else 67)
                     break
 
         # --- Pattern: pillar colonnade (grand / anchor rooms) ---
@@ -2540,6 +2815,27 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
                 if _try_place([a, b], 30):   # WhitePillar
                     pairs_placed += 1
 
+        # --- Vignette: banquet row along the center axis ---
+        # Tables march down the room's long axis in mirrored pairs, the way
+        # authored mess halls are dressed, instead of landing on random cells.
+        if (pairs_placed < pair_budget and theme in ("barracks", "lounge")
+                and max(room.w, room.h) >= 8 and rng.random() < 0.3):
+            horizontal = room.w >= room.h
+            cells: list[tuple[int, int]] = []
+            for offset in (1, 3):
+                pair = ([(cx - offset, cy), (cx + offset, cy)] if horizontal
+                        else [(cx, cy - offset), (cx, cy + offset)])
+                if all(cell in free for cell in pair):
+                    cells += pair
+            if cells and _try_place(cells, 25):   # TableWithChairs
+                pairs_placed += 1
+
+        # --- Vignette: courtyard centerpiece at the exact room center ---
+        if (pairs_placed < pair_budget and theme in ("grand", "storage")
+                and room.w >= 9 and room.h >= 9 and rng.random() < 0.3):
+            if _try_place([(cx, cy)], 59 if theme == "storage" else 30):
+                pairs_placed += 1
+
         zones = _DECOR_ZONES.get(theme)
         themed_roll = (zones is not None and room.w >= 6 and room.h >= 6
                        and rng.random() < 0.75)
@@ -2551,33 +2847,146 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
             # must not lose its open decoration just because no blocking
             # budget is left for a themed cluster.
             _place_zoned(room, zones, free, blocked_cells, reserved, things, rng,
-                         _try_place, max(0, pair_budget - pairs_placed))
+                         _try_place, max(0, pair_budget - pairs_placed), _place_open)
             pairs_placed = pair_budget
         else:
             # --- Pattern: symmetric wall pairs (general fallback) ---
+            # Candidates come only from the wall-hugging band: a mirrored
+            # pair mid-room reads as random clutter, the same pair against
+            # opposite walls reads as furnishing.
             if pairs_placed < pair_budget:
-                x_pairs = [((x, y), (2 * cx - x, y)) for x, y in free
+                band = [cell for cell in free if _near_wall(*cell)]
+                x_pairs = [((x, y), (2 * cx - x, y)) for x, y in band
                            if x < cx and (2 * cx - x, y) in free]
-                y_pairs = [((x, y), (x, 2 * cy - y)) for x, y in free
+                y_pairs = [((x, y), (x, 2 * cy - y)) for x, y in band
                            if y < cy and (x, 2 * cy - y) in free]
                 all_pairs = x_pairs + y_pairs
-                all_pairs.sort(key=lambda p: (0 if _near_wall(*p[0]) or _near_wall(*p[1]) else 1,
-                                              rng.random()))
+                rng.shuffle(all_pairs)
                 for (ax, ay), (bx, by) in all_pairs:
                     if pairs_placed >= pair_budget:
                         break
                     if _try_place([(ax, ay), (bx, by)], rng.choice(blocking)):
                         pairs_placed += 1
 
-            # --- Open (non-solid) items, theme-appropriate ---
+            # --- Vignette: prisoner remains in a jail corner ---
+            # Gore clusters where a body would lie instead of speckling
+            # the whole cell uniformly.
+            if theme == "jail":
+                corner_cells = [cell for cell in anchors.corners if cell in free]
+                if corner_cells and rng.random() < 0.7:
+                    corner = rng.choice(corner_cells)
+                    if _place_open(corner, 32):   # SkeletonFlat
+                        spots = [cell for cell in
+                                 ((corner[0] + 1, corner[1]), (corner[0] - 1, corner[1]),
+                                  (corner[0], corner[1] + 1), (corner[0], corner[1] - 1))
+                                 if cell in free]
+                        rng.shuffle(spots)
+                        for cell in spots[:rng.randrange(1, 3)]:
+                            _place_open(cell, 61)   # Blood
+
+            # --- Open (non-solid) items, anchored instead of scattered ---
+            # Ceiling fixtures hang on the room's center axis; floor clutter
+            # sits beside furniture or hugs a wall midpoint. Nothing floats
+            # on a random mid-room cell.
             area = room.w * room.h
-            open_budget = 3 if area >= 80 else 2 if area >= 45 else 1
-            loose = [c for c in free - reserved if _at(things, *c) == 0]
-            rng.shuffle(loose)
-            for cell in loose[:rng.randrange(0, open_budget + 1)]:
-                _set(things, *cell, rng.choice(open_items))
-                reserved.add(cell)
-                free.discard(cell)
+            open_budget = max(1, round((3 if area >= 80 else 2 if area >= 45 else 1) * density))
+            count = rng.randrange(0, open_budget + 1)
+            ceiling = [item for item in open_items if item in (27, 37)]
+            floor_clutter = [item for item in open_items if item not in (27, 37)]
+            spots: list[tuple[tuple[int, int], int]] = []
+            if ceiling:
+                third = max(2, max(room.w, room.h) // 3)
+                axis = [(cx, cy)]
+                axis += ([(cx - third, cy), (cx + third, cy)] if room.w >= room.h
+                         else [(cx, cy - third), (cx, cy + third)])
+                spots += [(cell, rng.choice(ceiling)) for cell in axis if cell in free]
+            if floor_clutter:
+                beside = [(x + dx, y + dy) for x, y in room_blocked
+                          for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1))
+                          if (x + dx, y + dy) in free]
+                rng.shuffle(beside)
+                spots += [(cell, rng.choice(floor_clutter)) for cell in beside[:2]]
+                mids = [cell for cell in anchors.wall_midcells if cell in free]
+                rng.shuffle(mids)
+                spots += [(cell, rng.choice(floor_clutter)) for cell in mids]
+            for cell, item in spots[:count]:
+                _place_open(cell, item)
+
+    # --- Corridor rhythm: ceiling lights pace long straight halls ---
+    # Open fixtures only, so nothing here can affect reachability, patrol
+    # routes (in-room only), or actor facing.
+    for path in paths or ():
+        segments: list[list[tuple[int, int]]] = [[]]
+        previous: tuple[int, int] | None = None
+        heading: tuple[int, int] | None = None
+        for cell in path:
+            step = ((cell[0] - previous[0], cell[1] - previous[1])
+                    if previous is not None else None)
+            eligible = (not _inside_room(rooms, *cell)
+                        and _is_floor(_at(tiles, *cell))
+                        and not any(_at(tiles, cell[0] + dx, cell[1] + dy) in DOORS
+                                    for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1))))
+            if eligible and (step is None or heading is None or step == heading):
+                segments[-1].append(cell)
+            else:
+                segments.append([cell] if eligible else [])
+            if step is not None:
+                heading = step
+            previous = cell
+        for segment in segments:
+            if len(segment) < 5:
+                continue
+            for cell in segment[2:-1:4]:
+                if static_headroom <= 0:
+                    break
+                if cell not in reserved and _at(things, *cell) == 0:
+                    _set(things, *cell, 37)   # CeilingLight
+                    reserved.add(cell)
+                    static_headroom -= 1
+
+    # --- Alcove niches: a dead-end pocket earns one deliberate piece ---
+    if paths:
+        path_cells = {cell for path in paths for cell in path}
+        outside = {(index % GRID, index // GRID)
+                   for index, tile in enumerate(tiles) if _is_floor(tile)}
+        outside -= path_cells
+        outside = {cell for cell in outside if not _inside_room(rooms, *cell)}
+        while outside:
+            component = {outside.pop()}
+            queue = deque(component)
+            while queue:
+                x, y = queue.popleft()
+                for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                    neighbor = (x + dx, y + dy)
+                    if neighbor in outside:
+                        outside.discard(neighbor)
+                        component.add(neighbor)
+                        queue.append(neighbor)
+            if len(component) > 9:
+                continue
+            mouths = [cell for cell in component
+                      if any((cell[0] + dx, cell[1] + dy) in path_cells
+                             or _inside_room(rooms, cell[0] + dx, cell[1] + dy)
+                             for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)))]
+            if not mouths:
+                continue   # sealed pocket (a secret) -- never decorate
+            deep = max(component,
+                       key=lambda c: min(abs(c[0] - m[0]) + abs(c[1] - m[1])
+                                         for m in mouths))
+            if deep in reserved or _at(things, *deep) != 0 or static_headroom <= 0:
+                continue
+            if deep not in mouths:
+                candidate = blocked_cells | {deep}
+                if len(_reachable(tiles, start, locked_open=True,
+                                  blocked=candidate)) == baseline - len(candidate):
+                    _set(things, *deep, rng.choice((35, 31, 26, 58)))
+                    reserved.add(deep)
+                    blocked_cells.add(deep)
+                    static_headroom -= 1
+                    continue
+            _set(things, *deep, rng.choice((67, 32)))
+            reserved.add(deep)
+            static_headroom -= 1
 
 
 def _place_boss(tiles: list[int], things: list[int], room: Room,
@@ -2628,7 +3037,8 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
     tiles = [WALL] * (GRID * GRID)
     things = [0] * (GRID * GRID)
     complexity = int(config.layout_complexity)
-    plan = _plan_floor(rng, complexity, number)
+    floor_variant = _variant_sequence(config)[number - 1]
+    plan = _plan_floor(rng, complexity, number, variant=floor_variant)
     placed = _place_planned_rooms(rng, plan, number)
     rooms = placed.rooms
     edges = placed.edges
@@ -2639,14 +3049,14 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
         for y in range(room.y, room.y + room.h):
             for x in range(room.x, room.x + room.w):
                 _set(tiles, x, y, FLOOR)
-    _carve_notches(tiles, rooms, rng)
-    _carve_alcoves(tiles, rooms, rng)
+    _carve_notches(tiles, rooms, rng, chance=floor_variant.notch_chance)
+    _carve_alcoves(tiles, rooms, rng, chance=floor_variant.alcove_chance)
     for room in rooms:
-        _add_pillars(tiles, room, rng)
+        _add_pillars(tiles, room, rng, chance=floor_variant.pillar_chance)
     door_zones: set[tuple[int, int]] = set()
     paths = [_carve_connection(tiles, rooms[a], rooms[b], rng, complexity, door_zones)
              for a, b in edges]
-    _widen_corridors(tiles, rooms, paths, rng)
+    _widen_corridors(tiles, rooms, paths, rng, widen_chance=floor_variant.widen_chance)
     start = rooms[0].center
     _set(things, *start, PLAYER_START)
     is_boss = number == 9
@@ -2781,12 +3191,17 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
                                     start, exit_room)
     _ensure_early_heal(tiles, things, rooms, start, reserved, rng)
     _assign_sound_zones(tiles)
-    component_of, group_theme = _assign_area_themes(tiles, rooms, districts, rng, number)
-    jail_rooms = _select_jail_rooms(rooms, districts, component_of, group_theme, tiles, rng)
-    _apply_wall_theme(tiles, things, rooms, districts, component_of, group_theme, rng, jail_rooms)
+    component_of, group_theme = _assign_area_themes(tiles, rooms, districts, rng, number,
+                                                    theme_pool=floor_variant.theme_pool)
+    jail_rooms = _select_jail_rooms(rooms, districts, component_of, group_theme, tiles, rng,
+                                    jail_probability=floor_variant.jail_probability)
+    landmarks = _apply_wall_theme(tiles, things, rooms, districts, component_of, group_theme,
+                                  rng, jail_rooms)
     _hint_secrets(tiles, things, component_of, group_theme, rng)
     _place_decorations(rooms, tiles, things, reserved, start, rng, roles=roles, specs=specs,
-                       jail_rooms=jail_rooms)
+                       jail_rooms=jail_rooms, density=floor_variant.decor_density,
+                       theme_overrides=floor_variant.decor_overrides, landmarks=landmarks,
+                       paths=paths)
     result = GeneratedMap(number=number, tiles=tiles, things=things, start=start,
                           exit_stand=exit_stand, secret_rewards=rewards, seed=seed,
                           has_secret_exit=secret_exit, locked_doors=locks, boss=is_boss,
@@ -2794,7 +3209,8 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
                           motif_rooms=tuple(spec.motif for spec in specs),
                           secret_variants=tuple(secret_variants),
                           shortcut_pushwalls=tuple(shortcut_pushwalls), rooms=tuple(rooms),
-                          edges=tuple(edges), jail_rooms=jail_rooms)
+                          edges=tuple(edges), jail_rooms=jail_rooms,
+                          variant=floor_variant.name)
     validate_map(result)
     result.critique = _critique(result)
     return result
@@ -3013,7 +3429,7 @@ def _wad_bytes(name: str, tiles: list[int], things: list[int]) -> bytes:
     return b"PWAD" + struct.pack("<II", 2, 12 + len(payload)) + payload + directory
 
 
-def _mapinfo(secret_from: int) -> str:
+def _mapinfo(secret_from: int, variants: tuple[str, ...] = ()) -> str:
     lines = [
         'gameinfo { drawreadthis = false }',
         'clearepisodes',
@@ -3030,7 +3446,10 @@ def _mapinfo(secret_from: int) -> str:
         ceiling = CEILINGS[(number - 1) % len(CEILINGS)]
         music = MUSIC[(number - 1) % len(MUSIC)]
         par = 90 + number * 30
-        lines.append(f'map "IW{number:02d}" "Random Floor {number}" {{ next = "{nxt}"{secret} '
+        title = (_VARIANT_TITLES.get(variants[number - 1], "")
+                 if number <= len(variants) else "")
+        name = f"Floor {number}: {title}" if title else f"Random Floor {number}"
+        lines.append(f'map "IW{number:02d}" "{name}" {{ next = "{nxt}"{secret} '
                      f'levelnum = {number} par = {par} defaultceiling = "{ceiling}" music = "{music}" }}')
     lines.append(f'map "IW10" "Secret Floor" {{ next = "IW{secret_from + 1:02d}" levelnum = 10 '
                  f'par = 360 defaultceiling = "{CEILINGS[4]}" music = "{MUSIC[5]}" }}')
@@ -3075,6 +3494,7 @@ def generate_campaign(config: CampaignConfig, output: Path,
                     "locked_doors": level.locked_doors,
                     "boss": level.boss,
                     "enemy_tiers": level.enemy_tiers,
+                    "variant": level.variant,
                     "motifs": level.motifs,
                     "secret_variants": level.secret_variants,
                     "critique": level.critique,
@@ -3099,7 +3519,7 @@ def generate_campaign(config: CampaignConfig, output: Path,
                 info.compress_type = zipfile.ZIP_DEFLATED
                 info.external_attr = 0o644 << 16
                 package.writestr(info, data)
-            write("mapinfo.txt", _mapinfo(secret_from))
+            write("mapinfo.txt", _mapinfo(secret_from, tuple(level.variant for level in levels)))
             write("infiniwolf-manifest.json", json.dumps(manifest, indent=2, sort_keys=True))
             for level in levels:
                 write(f"maps/iw{level.number:02d}.wad",

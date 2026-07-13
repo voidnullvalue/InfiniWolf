@@ -39,6 +39,18 @@ class CampaignConfig:
         payload = f"infiniwolf:v1:{self.seed}:{floor}:{attempt}".encode("ascii")
         return int.from_bytes(hashlib.blake2b(payload, digest_size=8).digest(), "little")
 
+    def variant_seed(self, floor: int) -> int:
+        """Seed for a floor's base-variant pick, separate from floor_seed.
+
+        Deliberately independent of attempt: validation retries reroll a
+        floor's layout but must keep its variant identity. A distinct payload
+        prefix keeps this stream decoupled from floor_seed, whose format is
+        frozen by the determinism contract."""
+        if not 1 <= floor <= 10:
+            raise ValueError("floor must be between 1 and 10")
+        payload = f"infiniwolf:variant:v1:{self.seed}:{floor}".encode("ascii")
+        return int.from_bytes(hashlib.blake2b(payload, digest_size=8).digest(), "little")
+
     def to_json(self) -> str:
         values = asdict(self)
         values.update({key: int(value) for key, value in values.items() if isinstance(value, IntEnum)})

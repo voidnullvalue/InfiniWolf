@@ -16,6 +16,14 @@ class ConfigTests(unittest.TestCase):
         self.assertNotEqual(config.floor_seed(2), config.floor_seed(3))
         self.assertNotEqual(config.floor_seed(2), config.floor_seed(2, 1))
 
+    def test_variant_seeds_are_stable_distinct_and_separate_from_floor_seeds(self):
+        config = CampaignConfig(seed=123)
+        self.assertEqual(config.variant_seed(2), config.variant_seed(2))
+        self.assertNotEqual(config.variant_seed(2), config.variant_seed(3))
+        self.assertNotEqual(config.variant_seed(2), config.floor_seed(2))
+        with self.assertRaises(ValueError):
+            config.variant_seed(0)
+
     def test_json_uses_numeric_intensities(self):
         self.assertIn('"guard_density": 3', CampaignConfig(seed=123).to_json())
 
