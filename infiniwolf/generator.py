@@ -40,6 +40,12 @@ ELEVATOR_TILE = 21
 SECRET_EXIT_ZONE = 107
 GOLD_KEY = 43
 HANS_GROSSE = 214
+# Native WL6 boss roster only (wolfbosses.txt): Hans Grosse, Dr. Schabbs,
+# Gretel Grosse, Otto Giftmacher, Fat Face, the Episode 4 Hitler pair.
+# Trans Grosse/UberMutant/Wilhelm/DeathKnight are Spear of Destiny actors
+# (spearbosses.txt) whose sprites live in SOD's VSWAP, not wl6's -- placing
+# them here would show up as missing graphics under "--data wl6".
+BOSSES = (HANS_GROSSE, 196, 197, 215, 179, 160, 178)
 
 # Native Wolf3D map object numbers, interpreted by ECWolf's base translator.
 GUARDS = (108, 109, 110, 111)
@@ -55,7 +61,7 @@ TREASURE = (52, 53, 54, 55)
 ENEMY_CODES = frozenset(code + tier * 36
                         for family in (GUARDS, OFFICERS, SS, DOGS,
                                        PATROL_GUARDS, PATROL_OFFICERS, PATROL_SS, PATROL_DOGS)
-                        for code in family for tier in range(3)) | {HANS_GROSSE}
+                        for code in family for tier in range(3)) | set(BOSSES)
 
 # Threat-weighted roster: (name, thing codes, base frequency weight, expected
 # bullets to down one at routine range). Guards stay the common baseline
@@ -75,20 +81,36 @@ FAMILY_BY_CODE = {code + 36 * tier: family
                   for code in variant for tier in range(3)}
 AMMO_COST = {family: cost for _, family, _, cost in ENEMY_FAMILIES}
 
-# Native WL6 wall tiles only. Each tuple is (base, room accents).
+# Native WL6 wall tiles only. Each tuple is (base, room accents), and every
+# tile in an entry is verified (by prefix in wolf3d.txt's xlat table, e.g.
+# GSTONE*/BSTONE*/WOD*/METAL*/BRICK*) to belong to the SAME texture family as
+# that entry's base. Mixing families within one theme (e.g. a blue stone base
+# with metal or grey accents) used to be silently possible here -- floor
+# number picked a fixed theme index, so only one entry's mismatch was ever on
+# screen at a time and it went unnoticed. Once theme selection was randomized
+# per floor (any floor can land on any entry), every entry needs to be
+# internally coherent on its own, not just "looks fine on floor N".
 # Accent 13 (FAKEDOR, a sealed door/lift-shutter graphic) and 16 (SKY1, an
 # outdoor-only texture) are deliberately excluded: neither reads as a normal
 # room wall, so they're replaced with plain material variants below.
+# Tile 5 (BSTCELA1, the barred prison-cell wall) reads as a specific set
+# piece, not a generic wall -- it must never be the base fill for an entire
+# floor. It's demoted to a room accent here so only the districts that land
+# on it get a cellblock-styled room; the base stays the plain blue stone (8).
 WALL_THEMES = (
-    (1, (2, 3, 4)), (5, (6, 7, 8)), (8, (9, 14, 15)),
-    (12, (10, 11, 17)), (15, (14, 17, 18)), (1, (9, 19, 20)),
+    (1, (2, 3, 4)),        # grey stone: GSTONEA/B + flag/portrait decor
+    (8, (9, 7, 41)),       # blue stone: BSTONEA/B + cellblock accent + sign decor
+    (40, (9, 34, 36)),     # blue wall: BLUWALL + blue stone alt + skull/swastika decor
+    (12, (10, 11, 23)),    # wood: WOOD1 + eagle/portrait/cross decor
+    (15, (14,)),           # metal: METAL1 + sign decor
+    (17, (18, 20)),        # brick: BRICK1 + writing/eagle decor
 )
 # Landmark decoration tiles (portraits, banners, insignia, signage/graffiti):
 # these should read as a single accent set into an otherwise plain wall, the
 # way they're used in the original game, never as the material of an entire
 # room. Every other accent above is just an alternate plain material and is
 # fine covering a whole room's walls.
-DECOR_WALLS = frozenset({3, 4, 6, 10, 11, 14, 18, 20})
+DECOR_WALLS = frozenset({3, 4, 10, 11, 14, 18, 20, 23, 34, 36, 41})
 # Fallback secret hints when a floor's theme has no decor accent of its own:
 # the grey-stone swastika banner and Hitler portrait, the two tiles the
 # original episodes most often hang on a pushwall.
@@ -1173,10 +1195,10 @@ def _assign_sound_zones(tiles: list[int]) -> int:
     return len(components)
 
 
-def _apply_wall_theme(tiles: list[int], rooms: list[Room], districts: list[int], number: int,
+def _apply_wall_theme(tiles: list[int], rooms: list[Room], districts: list[int], theme_index: int,
                       rng: random.Random) -> None:
     """Apply native WL6 materials without changing traversable geometry."""
-    base, accents = WALL_THEMES[(number - 1) % len(WALL_THEMES)]
+    base, accents = WALL_THEMES[theme_index]
     for index, tile in enumerate(tiles):
         if tile == WALL:
             tiles[index] = base
@@ -1214,13 +1236,13 @@ def _apply_wall_theme(tiles: list[int], rooms: list[Room], districts: list[int],
                 _set(tiles, x, y, accent)
 
 
-def _hint_secrets(tiles: list[int], things: list[int], number: int,
+def _hint_secrets(tiles: list[int], things: list[int], theme_index: int,
                   rng: random.Random) -> None:
     """Hang a landmark decor tile (banner, portrait, insignia) on every
     pushwall, the way the original episodes telegraph most of theirs. Runs
     after _apply_wall_theme so the theme can't repaint the hint, and prefers
     the floor theme's own decor accents so the hint matches the material."""
-    _, accents = WALL_THEMES[(number - 1) % len(WALL_THEMES)]
+    _, accents = WALL_THEMES[theme_index]
     hints = tuple(accent for accent in accents if accent in DECOR_WALLS) or SECRET_HINTS
     for index, thing in enumerate(things):
         if thing == PUSHWALL:
@@ -1960,13 +1982,13 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
 
 
 def _place_boss(tiles: list[int], things: list[int], room: Room,
-                reserved: set[tuple[int, int]]) -> None:
+                reserved: set[tuple[int, int]], rng: random.Random) -> None:
     cx, cy = room.center
     positions = [(cx, cy), (cx + 1, cy), (cx - 1, cy), (cx, cy + 1), (cx, cy - 1)]
     bx, by = next(((x, y) for x, y in positions
                    if (x, y) not in reserved and _at(things, x, y) == 0
                    and _is_floor(_at(tiles, x, y))), (cx, cy))
-    _set(things, bx, by, HANS_GROSSE)
+    _set(things, bx, by, rng.choice(BOSSES))
     reserved.add((bx, by))
     supplies = ((cx - 2, cy - 2, FIRST_AID), (cx + 2, cy - 2, FIRST_AID),
                 (cx - 2, cy + 2, AMMO), (cx + 2, cy + 2, AMMO))
@@ -2107,15 +2129,16 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
         raise ValueError("door budget exceeded")
     if is_boss:
         boss_room = max((room for room in rooms[1:] if room != exit_room), key=lambda room: room.w * room.h)
-        _place_boss(tiles, things, boss_room, reserved)
+        _place_boss(tiles, things, boss_room, reserved, rng)
         locks += 1
     enemy_tiers = _place_population(config, number, rooms, tiles, things, reserved, rng,
                                     start, exit_room)
     _ensure_early_heal(tiles, things, rooms, start, reserved, rng)
     _place_decorations(rooms, tiles, things, reserved, start, rng, roles=roles, specs=specs)
     _assign_sound_zones(tiles)
-    _apply_wall_theme(tiles, rooms, districts, number, rng)
-    _hint_secrets(tiles, things, number, rng)
+    theme_index = rng.randrange(len(WALL_THEMES))
+    _apply_wall_theme(tiles, rooms, districts, theme_index, rng)
+    _hint_secrets(tiles, things, theme_index, rng)
     result = GeneratedMap(number=number, tiles=tiles, things=things, start=start,
                           exit_stand=exit_stand, secret_rewards=rewards, seed=seed,
                           has_secret_exit=secret_exit, locked_doors=locks, boss=is_boss,
@@ -2247,10 +2270,10 @@ def validate_map(level: GeneratedMap) -> None:
             raise ValueError("locked elevator route can be bypassed")
         if level.exit_stand not in _reachable(level.tiles, level.start, locked_open=True):
             raise ValueError("exit is unreachable after obtaining the key")
-    if level.boss and level.things.count(HANS_GROSSE) != 1:
+    if level.boss and sum(thing in BOSSES for thing in level.things) != 1:
         raise ValueError("boss floor must contain exactly one boss")
     if level.boss:
-        boss_index = level.things.index(HANS_GROSSE)
+        boss_index = next(i for i, thing in enumerate(level.things) if thing in BOSSES)
         boss_position = boss_index % GRID, boss_index // GRID
         if boss_position not in _reachable(level.tiles, level.start, locked_open=False):
             raise ValueError("boss is unreachable before the boss elevator lock")
@@ -2269,7 +2292,7 @@ def validate_objects(level: GeneratedMap) -> None:
             continue
         if not _is_floor(tile):
             raise ValueError(f"thing {thing} at {(x, y)} is not on floor")
-        if thing in ENEMY_CODES and thing != HANS_GROSSE:
+        if thing in ENEMY_CODES and thing not in BOSSES:
             distance = abs(x - level.start[0]) + abs(y - level.start[1])
             if distance < 6:
                 raise ValueError(f"enemy at {(x, y)} is too close to player start")

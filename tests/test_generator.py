@@ -1,3 +1,4 @@
+from collections import Counter
 import json
 from pathlib import Path
 import tempfile
@@ -6,7 +7,7 @@ import zipfile
 
 from infiniwolf.config import CampaignConfig, Intensity
 from infiniwolf.generator import GenerationCancelled, generate_campaign, generate_map, validate_map, validate_package
-from infiniwolf.generator import ELEVATOR_TILE, GOLD_KEY, HANS_GROSSE, SECRET_EXIT_ZONE, _at, _reachable
+from infiniwolf.generator import BOSSES, ELEVATOR_TILE, GOLD_KEY, SECRET_EXIT_ZONE, WALL_THEMES, _at, _reachable
 from infiniwolf.generator import FLOOR, ZONE_MAX
 
 
@@ -71,9 +72,53 @@ class GeneratorTests(unittest.TestCase):
     def test_floor_nine_has_native_boss(self):
         level = generate_map(CampaignConfig(seed=909), 9)
         self.assertTrue(level.boss)
-        self.assertEqual(level.things.count(HANS_GROSSE), 1)
+        self.assertEqual(sum(thing in BOSSES for thing in level.things), 1)
         self.assertNotIn(level.exit_stand, _reachable(level.tiles, level.start, locked_open=False))
         self.assertNotIn(GOLD_KEY, level.things)
+
+    def test_boss_choice_varies_across_seeds(self):
+        bosses = {next(thing for thing in generate_map(CampaignConfig(seed=seed), 9).things
+                       if thing in BOSSES)
+                  for seed in range(20)}
+        self.assertGreater(len(bosses), 1, "boss floor always picked the same boss across seeds")
+
+    def test_wall_theme_materials_are_internally_consistent(self):
+        """Every WALL_THEMES entry must draw its base and accents from a
+        single WL6 texture family (verified by tile name prefix in
+        wolf3d.txt's xlat table). Theme selection is randomized per floor
+        rather than pinned to floor number, so any entry can land on any
+        floor -- a cross-family mix (e.g. blue stone corridors with a metal
+        accent room) is now visible immediately instead of hiding behind
+        whichever one floor number used to select that entry."""
+        families = (
+            {1, 2, 3, 4},        # grey stone: GSTONEA1/B1, GSTFLAG1, GSTHTLR1
+            {8, 9, 7, 41},       # blue stone: BSTONEA1/B1, BSTCELB1, BSTSIGN1
+            {40, 9, 34, 36},     # blue wall: BLUWALL1, BSTONEB1, BLUSKUL1, BLUSWAS1
+            {12, 10, 11, 23},    # wood: WOOD1, WODEAGL1, WODHTLR1, WODCROS1
+            {15, 14},            # metal: METAL1, METLSGN1
+            {17, 18, 20},        # brick: BRICK1, BRIKWRT1, BRIKEGL1
+        )
+        for base, accents in WALL_THEMES:
+            materials = {base, *accents}
+            self.assertTrue(
+                any(materials <= family for family in families),
+                f"theme base={base} accents={accents} mixes incompatible wall materials")
+
+    def test_cell_wall_tile_is_never_the_base_theme(self):
+        """BSTCELA1(5)/BSTCELB1(7), the barred prison-cell wall, reads as a
+        specific set piece; if either is a theme's base it fills every wall
+        on the whole floor instead of being confined to a themed room."""
+        for base, accents in WALL_THEMES:
+            self.assertNotIn(base, (5, 7))
+
+    def test_wall_theme_varies_by_seed_not_just_floor_number(self):
+        dominant = set()
+        for seed in range(15):
+            level = generate_map(CampaignConfig(seed=seed), 2)
+            counts = Counter(tile for tile in level.tiles if 1 <= tile < 90)
+            dominant.add(counts.most_common(1)[0][0])
+        self.assertGreater(len(dominant), 1,
+                           "floor 2 always used the same dominant wall material across seeds")
 
     def test_floor_codes_are_valid_sound_zones(self):
         level = generate_map(CampaignConfig(seed=771, layout_complexity=Intensity.HIGH), 5)

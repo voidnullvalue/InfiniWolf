@@ -10,8 +10,9 @@ from collections import deque
 import unittest
 
 from infiniwolf.config import CampaignConfig
-from infiniwolf.generator import (DOGS, DOORS, GRID, GUARDS, OFFICERS, SS,
-                                   STATIC_BLOCKING, _at, _is_floor, generate_map)
+from infiniwolf.generator import (DOGS, DOOR_ELEVATOR, DOOR_GOLD_EW, DOORS, ELEVATOR_TILE,
+                                   FLOOR, GRID, GUARDS, OFFICERS, SS, SECRET_EXIT_ZONE,
+                                   STATIC_BLOCKING, ZONE_MAX, _at, _is_floor, generate_map)
 
 
 def _generate_with_retries(config: CampaignConfig, floor: int, attempts: int = 50):
@@ -114,6 +115,42 @@ class ActorFacingRegressionTests(unittest.TestCase):
                         ahead_thing, blocking,
                         f"seed={seed!r} floor={floor}: actor at ({x},{y}) faces "
                         f"blocking decoration {ahead_thing}")
+
+
+class ElevatorContainmentRegressionTests(unittest.TestCase):
+    def test_elevator_switch_tiles_are_never_adjacent_to_foreign_floor(self):
+        """Every ELEVATOR_TILE(21) cell is elevator paneling or the exit
+        switch's back wall; the only floor-plane cells allowed to touch one
+        are the two interior cells of that same shaft (exit_stand and the
+        cell between it and the door) and a SECRET_EXIT_ZONE(107) approach.
+        Any other adjacent floor cell means a room or corridor was carved
+        flush against the shaft, exposing the switch's paneling or the back
+        wall from outside -- the exact failure mode earlier commits
+        (89b04f6, e20a530, b9af24a) fixed piecemeal without a regression
+        test locking it in."""
+        for seed in REGRESSION_SEEDS:
+            config = CampaignConfig(seed=seed)
+            for floor in (1, 5, 9):
+                level = _generate_with_retries(config, floor)
+                tiles = level.tiles
+                ex, ey = level.exit_stand
+                legit = {(ex, ey)}
+                for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                    if _at(tiles, ex + 2 * dx, ey + 2 * dy) in (DOOR_ELEVATOR, DOOR_GOLD_EW):
+                        legit.add((ex + dx, ey + dy))
+                for y in range(GRID):
+                    for x in range(GRID):
+                        if _at(tiles, x, y) != ELEVATOR_TILE:
+                            continue
+                        for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                            nx, ny = x + dx, y + dy
+                            nv = _at(tiles, nx, ny)
+                            if nv == SECRET_EXIT_ZONE or (nx, ny) in legit:
+                                continue
+                            self.assertFalse(
+                                FLOOR <= nv <= ZONE_MAX,
+                                f"seed={seed!r} floor={floor}: elevator tile at "
+                                f"({x},{y}) exposes foreign floor cell ({nx},{ny})")
 
 
 class TopologyRegressionTests(unittest.TestCase):
