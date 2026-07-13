@@ -4,16 +4,18 @@ from pathlib import Path
 import random
 import tempfile
 import unittest
+from unittest import mock
 import zipfile
 
+import infiniwolf.generator as generator
 from infiniwolf.config import CampaignConfig, Intensity
 from infiniwolf.generator import GenerationCancelled, generate_campaign, generate_map, validate_map, validate_package
 from infiniwolf.generator import (BOSSES, DECOR_WALLS, DOGS, ELEVATOR_TILE, FAKE_HITLER,
                                    GHOSTS, GOLD_KEY, GRID, GUARDS, KEY_DROP_BOSSES, OFFICERS,
-                                   PUSHWALL, Room, SECRET_EXIT_ZONE, SS, WALL, WALL_THEMES,
+                                   PUSHWALL, Room, RoomSpec, SECRET_EXIT_ZONE, SS, WALL, WALL_THEMES,
                                    AMMO, CHAINGUN, FIRST_AID, MACHINE_GUN, ONE_UP,
-                                   _apply_wall_theme, _at, _decor_theme, _hint_secrets,
-                                   _reachable, _room_predecessor)
+                                   _DECOR_ZONES, _apply_wall_theme, _at, _decor_theme, _hint_secrets,
+                                   _place_decorations, _place_zoned, _reachable, _room_predecessor)
 from infiniwolf.generator import FLOOR, FLOOR_TEN_STONE_THEME, ZONE_MAX
 
 
@@ -208,13 +210,166 @@ class GeneratorTests(unittest.TestCase):
         self.assertIn(7, DECOR_WALLS)
         for seed in range(6):
             level = generate_map(CampaignConfig(seed=seed), 2)
-            for room in level.rooms:
+            for ridx, room in enumerate(level.rooms):
+                if ridx in level.jail_rooms:
+                    continue
                 cells = ({(x, room.y - 1) for x in range(room.x - 1, room.x + room.w + 1)}
                          | {(x, room.y + room.h) for x in range(room.x - 1, room.x + room.w + 1)}
                          | {(room.x - 1, y) for y in range(room.y, room.y + room.h)}
                          | {(room.x + room.w, y) for y in range(room.y, room.y + room.h)})
                 wall_ring = [_at(level.tiles, *cell) for cell in cells]
                 self.assertLessEqual(wall_ring.count(7), 1)
+
+    def test_jail_cells_never_exceed_a_ratio_of_occupied_to_unoccupied(self):
+        seen_jail = False
+        for seed in range(8):
+            for number in (2, 5, 8):
+                level = generate_map(CampaignConfig(seed=seed), number)
+                for ridx in level.jail_rooms:
+                    seen_jail = True
+                    room = level.rooms[ridx]
+                    ring = [_at(level.tiles, x, room.y - 1)
+                            for x in range(room.x - 1, room.x + room.w + 1)]
+                    ring += [_at(level.tiles, x, room.y + room.h)
+                             for x in range(room.x - 1, room.x + room.w + 1)]
+                    ring += [_at(level.tiles, room.x - 1, y)
+                             for y in range(room.y, room.y + room.h)]
+                    ring += [_at(level.tiles, room.x + room.w, y)
+                             for y in range(room.y, room.y + room.h)]
+                    self.assertLessEqual(ring.count(7), ring.count(5))
+                    self.assertGreater(ring.count(5) + ring.count(7), 0)
+        self.assertTrue(seen_jail)
+
+    def test_jail_pattern_only_appears_in_base_eight_groups(self):
+        captured = []
+        original = generator._apply_wall_theme
+
+        def capture(*args, **kwargs):
+            captured.append((args[4], args[5]))
+            return original(*args, **kwargs)
+
+        with mock.patch.object(generator, "_apply_wall_theme", side_effect=capture):
+            levels = [generate_map(CampaignConfig(seed=seed), 2) for seed in range(6)]
+        for level, (component_of, group_theme) in zip(levels, captured):
+            for room in level.rooms:
+                ring = [_at(level.tiles, x, room.y - 1)
+                        for x in range(room.x - 1, room.x + room.w + 1)]
+                ring += [_at(level.tiles, x, room.y + room.h)
+                         for x in range(room.x - 1, room.x + room.w + 1)]
+                ring += [_at(level.tiles, room.x - 1, y)
+                         for y in range(room.y, room.y + room.h)]
+                ring += [_at(level.tiles, room.x + room.w, y)
+                         for y in range(room.y, room.y + room.h)]
+                if set(ring) & {5, 7}:
+                    self.assertEqual(group_theme[component_of[room.center]][0], 8)
+
+    def test_jail_rooms_are_a_minority_of_blue_stone_rooms(self):
+        captured = []
+        original = generator._apply_wall_theme
+
+        def capture(*args, **kwargs):
+            captured.append((args[4], args[5]))
+            return original(*args, **kwargs)
+
+        with mock.patch.object(generator, "_apply_wall_theme", side_effect=capture):
+            levels = [generate_map(CampaignConfig(seed=seed), 2) for seed in range(12)]
+        for level, (component_of, group_theme) in zip(levels, captured):
+            blue_rooms = sum(group_theme[component_of[room.center]][0] == 8
+                             for room in level.rooms)
+            if blue_rooms > 1:
+                self.assertLess(len(level.jail_rooms), blue_rooms)
+
+    def test_jail_mortar_pillar_spacing(self):
+        room = Room(10, 10, 6, 4)
+        tiles = [WALL] * (GRID * GRID)
+        component_of = {}
+        for y in range(room.y, room.y + room.h):
+            for x in range(room.x, room.x + room.w):
+                tiles[y * GRID + x] = FLOOR
+                component_of[x, y] = 0
+        _apply_wall_theme(tiles, [0] * len(tiles), [room], [0], component_of,
+                          {0: (8, (7, 41))}, random.Random(0), jail_rooms=frozenset({0}))
+        run = [(x, room.y - 1) for x in range(room.x, room.x + room.w)]
+        for index, cell in enumerate(run):
+            if index % 3 == 0:
+                self.assertEqual(_at(tiles, *cell), 8)
+            else:
+                self.assertIn(_at(tiles, *cell), (5, 7))
+
+    def test_jail_decor_theme_biases_bones_and_blood(self):
+        room = Room(10, 10, 8, 8)
+        for seed in range(6):
+            tiles = [WALL] * (GRID * GRID)
+            for y in range(room.y, room.y + room.h):
+                for x in range(room.x, room.x + room.w):
+                    tiles[y * GRID + x] = FLOOR
+            things = [0] * len(tiles)
+            _place_decorations([room], tiles, things, set(), room.center, random.Random(seed),
+                               jail_rooms=frozenset({0}))
+            placed = [_at(things, x, y)
+                      for y in range(room.y, room.y + room.h)
+                      for x in range(room.x, room.x + room.w) if _at(things, x, y)]
+            self.assertTrue(set(placed) <= {58, 61, 42, 64, 65, 66})
+
+    def test_decoration_zoning_splits_across_room_halves(self):
+        class ThemedRandom(random.Random):
+            def random(self):
+                return 0.0
+
+        room = Room(10, 10, 8, 8)
+        tiles = [WALL] * (GRID * GRID)
+        for y in range(room.y, room.y + room.h):
+            for x in range(room.x, room.x + room.w):
+                tiles[y * GRID + x] = FLOOR
+        things = [0] * len(tiles)
+        _place_decorations([room], tiles, things, set(), room.center, ThemedRandom(0),
+                           roles=["start"])
+        cx, _ = room.center
+        zone_a = {26, 35, 37}
+        zone_b = {31, 27}
+        placed = [(index % GRID, index // GRID, thing)
+                  for index, thing in enumerate(things) if thing]
+        self.assertTrue(placed)
+        for x, _, thing in placed:
+            if thing in zone_a:
+                self.assertLess(x, cx)
+            if thing in zone_b:
+                self.assertGreaterEqual(x, cx)
+
+    def test_decoration_scattered_path_is_unchanged_for_ineligible_rooms(self):
+        cases = ((Room(10, 10, 8, 8), [RoomSpec("beat", "closet", 0)]),
+                 (Room(30, 10, 5, 5), [RoomSpec("start", "standard", 0)]))
+        for room, specs in cases:
+            tiles = [WALL] * (GRID * GRID)
+            for y in range(room.y, room.y + room.h):
+                for x in range(room.x, room.x + room.w):
+                    tiles[y * GRID + x] = FLOOR
+            with mock.patch.object(generator, "_place_zoned") as zoned:
+                _place_decorations([room], tiles, [0] * len(tiles), set(), room.center,
+                                   random.Random(0), roles=[specs[0].role], specs=specs)
+            zoned.assert_not_called()
+
+    def test_zoned_open_items_place_even_when_blocking_budget_is_exhausted(self):
+        """A room whose colonnade/divider already spent pair_budget must
+        still get its themed open items -- the roll that picks zoning must
+        not silently zero out decoration just because no blocking budget is
+        left for a cluster."""
+        room = Room(10, 10, 8, 8)
+        things = [0] * (GRID * GRID)
+        free = {(x, y) for y in range(room.y + 1, room.y + room.h - 1)
+                for x in range(room.x + 1, room.x + room.w - 1)}
+        _place_zoned(room, _DECOR_ZONES["grand"], free, set(), set(), things,
+                    random.Random(0), lambda cells, item: False, 0)
+        self.assertTrue(any(things))
+
+    def test_reachability_still_holds_with_jail_and_zoned_decor(self):
+        saw_jail = False
+        for seed in range(6):
+            for number in (2, 5, 8):
+                level = generate_map(CampaignConfig(seed=seed), number)
+                validate_map(level)
+                saw_jail |= bool(level.jail_rooms)
+        self.assertTrue(saw_jail)
 
     def test_plain_blue_wall_theme_has_no_accent_leakage(self):
         room = Room(10, 10, 4, 3)

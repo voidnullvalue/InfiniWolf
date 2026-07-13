@@ -134,6 +134,7 @@ WALL_THEMES = (
     (15, (14,)),           # metal: METAL1 + sign decor
     (17, (18, 20)),        # brick: BRICK1 + writing/eagle decor
 )
+JAIL_CANDIDATE_PROBABILITY = 0.35
 # BSTONEB (9) is mottled blue-stone masonry, distinct from the BLUWALL panel.
 # Keep it out of the normal pool: floor 10 occasionally uses it as a rare bare
 # material, while floors 1--9 never do.
@@ -181,6 +182,7 @@ _DECOR_BLOCKING: dict[str, tuple[int, ...]] = {
     "storage":   (58, 24, 59),   # Barrel, GreenBarrel, Well
     "lounge":    (25, 35, 34),   # TableWithChairs, Vase, BrownPlant
     "corridor":  (26,),          # FloorLamp only
+    "jail":      (58,),          # Barrel -- bare cells
 }
 _DECOR_OPEN: dict[str, tuple[int, ...]] = {
     "guardpost": (37, 27),   # CeilingLight, Chandelier
@@ -189,6 +191,19 @@ _DECOR_OPEN: dict[str, tuple[int, ...]] = {
     "storage":   (67, 61),   # Pots, Blood
     "lounge":    (27, 67),   # Chandelier, Pots
     "corridor":  (37,),      # CeilingLight
+    "jail":      (61, 61, 42, 64, 65, 66),  # Blood, then bone variants
+}
+
+# Purpose-built rooms split their furniture concepts across opposite halves.
+# Storage and corridors remain deliberately single-purpose and use the
+# scattered placement path below.
+_DECOR_ZONES: dict[str, tuple[tuple[tuple[int, ...], tuple[int, ...]],
+                              tuple[tuple[int, ...], tuple[int, ...]]]] = {
+    # (zone A blocking, open), (zone B blocking, open)
+    "barracks":  (((25, 36), (67,)),      ((58,), (61,))),
+    "guardpost": (((26, 35), (37,)),      ((31,), (27,))),
+    "grand":     (((26, 35), (27,)),      ((30,), (37,))),
+    "lounge":    (((25,), (27,)),         ((35, 34), (67,))),
 }
 
 
@@ -271,6 +286,7 @@ class GeneratedMap:
     critique: tuple[str, ...] = ()
     rooms: tuple[Room, ...] = ()
     edges: tuple[tuple[int, int], ...] = ()
+    jail_rooms: frozenset[int] = frozenset()
 
 
 def _at(plane: list[int], x: int, y: int) -> int:
@@ -1508,10 +1524,38 @@ def _assign_area_themes(tiles: list[int], rooms: list[Room], districts: list[int
     return component_of, group_theme
 
 
+def _select_jail_rooms(rooms: list[Room], districts: list[int],
+                       component_of: dict[tuple[int, int], int],
+                       group_theme: dict[int, tuple[int, tuple[int, ...]]],
+                       tiles: list[int], rng: random.Random) -> frozenset[int]:
+    """Pick blue-stone rooms with a long enough unpainted wall for cells."""
+    selected = []
+    for ridx, room in enumerate(rooms):
+        base = group_theme[component_of[room.center]][0]
+        if base != 8:
+            continue
+        sides = (
+            [(x, room.y - 1) for x in range(room.x - 1, room.x + room.w + 1)],
+            [(x, room.y + room.h) for x in range(room.x - 1, room.x + room.w + 1)],
+            [(room.x - 1, y) for y in range(room.y, room.y + room.h)],
+            [(room.x + room.w, y) for y in range(room.y, room.y + room.h)],
+        )
+        longest = 0
+        for side in sides:
+            run = 0
+            for cell in side:
+                run = run + 1 if _at(tiles, *cell) == WALL else 0
+                longest = max(longest, run)
+        if longest >= 5 and rng.random() < JAIL_CANDIDATE_PROBABILITY:
+            selected.append(ridx)
+    return frozenset(selected)
+
+
 def _apply_wall_theme(tiles: list[int], things: list[int], rooms: list[Room],
                       districts: list[int], component_of: dict[tuple[int, int], int],
                       group_theme: dict[int, tuple[int, tuple[int, ...]]],
-                      rng: random.Random) -> None:
+                      rng: random.Random,
+                      jail_rooms: frozenset[int] = frozenset()) -> None:
     """Apply native WL6 materials without changing traversable geometry."""
     for index, tile in enumerate(tiles):
         if tile != WALL:
@@ -1522,18 +1566,45 @@ def _apply_wall_theme(tiles: list[int], things: list[int], rooms: list[Room],
                       if cell in component_of), None)
         if group is not None:
             tiles[index] = group_theme[group][0]
-    for room, district in zip(rooms, districts):
+    for ridx, (room, district) in enumerate(zip(rooms, districts)):
         base, accents = group_theme[component_of[room.center]]
-        if not accents:
-            continue
-        accent = accents[district % len(accents)]
-        other_accents = set(accents) - {accent}
         sides = (
             [(x, room.y - 1) for x in range(room.x - 1, room.x + room.w + 1)],
             [(x, room.y + room.h) for x in range(room.x - 1, room.x + room.w + 1)],
             [(room.x - 1, y) for y in range(room.y, room.y + room.h)],
             [(room.x + room.w, y) for y in range(room.y, room.y + room.h)],
         )
+        if ridx in jail_rooms and base == 8:
+            other_accents = {41}
+            for side in sides:
+                run = [cell for cell in side if _at(tiles, *cell) == base]
+                for i, (x, y) in enumerate(run):
+                    if i % 3 == 0:
+                        continue
+                    # Keep a neutral stone buffer at nearby room seams, as
+                    # the ordinary accent pass does below.
+                    if any(_at(tiles, x + dx, y + dy) in other_accents
+                           for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1))):
+                        continue
+                    tile = rng.choices((5, 7), weights=(9, 1))[0]
+                    _set(tiles, x, y, tile)
+                    # Plain bars sometimes get the loose remains that distinguish a
+                    # neglected cellblock without turning the wall texture itself
+                    # into a room-wide skeleton set piece.
+                    if tile == 5 and rng.random() < 0.3:
+                        interior = [(nx, ny) for nx, ny in ((x - 1, y), (x + 1, y),
+                                                             (x, y - 1), (x, y + 1))
+                                    if room.x <= nx < room.x + room.w
+                                    and room.y <= ny < room.y + room.h
+                                    and _is_floor(_at(tiles, nx, ny))
+                                    and _at(things, nx, ny) == 0]
+                        if interior:
+                            _set(things, *rng.choice(interior), rng.choice((42, 64, 65, 66)))
+            continue
+        if not accents:
+            continue
+        accent = accents[district % len(accents)]
+        other_accents = set(accents) - {accent}
         if accent in DECOR_WALLS:
             # A single landmark tile, centered on its longest clean wall run
             # so it reads as a deliberately hung picture, not a random
@@ -2297,11 +2368,61 @@ def _ensure_early_heal(tiles: list[int], things: list[int], rooms: list[Room],
         _set(things, *rng.choice(candidates), FOOD)
 
 
+def _place_zoned(room: Room,
+                 zones: tuple[tuple[tuple[int, ...], tuple[int, ...]],
+                              tuple[tuple[int, ...], tuple[int, ...]]],
+                 free: set[tuple[int, int]], blocked_cells: set[tuple[int, int]],
+                 reserved: set[tuple[int, int]], things: list[int], rng: random.Random,
+                 try_place, blocking_budget: int) -> None:
+    """Cluster two compatible furniture concepts on opposite room halves."""
+    cx, cy = room.center
+    horizontal = room.w >= room.h
+
+    def in_zone(cell: tuple[int, int], first: bool) -> bool:
+        if horizontal:
+            return cell[0] < cx if first else cell[0] >= cx
+        return cell[1] < cy if first else cell[1] >= cy
+
+    corners = [(room.x + 1, room.y + 1),
+               (room.x + room.w - 2, room.y + 1),
+               (room.x + 1, room.y + room.h - 2),
+               (room.x + room.w - 2, room.y + room.h - 2)]
+    corner_zones = ([corner for corner in corners if in_zone(corner, True)],
+                    [corner for corner in corners if in_zone(corner, False)])
+    cluster_budgets = ((blocking_budget + 1) // 2, blocking_budget // 2)
+
+    for (blocking, _), corners, budget in zip(zones, corner_zones, cluster_budgets):
+        if not budget:
+            continue
+        item = rng.choice(blocking)
+        rng.shuffle(corners)
+        for cornx, corny in corners:
+            nx = cornx + (1 if cornx < cx else -1)
+            ny = corny + (1 if corny < cy else -1)
+            cluster = [cell for cell in ((cornx, corny), (nx, corny), (cornx, ny))
+                       if cell in free][:2]
+            if len(cluster) == 2 and try_place(cluster, item):
+                break
+
+    area = room.w * room.h
+    open_budget = 3 if area >= 80 else 2 if area >= 45 else 1
+    open_budgets = ((open_budget + 1) // 2, open_budget // 2)
+    for zone_index, ((_, open_items), budget) in enumerate(zip(zones, open_budgets)):
+        loose = [cell for cell in free - reserved
+                 if in_zone(cell, zone_index == 0) and _at(things, *cell) == 0]
+        rng.shuffle(loose)
+        for cell in loose[:rng.randrange(0, budget + 1)]:
+            _set(things, *cell, rng.choice(open_items))
+            reserved.add(cell)
+            free.discard(cell)
+
+
 def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
                        reserved: set[tuple[int, int]], start: tuple[int, int],
                        rng: random.Random,
                        roles: list[str] | None = None,
-                       specs: list | None = None) -> None:
+                       specs: list | None = None,
+                       jail_rooms: frozenset[int] = frozenset()) -> None:
     """Place purposeful, themed furniture in rooms following community-map patterns.
 
     Blocking statics go in deliberate arrangements (pillar pairs, corner
@@ -2318,7 +2439,7 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
     for ridx, room in enumerate(rooms):
         role = _roles[ridx] if ridx < len(_roles) else "beat"
         tier = _tiers[ridx] if ridx < len(_tiers) else "standard"
-        theme = _decor_theme(role, tier)
+        theme = "jail" if ridx in jail_rooms else _decor_theme(role, tier)
 
         if room.w < 5 or room.h < 5:
             continue
@@ -2409,30 +2530,44 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
                 if _try_place([a, b], 30):   # WhitePillar
                     pairs_placed += 1
 
-        # --- Pattern: symmetric wall pairs (general fallback) ---
-        if pairs_placed < pair_budget:
-            x_pairs = [((x, y), (2 * cx - x, y)) for x, y in free
-                       if x < cx and (2 * cx - x, y) in free]
-            y_pairs = [((x, y), (x, 2 * cy - y)) for x, y in free
-                       if y < cy and (x, 2 * cy - y) in free]
-            all_pairs = x_pairs + y_pairs
-            all_pairs.sort(key=lambda p: (0 if _near_wall(*p[0]) or _near_wall(*p[1]) else 1,
-                                          rng.random()))
-            for (ax, ay), (bx, by) in all_pairs:
-                if pairs_placed >= pair_budget:
-                    break
-                if _try_place([(ax, ay), (bx, by)], rng.choice(blocking)):
-                    pairs_placed += 1
+        zones = _DECOR_ZONES.get(theme)
+        themed_roll = (zones is not None and room.w >= 6 and room.h >= 6
+                       and rng.random() < 0.75)
 
-        # --- Open (non-solid) items, theme-appropriate ---
-        area = room.w * room.h
-        open_budget = 3 if area >= 80 else 2 if area >= 45 else 1
-        loose = [c for c in free - reserved if _at(things, *c) == 0]
-        rng.shuffle(loose)
-        for cell in loose[:rng.randrange(0, open_budget + 1)]:
-            _set(things, *cell, rng.choice(open_items))
-            reserved.add(cell)
-            free.discard(cell)
+        if themed_roll:
+            # _place_zoned's open-item placement always runs, independent of
+            # remaining blocking budget -- an earlier pattern (colonnade,
+            # divider) can already have spent pair_budget, and this room
+            # must not lose its open decoration just because no blocking
+            # budget is left for a themed cluster.
+            _place_zoned(room, zones, free, blocked_cells, reserved, things, rng,
+                         _try_place, max(0, pair_budget - pairs_placed))
+            pairs_placed = pair_budget
+        else:
+            # --- Pattern: symmetric wall pairs (general fallback) ---
+            if pairs_placed < pair_budget:
+                x_pairs = [((x, y), (2 * cx - x, y)) for x, y in free
+                           if x < cx and (2 * cx - x, y) in free]
+                y_pairs = [((x, y), (x, 2 * cy - y)) for x, y in free
+                           if y < cy and (x, 2 * cy - y) in free]
+                all_pairs = x_pairs + y_pairs
+                all_pairs.sort(key=lambda p: (0 if _near_wall(*p[0]) or _near_wall(*p[1]) else 1,
+                                              rng.random()))
+                for (ax, ay), (bx, by) in all_pairs:
+                    if pairs_placed >= pair_budget:
+                        break
+                    if _try_place([(ax, ay), (bx, by)], rng.choice(blocking)):
+                        pairs_placed += 1
+
+            # --- Open (non-solid) items, theme-appropriate ---
+            area = room.w * room.h
+            open_budget = 3 if area >= 80 else 2 if area >= 45 else 1
+            loose = [c for c in free - reserved if _at(things, *c) == 0]
+            rng.shuffle(loose)
+            for cell in loose[:rng.randrange(0, open_budget + 1)]:
+                _set(things, *cell, rng.choice(open_items))
+                reserved.add(cell)
+                free.discard(cell)
 
 
 def _place_boss(tiles: list[int], things: list[int], room: Room,
@@ -2635,11 +2770,13 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
     enemy_tiers = _place_population(config, number, rooms, tiles, things, reserved, rng,
                                     start, exit_room)
     _ensure_early_heal(tiles, things, rooms, start, reserved, rng)
-    _place_decorations(rooms, tiles, things, reserved, start, rng, roles=roles, specs=specs)
     _assign_sound_zones(tiles)
     component_of, group_theme = _assign_area_themes(tiles, rooms, districts, rng, number)
-    _apply_wall_theme(tiles, things, rooms, districts, component_of, group_theme, rng)
+    jail_rooms = _select_jail_rooms(rooms, districts, component_of, group_theme, tiles, rng)
+    _apply_wall_theme(tiles, things, rooms, districts, component_of, group_theme, rng, jail_rooms)
     _hint_secrets(tiles, things, component_of, group_theme, rng)
+    _place_decorations(rooms, tiles, things, reserved, start, rng, roles=roles, specs=specs,
+                       jail_rooms=jail_rooms)
     result = GeneratedMap(number=number, tiles=tiles, things=things, start=start,
                           exit_stand=exit_stand, secret_rewards=rewards, seed=seed,
                           has_secret_exit=secret_exit, locked_doors=locks, boss=is_boss,
@@ -2647,7 +2784,7 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
                           motif_rooms=tuple(spec.motif for spec in specs),
                           secret_variants=tuple(secret_variants),
                           shortcut_pushwalls=tuple(shortcut_pushwalls), rooms=tuple(rooms),
-                          edges=tuple(edges))
+                          edges=tuple(edges), jail_rooms=jail_rooms)
     validate_map(result)
     result.critique = _critique(result)
     return result
