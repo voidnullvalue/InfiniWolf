@@ -7,7 +7,8 @@ import zipfile
 
 from infiniwolf.config import CampaignConfig, Intensity
 from infiniwolf.generator import GenerationCancelled, generate_campaign, generate_map, validate_map, validate_package
-from infiniwolf.generator import (BOSSES, DOGS, ELEVATOR_TILE, GOLD_KEY, GUARDS, OFFICERS, SS,
+from infiniwolf.generator import (BOSSES, DECOR_WALLS, DOGS, ELEVATOR_TILE, FAKE_HITLER,
+                                   GHOSTS, GOLD_KEY, GUARDS, KEY_DROP_BOSSES, OFFICERS, SS,
                                    SECRET_EXIT_ZONE, WALL_THEMES, _at, _reachable)
 from infiniwolf.generator import FLOOR, ZONE_MAX
 
@@ -92,7 +93,38 @@ class GeneratorTests(unittest.TestCase):
         self.assertTrue(level.boss)
         self.assertEqual(sum(thing in BOSSES for thing in level.things), 1)
         self.assertNotIn(level.exit_stand, _reachable(level.tiles, level.start, locked_open=False))
-        self.assertNotIn(GOLD_KEY, level.things)
+
+    def test_non_key_drop_bosses_get_a_reachable_physical_key(self):
+        seen_non_droppers = set()
+        for seed in range(12):
+            level = generate_map(CampaignConfig(seed=seed), 9)
+            boss = next(thing for thing in level.things if thing in BOSSES)
+            if boss in KEY_DROP_BOSSES:
+                continue
+            seen_non_droppers.add(boss)
+            self.assertIn(GOLD_KEY, level.things)
+            key_index = level.things.index(GOLD_KEY)
+            self.assertIn((key_index % 64, key_index // 64),
+                          _reachable(level.tiles, level.start, locked_open=False))
+        self.assertTrue(seen_non_droppers)
+
+    def test_fake_hitler_is_not_a_boss_and_only_spawns_on_floor_nine(self):
+        self.assertNotIn(FAKE_HITLER, BOSSES)
+        for number in range(1, 11):
+            for seed in range(1):
+                level = generate_map(CampaignConfig(seed=seed), number)
+                if number != 9:
+                    self.assertNotIn(FAKE_HITLER, level.things)
+                self.assertLessEqual(level.things.count(FAKE_HITLER), 1)
+
+    def test_ghosts_only_spawn_on_secret_floor(self):
+        for number in range(1, 10):
+            for seed in range(1):
+                level = generate_map(CampaignConfig(seed=seed), number)
+                self.assertFalse(set(level.things) & set(GHOSTS))
+        for seed in range(3):
+            level = generate_map(CampaignConfig(seed=seed), 10)
+            self.assertLessEqual(sum(thing in GHOSTS for thing in level.things), 1)
 
     def test_boss_choice_varies_across_seeds(self):
         bosses = {next(thing for thing in generate_map(CampaignConfig(seed=seed), 9).things
@@ -128,6 +160,18 @@ class GeneratorTests(unittest.TestCase):
         on the whole floor instead of being confined to a themed room."""
         for base, accents in WALL_THEMES:
             self.assertNotIn(base, (5, 7))
+
+    def test_skeleton_cage_is_a_single_landmark_not_room_material(self):
+        self.assertIn(7, DECOR_WALLS)
+        for seed in range(6):
+            level = generate_map(CampaignConfig(seed=seed), 2)
+            for room in level.rooms:
+                cells = ({(x, room.y - 1) for x in range(room.x - 1, room.x + room.w + 1)}
+                         | {(x, room.y + room.h) for x in range(room.x - 1, room.x + room.w + 1)}
+                         | {(room.x - 1, y) for y in range(room.y, room.y + room.h)}
+                         | {(room.x + room.w, y) for y in range(room.y, room.y + room.h)})
+                wall_ring = [_at(level.tiles, *cell) for cell in cells]
+                self.assertLessEqual(wall_ring.count(7), 1)
 
     def test_wall_theme_varies_by_seed_not_just_floor_number(self):
         dominant = set()

@@ -40,12 +40,23 @@ ELEVATOR_TILE = 21
 SECRET_EXIT_ZONE = 107
 GOLD_KEY = 43
 HANS_GROSSE = 214
+SCHABBS = 196
+GRETEL = 197
+GIFT = 215
+FAT_FACE = 179
+MECHA_HITLER = 178
+FAKE_HITLER = 160
+GHOSTS = (224, 225, 226, 227)
 # Native WL6 boss roster only (wolfbosses.txt): Hans Grosse, Dr. Schabbs,
-# Gretel Grosse, Otto Giftmacher, Fat Face, the Episode 4 Hitler pair.
+# Gretel Grosse, Otto Giftmacher, Fat Face, and MechaHitler. FakeHitler is
+# an ordinary actor: unlike the real bosses it neither drops a key nor calls
+# A_BossDeath (hitler.txt), so it is a boss-floor novelty spawn below instead.
 # Trans Grosse/UberMutant/Wilhelm/DeathKnight are Spear of Destiny actors
 # (spearbosses.txt) whose sprites live in SOD's VSWAP, not wl6's -- placing
 # them here would show up as missing graphics under "--data wl6".
-BOSSES = (HANS_GROSSE, 196, 197, 215, 179, 160, 178)
+BOSSES = (HANS_GROSSE, SCHABBS, GRETEL, GIFT, FAT_FACE, MECHA_HITLER)
+# Only these native bosses declare DropItem GoldKey (wolfbosses.txt).
+KEY_DROP_BOSSES = frozenset({HANS_GROSSE, GRETEL})
 
 # Native Wolf3D map object numbers, interpreted by ECWolf's base translator.
 # ECWolf's old-format loader computes each thing's facing angle as
@@ -68,12 +79,15 @@ PATROL_GUARDS = tuple(code + 4 for code in GUARDS)
 PATROL_OFFICERS = tuple(code + 4 for code in OFFICERS)
 PATROL_SS = tuple(code + 4 for code in SS)
 PATROL_DOGS = tuple(code + 4 for code in DOGS)
+# Old-format PatrolPoint codes, indexed in this file's N/E/S/W convention.
+PATROL_POINT_CODES = (92, 90, 96, 94)
+PATROL_POINT_DIRECTIONS = {code: index for index, code in enumerate(PATROL_POINT_CODES)}
 AMMO, FOOD, FIRST_AID, MACHINE_GUN, CHAINGUN, ONE_UP = 49, 47, 48, 50, 51, 56
 TREASURE = (52, 53, 54, 55)
 ENEMY_CODES = frozenset(code + tier * 36
                         for family in (GUARDS, OFFICERS, SS, DOGS,
                                        PATROL_GUARDS, PATROL_OFFICERS, PATROL_SS, PATROL_DOGS)
-                        for code in family for tier in range(3)) | set(BOSSES)
+                        for code in family for tier in range(3)) | set(BOSSES) | {FAKE_HITLER, *GHOSTS}
 
 # Threat-weighted roster: (name, thing codes, base frequency weight, expected
 # bullets to down one at routine range). Guards stay the common baseline
@@ -105,7 +119,7 @@ AMMO_COST = {family: cost for _, family, _, cost in ENEMY_FAMILIES}
 # Accent 13 (FAKEDOR, a sealed door/lift-shutter graphic) and 16 (SKY1, an
 # outdoor-only texture) are deliberately excluded: neither reads as a normal
 # room wall, so they're replaced with plain material variants below.
-# Tile 5 (BSTCELA1, the barred prison-cell wall) reads as a specific set
+# Tile 7 (BSTCELB1, the skeleton-in-a-cage prison-cell wall) reads as a specific set
 # piece, not a generic wall -- it must never be the base fill for an entire
 # floor. It's demoted to a room accent here so only the districts that land
 # on it get a cellblock-styled room; the base stays the plain blue stone (8).
@@ -122,7 +136,7 @@ WALL_THEMES = (
 # way they're used in the original game, never as the material of an entire
 # room. Every other accent above is just an alternate plain material and is
 # fine covering a whole room's walls.
-DECOR_WALLS = frozenset({3, 4, 10, 11, 14, 18, 20, 23, 34, 36, 41})
+DECOR_WALLS = frozenset({3, 4, 7, 10, 11, 14, 18, 20, 23, 34, 36, 41})
 # Fallback secret hints when a floor's theme has no decor accent of its own:
 # the grey-stone swastika banner and Hitler portrait, the two tiles the
 # original episodes most often hang on a pushwall.
@@ -1207,8 +1221,8 @@ def _assign_sound_zones(tiles: list[int]) -> int:
     return len(components)
 
 
-def _apply_wall_theme(tiles: list[int], rooms: list[Room], districts: list[int], theme_index: int,
-                      rng: random.Random) -> None:
+def _apply_wall_theme(tiles: list[int], things: list[int], rooms: list[Room],
+                      districts: list[int], theme_index: int, rng: random.Random) -> None:
     """Apply native WL6 materials without changing traversable geometry."""
     base, accents = WALL_THEMES[theme_index]
     for index, tile in enumerate(tiles):
@@ -1231,7 +1245,20 @@ def _apply_wall_theme(tiles: list[int], rooms: list[Room], districts: list[int],
             run = max(runs, key=len, default=[])
             if run:
                 x, y = run[len(run) // 2]
-                _set(tiles, x, y, accent)
+                landmark = rng.choices((5, 7), weights=(9, 1))[0] if accent == 7 else accent
+                _set(tiles, x, y, landmark)
+                # Plain bars sometimes get the loose remains that distinguish a
+                # neglected cellblock without turning the wall texture itself
+                # into a room-wide skeleton set piece.
+                if landmark == 5 and rng.random() < 0.3:
+                    interior = [(nx, ny) for nx, ny in ((x - 1, y), (x + 1, y),
+                                                         (x, y - 1), (x, y + 1))
+                                if room.x <= nx < room.x + room.w
+                                and room.y <= ny < room.y + room.h
+                                and _is_floor(_at(tiles, nx, ny))
+                                and _at(things, nx, ny) == 0]
+                    if interior:
+                        _set(things, *rng.choice(interior), rng.choice((42, 64, 65, 66)))
             continue
         for side in sides:
             for x, y in side:
@@ -1658,11 +1685,14 @@ def _place_population(config: CampaignConfig, number: int, rooms: list[Room],
     facings = ((0, -1), (1, 0), (0, 1), (-1, 0))
 
     def place_enemy(x: int, y: int, depth: float, tier: int,
-                    room: Room | None = None) -> None:
+                    room: Room | None = None, patrol_facing: int | None = None) -> None:
         name, family = pick_family(depth)
         if name in ("officer", "ss") and near_door(x, y):
             name, family = "guard", GUARDS
-        if room is not None:
+        if patrol_facing is not None:
+            facing = patrol_facing
+            family = PATROLS_BY_FAMILY[family]
+        elif room is not None:
             facing = _pick_stationary_facing(x, y, room)
         elif open_facings := [i for i in range(4)
                               if _is_floor(_at(tiles, x + facings[i][0],
@@ -1752,20 +1782,62 @@ def _place_population(config: CampaignConfig, number: int, rooms: list[Room],
             return 1.5 - (depth - 0.85) * 14
         return 0.8
 
+    def patrol_loop(room: Room) -> tuple[list[tuple[int, int]], dict[tuple[int, int], int]] | None:
+        """Return a clockwise, two-tile-inset loop and its outgoing turn directions.
+
+        PatrolPoint changes an actor's direction only when it reaches the
+        marker tile, so the four corners carry the direction of their
+        outgoing leg.  Reserving the full loop below also keeps other actors
+        and later decoration from turning a valid route into a blockage.
+        """
+        if room.w < 7 or room.h < 7:
+            return None
+        left, right = room.x + 2, room.x + room.w - 3
+        top, bottom = room.y + 2, room.y + room.h - 3
+        path = ([(x, top) for x in range(left, right + 1)]
+                + [(right, y) for y in range(top + 1, bottom + 1)]
+                + [(x, bottom) for x in range(right - 1, left - 1, -1)]
+                + [(left, y) for y in range(bottom - 1, top, -1)])
+        corners = {(left, top), (right, top), (right, bottom), (left, bottom)}
+        directions = {cell: next(i for i, delta in enumerate(facings)
+                                 if (cell[0] + delta[0], cell[1] + delta[1])
+                                 == path[(index + 1) % len(path)])
+                      for index, cell in enumerate(path) if cell in corners}
+        return path, directions
+
     tier_counts = [0, 0, 0]
     for ridx, room in enumerate(rooms[1:], 1):
         depth = depth_of(room)
         budget = max(0, round(per_room * (0.4 if room == exit_room else pacing(depth))))
+        patrol = patrol_loop(room)
+        patrol_count = 0
+        if (budget and patrol is not None and rng.random() < 0.35):
+            path, turns = patrol
+            path_cells = set(path)
+            if (all(_is_floor(_at(tiles, x, y)) and _at(things, x, y) == 0
+                    and (x, y) not in reserved for x, y in path)
+                    and len(path_cells) > len(turns)):
+                for cell, direction in turns.items():
+                    _set(things, *cell, PATROL_POINT_CODES[direction])
+                reserved.update(path_cells)
+                spawn = rng.choice([cell for cell in path if cell not in turns])
+                spawn_index = path.index(spawn)
+                successor = path[(spawn_index + 1) % len(path)]
+                facing = next(i for i, delta in enumerate(facings)
+                              if (spawn[0] + delta[0], spawn[1] + delta[1]) == successor)
+                place_enemy(*spawn, depth, 0, room, patrol_facing=facing)
+                tier_counts[0] += 1
+                patrol_count = 1
         candidates = [(x, y) for y in range(room.y + 2, room.y + room.h - 1)
                       for x in range(room.x + 2, room.x + room.w - 1)
                       if (x, y) not in reserved and _at(things, x, y) == 0
                       and _is_floor(_at(tiles, x, y))]
         rng.shuffle(candidates)
         cursor = 0
-        for x, y in candidates[cursor:cursor + budget]:
+        for x, y in candidates[cursor:cursor + budget - patrol_count]:
             place_enemy(x, y, depth, 0, room)
             tier_counts[0] += 1
-        cursor += budget
+        cursor += budget - patrol_count
         # ECWolf's base translator treats +36 as the next cumulative skill
         # tier: skill 2 actors join the easy population on medium, and skill 3
         # actors join both on hard. They require their own cells in plane 2.
@@ -1794,6 +1866,17 @@ def _place_population(config: CampaignConfig, number: int, rooms: list[Room],
                           and _is_floor(_at(tiles, x, y))]
             if candidates:
                 _set(things, *rng.choice(candidates), rng.choice((AMMO, FIRST_AID)))
+    novelty = FAKE_HITLER if number == 9 else rng.choice(GHOSTS) if number == 10 else None
+    if novelty is not None and rng.random() < 0.1:
+        candidates = [(x, y) for room in rooms for y in range(room.y + 1, room.y + room.h - 1)
+                      for x in range(room.x + 1, room.x + room.w - 1)
+                      if (x, y) not in reserved and _at(things, x, y) == 0
+                      and _is_floor(_at(tiles, x, y))
+                      and abs(x - start[0]) + abs(y - start[1]) >= 6]
+        if candidates:
+            cell = rng.choice(candidates)
+            _set(things, *cell, novelty)
+            reserved.add(cell)
     _guarantee_supplies(config, rooms, tiles, things, reserved, rng)
     return tuple(tier_counts)
 
@@ -1994,13 +2077,14 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
 
 
 def _place_boss(tiles: list[int], things: list[int], room: Room,
-                reserved: set[tuple[int, int]], rng: random.Random) -> None:
+                reserved: set[tuple[int, int]], rng: random.Random) -> int:
     cx, cy = room.center
     positions = [(cx, cy), (cx + 1, cy), (cx - 1, cy), (cx, cy + 1), (cx, cy - 1)]
     bx, by = next(((x, y) for x, y in positions
                    if (x, y) not in reserved and _at(things, x, y) == 0
                    and _is_floor(_at(tiles, x, y))), (cx, cy))
-    _set(things, bx, by, rng.choice(BOSSES))
+    boss = rng.choice(BOSSES)
+    _set(things, bx, by, boss)
     reserved.add((bx, by))
     supplies = ((cx - 2, cy - 2, FIRST_AID), (cx + 2, cy - 2, FIRST_AID),
                 (cx - 2, cy + 2, AMMO), (cx + 2, cy + 2, AMMO))
@@ -2008,6 +2092,7 @@ def _place_boss(tiles: list[int], things: list[int], room: Room,
         if _at(things, x, y) == 0 and _is_floor(_at(tiles, x, y)):
             _set(things, x, y, thing)
             reserved.add((x, y))
+    return boss
 
 
 def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
@@ -2141,7 +2226,15 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
         raise ValueError("door budget exceeded")
     if is_boss:
         boss_room = max((room for room in rooms[1:] if room != exit_room), key=lambda room: room.w * room.h)
-        _place_boss(tiles, things, boss_room, reserved, rng)
+        boss = _place_boss(tiles, things, boss_room, reserved, rng)
+        if boss not in KEY_DROP_BOSSES:
+            locked = tuple((index % GRID, index // GRID, tile)
+                           for index, tile in enumerate(tiles) if tile == DOOR_GOLD_EW)
+            key = _key_spot(tiles, rooms, roles, locked, start)
+            if key is None or _at(things, *key) != 0:
+                raise ValueError("boss elevator has no free gold-key location")
+            _set(things, *key, GOLD_KEY)
+            reserved.add(key)
         locks += 1
     enemy_tiers = _place_population(config, number, rooms, tiles, things, reserved, rng,
                                     start, exit_room)
@@ -2149,7 +2242,7 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
     _place_decorations(rooms, tiles, things, reserved, start, rng, roles=roles, specs=specs)
     _assign_sound_zones(tiles)
     theme_index = rng.randrange(len(WALL_THEMES))
-    _apply_wall_theme(tiles, rooms, districts, theme_index, rng)
+    _apply_wall_theme(tiles, things, rooms, districts, theme_index, rng)
     _hint_secrets(tiles, things, theme_index, rng)
     result = GeneratedMap(number=number, tiles=tiles, things=things, start=start,
                           exit_stand=exit_stand, secret_rewards=rewards, seed=seed,
@@ -2260,11 +2353,12 @@ def validate_map(level: GeneratedMap) -> None:
         raise ValueError("secret exit zone on a floor with no secret route")
     validate_door_axes(level.tiles)
     if level.locked_doors:
-        if not level.boss and GOLD_KEY not in level.things:
+        boss_drops_key = level.boss and any(thing in KEY_DROP_BOSSES for thing in level.things)
+        if not boss_drops_key and GOLD_KEY not in level.things:
             raise ValueError("locked map has no gold key")
         if not any(tile in (92, 93) for tile in level.tiles):
             raise ValueError("locked map has no locked door")
-        if not level.boss:
+        if not boss_drops_key:
             key_index = level.things.index(GOLD_KEY)
             key_position = key_index % GRID, key_index // GRID
             if key_position not in _reachable(level.tiles, level.start, locked_open=False):
@@ -2290,6 +2384,7 @@ def validate_map(level: GeneratedMap) -> None:
         if boss_position not in _reachable(level.tiles, level.start, locked_open=False):
             raise ValueError("boss is unreachable before the boss elevator lock")
     validate_objects(level)
+    validate_patrols(level)
 
 
 def validate_objects(level: GeneratedMap) -> None:
@@ -2308,6 +2403,43 @@ def validate_objects(level: GeneratedMap) -> None:
             distance = abs(x - level.start[0]) + abs(y - level.start[1])
             if distance < 6:
                 raise ValueError(f"enemy at {(x, y)} is too close to player start")
+
+
+def _patrol_actor_direction(code: int) -> int | None:
+    """Decode a patrol actor's old-format code into this module's N/E/S/W index."""
+    for patrol_family in PATROLS_BY_FAMILY.values():
+        for tier in range(3):
+            candidate = code - 36 * tier
+            if candidate in patrol_family:
+                return patrol_family.index(candidate)
+    return None
+
+
+def validate_patrols(level: GeneratedMap, steps: int = 512) -> None:
+    """Simulate ECWolf's pathing movement and reject a route that dead-ends.
+
+    In ECWolf, ``TryWalk`` tries only the actor's current direction; a
+    PatrolPoint must set a new direction before the next tile would be solid.
+    This deliberately models that limited algorithm rather than a helpful
+    path finder, making the historical walking-in-place failure reproducible.
+    """
+    for index, thing in enumerate(level.things):
+        direction = _patrol_actor_direction(thing)
+        if direction is None:
+            continue
+        x, y = index % GRID, index // GRID
+        origin = (x, y)
+        for _ in range(steps):
+            dx, dy = ((0, -1), (1, 0), (0, 1), (-1, 0))[direction]
+            x, y = x + dx, y + dy
+            tile = _at(level.tiles, x, y)
+            if not (_is_floor(tile) or tile in DOORS):
+                raise ValueError(f"patrol actor at {origin} dead-ends at {(x, y)}")
+            occupant = _at(level.things, x, y)
+            if occupant and occupant not in PATROL_POINT_DIRECTIONS and (x, y) != origin:
+                raise ValueError(f"patrol actor at {origin} is blocked by thing at {(x, y)}")
+            if occupant in PATROL_POINT_DIRECTIONS:
+                direction = PATROL_POINT_DIRECTIONS[occupant]
 
 
 def validate_door_axes(tiles: list[int]) -> None:
