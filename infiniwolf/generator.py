@@ -1213,6 +1213,32 @@ def _split_oversized_zones(tiles: list[int], rooms: list[Room], rng: random.Rand
     return placed
 
 
+def _remove_redundant_plain_doors(tiles: list[int]) -> int:
+    """Remove plain doors whose two sides already share a floor component.
+
+    Room notches can make a second, tiny walkaround beside the corridor
+    chokepoint where _place_doors installed the real doorway.  Those gaps
+    are deliberately too small for _split_oversized_zones to door off, so
+    leave the open route and remove the now-purely-cosmetic plain door.
+    Locked and elevator doors have separate gating invariants and are not
+    considered here.
+    """
+    components = _floor_components(tiles)
+    owner = {cell: index for index, component in enumerate(components) for cell in component}
+    removed = 0
+    for index, tile in enumerate(tiles):
+        if tile not in (DOOR_EW, DOOR_NS):
+            continue
+        x, y = index % GRID, index // GRID
+        dx, dy = (1, 0) if tile % 2 == 0 else (0, 1)
+        before = owner.get((x - dx, y - dy))
+        after = owner.get((x + dx, y + dy))
+        if before is not None and before == after:
+            _set(tiles, x, y, FLOOR)
+            removed += 1
+    return removed
+
+
 def _assign_sound_zones(tiles: list[int]) -> int:
     """Give each door-separated floor component its own ECWolf MapZone.
 
@@ -1543,7 +1569,9 @@ def _floor_distances(tiles: list[int], start: tuple[int, int]) -> dict[tuple[int
 def _break_long_sightlines(tiles: list[int], things: list[int], rooms: list[Room],
                            reserved: set[tuple[int, int]], rng: random.Random,
                            start: tuple[int, int],
-                           max_run: int = 21) -> int:
+                           max_run: int = 21,
+                           allow_doors: bool = True,
+                           walls_for_redundant_doors: bool = False) -> int:
     centers = {room.center for room in rooms}
     doors = {(x, y) for y in range(GRID) for x in range(GRID)
              if _at(tiles, x, y) in DOORS}
@@ -1613,17 +1641,37 @@ def _break_long_sightlines(tiles: list[int], things: list[int], rooms: list[Room
             if changed:
                 break
             for _, (x, y) in candidates:
+                if not allow_doors and not walls_for_redundant_doors:
+                    continue
                 axis = _door_axis(tiles, x, y)
                 if (not axis or (x, y) in centers or (x, y) in reserved
                         or _at(things, x, y) or _inside_room(rooms, x, y)
                         or any(abs(x - dx) <= 1 and abs(y - dy) <= 1
                                for dx, dy in doors)):
                     continue
+                if walls_for_redundant_doors:
+                    dx, dy = (1, 0) if axis % 2 == 0 else (0, 1)
+                    components = _floor_components(tiles)
+                    owner = {cell: index for index, component in enumerate(components)
+                             for cell in component}
+                    before = owner.get((x - dx, y - dy))
+                    after = owner.get((x + dx, y + dy))
+                    if before is not None and before == after:
+                        original = _at(tiles, x, y)
+                        _set(tiles, x, y, WALL)
+                        if _reachable(tiles, start, locked_open=True) == baseline - {(x, y)}:
+                            placed += 1; changed = True
+                            break
+                        _set(tiles, x, y, original)
+                if not allow_doors:
+                    continue
                 _set(tiles, x, y, axis)
                 doors.add((x, y)); placed += 1; changed = True
                 break
             if changed:
                 break
+            if not allow_doors:
+                continue
             vertical = run[0][0] == run[-1][0]
             for _, (x, y) in candidates:
                 sides = ((1, 0), (-1, 0)) if vertical else ((0, 1), (0, -1))
@@ -2232,6 +2280,11 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
                          allow_locks=not is_boss)
     _break_long_sightlines(tiles, things, rooms, reserved, rng, start)
     _split_oversized_zones(tiles, rooms, rng, reserved)
+    if _remove_redundant_plain_doors(tiles):
+        # A removed door can extend a floor-only sightline which the earlier
+        # pass correctly treated as interrupted; repair only that new case.
+        _break_long_sightlines(tiles, things, rooms, reserved, rng, start,
+                               allow_doors=False, walls_for_redundant_doors=True)
     if sum(tile in DOORS for tile in tiles) > 56:
         raise ValueError("door budget exceeded")
     if is_boss:

@@ -10,9 +10,10 @@ from collections import deque
 import unittest
 
 from infiniwolf.config import CampaignConfig
-from infiniwolf.generator import (DOGS, DOOR_ELEVATOR, DOOR_GOLD_EW, DOORS, ELEVATOR_TILE,
-                                   FLOOR, GRID, GUARDS, OFFICERS, SS, SECRET_EXIT_ZONE,
-                                   STATIC_BLOCKING, ZONE_MAX, _at, _is_floor, generate_map)
+from infiniwolf.generator import (DOGS, DOOR_ELEVATOR, DOOR_EW, DOOR_GOLD_EW, DOOR_NS, DOORS,
+                                   ELEVATOR_TILE, FLOOR, GRID, GUARDS, OFFICERS, SS,
+                                   SECRET_EXIT_ZONE, STATIC_BLOCKING, ZONE_MAX, _at,
+                                   _floor_components, _is_floor, generate_map)
 
 
 def _generate_with_retries(config: CampaignConfig, floor: int, attempts: int = 50):
@@ -50,7 +51,7 @@ def _longest_straight_run(tiles: list[int]) -> int:
     return best
 
 
-def _floor_components(tiles: list[int]) -> list[set[tuple[int, int]]]:
+def _test_floor_components(tiles: list[int]) -> list[set[tuple[int, int]]]:
     unassigned = {(x, y) for y in range(GRID) for x in range(GRID) if _is_floor(_at(tiles, x, y))}
     components = []
     while unassigned:
@@ -192,13 +193,36 @@ class TopologyRegressionTests(unittest.TestCase):
             config = CampaignConfig(seed=seed)
             for floor in (2, 5, 8):
                 level = _generate_with_retries(config, floor)
-                components = _floor_components(level.tiles)
+                components = _test_floor_components(level.tiles)
                 total = sum(len(c) for c in components) or 1
                 biggest = max(len(c) for c in components)
                 self.assertLess(
                     biggest / total, 0.5,
                     f"seed={seed!r} floor={floor}: one component is "
                     f"{biggest}/{total} of all floor tiles")
+
+    def test_plain_doors_have_no_floor_only_walkaround(self):
+        """A notch or alcove may meet its neighbour beside a valid corridor
+        door.  Such a door no longer gates anything: with every door held
+        closed, its two flanking floor cells must remain separate."""
+        for seed in REGRESSION_SEEDS:
+            config = CampaignConfig(seed=seed)
+            for floor in (2, 5, 8):
+                level = _generate_with_retries(config, floor)
+                components = _floor_components(level.tiles)
+                owner = {cell: index for index, component in enumerate(components)
+                         for cell in component}
+                for index, tile in enumerate(level.tiles):
+                    if tile not in (DOOR_EW, DOOR_NS):
+                        continue
+                    x, y = index % GRID, index // GRID
+                    dx, dy = (1, 0) if tile % 2 == 0 else (0, 1)
+                    before = owner.get((x - dx, y - dy))
+                    after = owner.get((x + dx, y + dy))
+                    self.assertFalse(
+                        before is not None and before == after,
+                        f"seed={seed!r} floor={floor}: plain door at ({x},{y}) "
+                        "has a floor-only walkaround")
 
 
 if __name__ == "__main__":
