@@ -270,6 +270,7 @@ class GeneratedMap:
     shortcut_pushwalls: tuple[tuple[int, int], ...] = ()
     critique: tuple[str, ...] = ()
     rooms: tuple[Room, ...] = ()
+    edges: tuple[tuple[int, int], ...] = ()
 
 
 def _at(plane: list[int], x: int, y: int) -> int:
@@ -374,21 +375,24 @@ def _plan_floor(rng: random.Random, complexity: int, number: int) -> FloorPlan:
     return FloorPlan(specs, edges, loops, tuple(motifs), frozenset(critical), tuple(groups))
 
 
-def _room_size(rng: random.Random, tier: str) -> tuple[int, int]:
+def _room_size(rng: random.Random, tier: str, number: int = 0) -> tuple[int, int]:
+    bump = 2 if number == 10 else 0
     if tier == "anchor":
-        return rng.randrange(10, 14), rng.randrange(10, 14)
+        if number == 9:
+            return rng.randrange(14, 18), rng.randrange(14, 18)
+        return rng.randrange(10 + bump, 14 + bump), rng.randrange(10 + bump, 14 + bump)
     if tier == "closet":
         return rng.randrange(4, 6), rng.randrange(4, 6)
     if tier == "hall":
-        major, minor = rng.randrange(9, 14), rng.randrange(5, 8)
+        major, minor = rng.randrange(9 + bump, 14 + bump), rng.randrange(5 + bump, 8 + bump)
         return (major, minor) if rng.random() < 0.5 else (minor, major)
-    return rng.randrange(6, 10), rng.randrange(6, 10)
+    return rng.randrange(6 + bump, 10 + bump), rng.randrange(6 + bump, 10 + bump)
 
 
-def _place_planned_rooms(rng: random.Random, plan: FloorPlan) -> PlacedPlan:
+def _place_planned_rooms(rng: random.Random, plan: FloorPlan, number: int = 0) -> PlacedPlan:
     spine_count = next(index for index, spec in enumerate(plan.specs)
                        if spec.role == "exit") + 1
-    sizes = [_room_size(rng, spec.tier) for spec in plan.specs]
+    sizes = [_room_size(rng, spec.tier, number) for spec in plan.specs]
     for group in plan.size_groups:
         shared = sizes[group[0]]
         for index in group[1:]:
@@ -1613,6 +1617,28 @@ def _rooms_by_distance(rooms: list[Room], edges: list[tuple[int, int]]) -> list[
     return sorted((i for i in distance if i != 0), key=distance.get, reverse=True)
 
 
+def _room_predecessor(room_count: int, edges: list[tuple[int, int]], target: int) -> int | None:
+    """Return `target`'s BFS parent from room 0 in the structural graph.
+
+    At a loop merge, an equally short predecessor resolves deterministically
+    from `edges`' stable iteration order, matching `_rooms_by_distance`.
+    """
+    if target == 0:
+        return None
+    links: dict[int, list[int]] = {i: [] for i in range(room_count)}
+    for a, b in edges:
+        links[a].append(b); links[b].append(a)
+    parent: dict[int, int | None] = {0: None}
+    queue = deque([0])
+    while queue:
+        room = queue.popleft()
+        for nxt in links[room]:
+            if nxt not in parent:
+                parent[nxt] = room
+                queue.append(nxt)
+    return parent.get(target)
+
+
 def _place_elevator(tiles: list[int], room: Room, locked: bool = False) -> tuple[int, int]:
     """Carve a native one-tile elevator shaft into an east or west wall.
 
@@ -2182,8 +2208,10 @@ def _place_population(config: CampaignConfig, number: int, rooms: list[Room],
             x, y = candidates[cursor]
             if ridx % max(2, 7 - int(config.supplies)) == 0:
                 _set(things, x, y, rng.choice((AMMO, FOOD, FIRST_AID)))
-            elif ridx % max(2, 7 - int(config.treasure)) == 1:
+            elif ridx % max(2, 7 - int(config.treasure) - (2 if number == 10 else 0)) == 1:
                 _set(things, x, y, rng.choice(TREASURE))
+                if number == 10 and len(candidates[cursor:]) > 1:
+                    _set(things, *candidates[cursor + 1], rng.choice(TREASURE))
     recovery_rooms = sorted((room for room in rooms if 0.85 < depth_of(room) < 1.0
                              and room != exit_room), key=depth_of)
     if recovery_rooms:
@@ -2426,6 +2454,28 @@ def _place_boss(tiles: list[int], things: list[int], room: Room,
     return boss
 
 
+def _place_preboss_cache(tiles: list[int], things: list[int], room: Room,
+                         reserved: set[tuple[int, int]], rng: random.Random) -> None:
+    """Place a modest stock-up cache before the boss arena.
+
+    This intentionally sits outside `_guarantee_supplies`: that later pass
+    counts the items already placed here before filling its floor-wide deficit.
+    """
+    candidates = [(x, y) for y in range(room.y + 1, room.y + room.h - 1)
+                  for x in range(room.x + 1, room.x + room.w - 1)
+                  if (x, y) not in reserved and _at(things, x, y) == 0
+                  and _is_floor(_at(tiles, x, y))]
+    rng.shuffle(candidates)
+    loot = [FIRST_AID, AMMO]
+    if rng.random() < 0.35:
+        loot.append(rng.choice((MACHINE_GUN, CHAINGUN)))
+    if rng.random() < 0.2:
+        loot.append(ONE_UP)
+    for thing, cell in zip(loot, candidates):
+        _set(things, *cell, thing)
+        reserved.add(cell)
+
+
 def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
                  secret_exit: bool = False) -> GeneratedMap:
     seed = config.floor_seed(number, attempt)
@@ -2434,7 +2484,7 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
     things = [0] * (GRID * GRID)
     complexity = int(config.layout_complexity)
     plan = _plan_floor(rng, complexity, number)
-    placed = _place_planned_rooms(rng, plan)
+    placed = _place_planned_rooms(rng, plan, number)
     rooms = placed.rooms
     edges = placed.edges
     specs = [plan.specs[index] for index in placed.spec_indices]
@@ -2459,8 +2509,9 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
     exit_stand = None
     # The planned terminus is legible; crossed walls still need a safe sweep.
     exit_index = roles.index("exit")
+    anchor_index = next(index for index, spec in enumerate(specs) if spec.tier == "anchor")
     exit_order = [exit_index] + [index for index in _rooms_by_distance(rooms, edges)
-                                 if index != exit_index]
+                                 if index != exit_index and (not is_boss or index != anchor_index)]
     for room_index in exit_order:
         try:
             exit_stand = _place_elevator(tiles, rooms[room_index], locked=is_boss)
@@ -2479,7 +2530,7 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
     max_room_distance = max(room_distances.values(), default=1) or 1
     # Report's secret budget is 2-6 per standard floor; scale directly with
     # the intensity dial instead of undershooting to 1 at the low end.
-    target_secrets = max(2, int(config.secrets))
+    target_secrets = max(2, int(config.secrets) + (1 if number == 10 else 0))
     # A secret pocket must never reuse or seal the terminal room's elevator
     # wall after the elevator has been carved.
     candidates = [room for room in rooms[1:] if room != exit_room]
@@ -2565,8 +2616,13 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
     if sum(tile in DOORS for tile in tiles) > 56:
         raise ValueError("door budget exceeded")
     if is_boss:
-        boss_room = max((room for room in rooms[1:] if room != exit_room), key=lambda room: room.w * room.h)
+        boss_index = max((index for index in range(1, len(rooms)) if rooms[index] != exit_room),
+                         key=lambda index: rooms[index].w * rooms[index].h)
+        boss_room = rooms[boss_index]
         boss = _place_boss(tiles, things, boss_room, reserved, rng)
+        preboss_index = _room_predecessor(len(rooms), edges, boss_index)
+        if preboss_index is not None and rooms[preboss_index] != exit_room:
+            _place_preboss_cache(tiles, things, rooms[preboss_index], reserved, rng)
         if boss not in KEY_DROP_BOSSES:
             locked = tuple((index % GRID, index // GRID, tile)
                            for index, tile in enumerate(tiles) if tile == DOOR_GOLD_EW)
@@ -2590,7 +2646,8 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
                           enemy_tiers=enemy_tiers, motifs=plan.motifs,
                           motif_rooms=tuple(spec.motif for spec in specs),
                           secret_variants=tuple(secret_variants),
-                          shortcut_pushwalls=tuple(shortcut_pushwalls), rooms=tuple(rooms))
+                          shortcut_pushwalls=tuple(shortcut_pushwalls), rooms=tuple(rooms),
+                          edges=tuple(edges))
     validate_map(result)
     result.critique = _critique(result)
     return result

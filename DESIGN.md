@@ -33,6 +33,10 @@ The plan carries the graph (`edges`, `loop_edges`), the tier and role of every r
 
 Sizes are drawn from `_room_size` per tier; grouped rooms (e.g. `wings`) share the same drawn size. The start room lands in a randomised quadrant with a `heading` offset from an edge, and every subsequent room is placed adjacent to its parent by `adjacent(...)`. `legal(...)` enforces the 3-tile map margin and the pad-2 overlap rule; if a room can't fit adjacent to its parent, the plan drops it (and its subtree). Dropped rooms and edges are cleaned up before the planner returns a `PlacedPlan`.
 
+Floor 9 widens its single anchor to 14–17 tiles on each side. Since every other tier is smaller, that anchor is always the selected boss arena; its existing `grand` decor treatment adds the intended columned set-piece dressing. The structural BFS parent of that arena receives a small pre-boss cache: first-aid and ammo, with independent chances for a rare weapon and an extra life. It is placed before population, so `_guarantee_supplies` naturally counts the cache while calculating its remaining floor-wide deficit.
+
+Floor 10 keeps the same plan grammar but makes anchors, halls, and standard rooms two tiles larger in each dimension; closets remain small as contrast nooks. Some non-critical filler may therefore be dropped when geometry is tight. Its treasure pickup cadence is two room slots faster, with a second treasure on each successful cadence, and its secret budget is one higher, making the finale visibly more reward-heavy without changing secret reward weighting.
+
 ## 4. Carving and connections
 
 - **Room interiors**: floor codes taken from the district's sound zone (see §6). Interior variety comes from `_carve_notches`, `_carve_alcoves`, and `_add_pillars`, each guarded by the room tier so anchor/hall rooms get more structure than closets.
@@ -107,7 +111,7 @@ FakeHitler is a rare one-off actor only on floor 9, never a boss; the four indes
 ECWolf treats each `+36` on an actor code as the next cumulative skill tier: tier-1 actors join the base population on medium, tier-2 joins both on hard. `_place_population` places the base tier first, then two rounds of skill-only actors with `extra = round(base_budget * (0.20 + progression * 0.12))`. Skill actors need their own free cells in the `things` plane.
 
 ### 7.5 Rewards
-After enemies are placed, every second room places an ammo/food/first-aid or treasure pickup in an unused candidate cell. `_ensure_early_heal` guarantees a first-aid in the low-depth zone so a rough opening doesn't spiral.
+After enemies are placed, every second room places an ammo/food/first-aid or treasure pickup in an unused candidate cell. Floor 10 shortens the treasure cadence by two room slots, adds a second treasure to each successful treasure cadence, and requests one extra secret, while `_ensure_early_heal` guarantees a first-aid in the low-depth zone so a rough opening doesn't spiral.
 
 ## 8. Actor facing
 

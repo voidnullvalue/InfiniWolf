@@ -11,7 +11,9 @@ from infiniwolf.generator import GenerationCancelled, generate_campaign, generat
 from infiniwolf.generator import (BOSSES, DECOR_WALLS, DOGS, ELEVATOR_TILE, FAKE_HITLER,
                                    GHOSTS, GOLD_KEY, GRID, GUARDS, KEY_DROP_BOSSES, OFFICERS,
                                    PUSHWALL, Room, SECRET_EXIT_ZONE, SS, WALL, WALL_THEMES,
-                                   _apply_wall_theme, _at, _hint_secrets, _reachable)
+                                   AMMO, CHAINGUN, FIRST_AID, MACHINE_GUN, ONE_UP,
+                                   _apply_wall_theme, _at, _decor_theme, _hint_secrets,
+                                   _reachable, _room_predecessor)
 from infiniwolf.generator import FLOOR, FLOOR_TEN_STONE_THEME, ZONE_MAX
 
 
@@ -95,6 +97,44 @@ class GeneratorTests(unittest.TestCase):
         self.assertTrue(level.boss)
         self.assertEqual(sum(thing in BOSSES for thing in level.things), 1)
         self.assertNotIn(level.exit_stand, _reachable(level.tiles, level.start, locked_open=False))
+
+    def test_boss_room_is_a_grand_purpose_built_arena(self):
+        for seed in range(8):
+            level = generate_map(CampaignConfig(seed=seed), 9)
+            boss_cell = next(index for index, thing in enumerate(level.things) if thing in BOSSES)
+            x, y = boss_cell % GRID, boss_cell // GRID
+            room = next(room for room in level.rooms
+                        if room.x <= x < room.x + room.w and room.y <= y < room.y + room.h)
+            self.assertGreaterEqual(room.w, 14)
+            self.assertGreaterEqual(room.h, 14)
+            self.assertEqual(room, max(level.rooms, key=lambda candidate: candidate.w * candidate.h))
+
+    def test_anchor_tier_room_always_gets_grand_decor_theme(self):
+        self.assertEqual(_decor_theme("climax", "anchor"), "grand")
+        self.assertEqual(_decor_theme("hub", "anchor"), "grand")
+
+    def test_room_predecessor_uses_stable_bfs_loop_tie_break(self):
+        edges = [(0, 1), (0, 2), (1, 3), (2, 3), (3, 4)]
+        self.assertEqual(_room_predecessor(5, edges, 3), 1)
+        self.assertEqual(_room_predecessor(5, edges, 4), 3)
+        self.assertIsNone(_room_predecessor(5, edges, 0))
+
+    def test_room_before_boss_has_a_stock_up_cache(self):
+        stock_up_items = {FIRST_AID, AMMO, MACHINE_GUN, CHAINGUN, ONE_UP}
+        for seed in range(8):
+            level = generate_map(CampaignConfig(seed=seed), 9)
+            boss_cell = next(index for index, thing in enumerate(level.things) if thing in BOSSES)
+            x, y = boss_cell % GRID, boss_cell // GRID
+            boss_index = next(index for index, room in enumerate(level.rooms)
+                              if room.x <= x < room.x + room.w and room.y <= y < room.y + room.h)
+            preboss_index = _room_predecessor(len(level.rooms), list(level.edges), boss_index)
+            self.assertIsNotNone(preboss_index)
+            room = level.rooms[preboss_index]
+            count = sum(thing in stock_up_items
+                        for index, thing in enumerate(level.things)
+                        if room.x <= index % GRID < room.x + room.w
+                        and room.y <= index // GRID < room.y + room.h)
+            self.assertGreaterEqual(count, 2)
 
     def test_non_key_drop_bosses_get_a_reachable_physical_key(self):
         seen_non_droppers = set()

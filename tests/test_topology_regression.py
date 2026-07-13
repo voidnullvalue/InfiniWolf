@@ -15,7 +15,7 @@ from infiniwolf.generator import (DOGS, DOOR_ELEVATOR, DOOR_EW, DOOR_GOLD_EW, DO
                                    ELEVATOR_TILE, FLOOR, GRID, GUARDS, OFFICERS, SS,
                                    SECRET_EXIT_ZONE, STATIC_BLOCKING, ZONE_MAX, _at,
                                    _floor_components, _is_floor, FLOOR_TEN_STONE_THEME,
-                                   WALL_THEMES, _plan_floor, generate_map)
+                                   TREASURE, WALL_THEMES, _plan_floor, generate_map)
 
 
 def _generate_with_retries(config: CampaignConfig, floor: int, attempts: int = 50):
@@ -192,6 +192,32 @@ class ElevatorContainmentRegressionTests(unittest.TestCase):
 
 
 class TopologyRegressionTests(unittest.TestCase):
+    def test_floor_ten_rooms_are_larger_than_floor_seven(self):
+        for seed in REGRESSION_SEEDS:
+            config = CampaignConfig(seed=seed)
+            level7 = _generate_with_retries(config, 7)
+            level10 = _generate_with_retries(config, 10)
+            self.assertGreater(sum(room.w * room.h for room in level10.rooms),
+                               sum(room.w * room.h for room in level7.rooms),
+                               f"seed={seed!r}: floor 10 rooms are not larger than floor 7")
+
+    def test_floor_ten_has_more_treasure_than_floor_seven(self):
+        for seed in REGRESSION_SEEDS:
+            config = CampaignConfig(seed=seed)
+            level7 = _generate_with_retries(config, 7)
+            level10 = _generate_with_retries(config, 10)
+            self.assertGreater(sum(thing in TREASURE for thing in level10.things),
+                               sum(thing in TREASURE for thing in level7.things),
+                               f"seed={seed!r}: floor 10 has no extra treasure")
+
+    def test_floor_ten_secret_budget_is_bumped(self):
+        for seed in REGRESSION_SEEDS:
+            config = CampaignConfig(seed=seed)
+            level7 = _generate_with_retries(config, 7)
+            level10 = _generate_with_retries(config, 10)
+            self.assertGreaterEqual(len(level10.secret_rewards), len(level7.secret_rewards),
+                                    f"seed={seed!r}: floor 10 secret budget regressed")
+
     def test_no_unbounded_sightlines(self):
         """Report ceiling: no straight unobstructed run should exceed 21
         tiles. A run this long with no door on it means two spaces were
@@ -212,7 +238,7 @@ class TopologyRegressionTests(unittest.TestCase):
         second, independent signal for the same failure class."""
         for seed in REGRESSION_SEEDS:
             config = CampaignConfig(seed=seed)
-            for floor in (2, 5, 8):
+            for floor in (2, 5, 8, 10):
                 level = _generate_with_retries(config, floor)
                 components = _test_floor_components(level.tiles)
                 total = sum(len(c) for c in components) or 1
@@ -228,7 +254,7 @@ class TopologyRegressionTests(unittest.TestCase):
         closed, its two flanking floor cells must remain separate."""
         for seed in REGRESSION_SEEDS:
             config = CampaignConfig(seed=seed)
-            for floor in (2, 5, 8):
+            for floor in (2, 5, 8, 10):
                 level = _generate_with_retries(config, floor)
                 components = _floor_components(level.tiles)
                 owner = {cell: index for index, component in enumerate(components)
