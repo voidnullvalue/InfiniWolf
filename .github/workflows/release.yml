@@ -21,7 +21,7 @@ jobs:
           python-version: "3.11"
       - run: python -m unittest discover -s tests -v
 
-  # Auto-tag main-branch pushes so every merge produces a versioned release.
+  # Auto-tag main-branch release commits from the declared project version.
   # Tag pushes skip this job (already have a tag) via the `if` guard.
   tag:
     if: github.ref == 'refs/heads/main'
@@ -40,10 +40,17 @@ jobs:
         id: gen
         shell: bash
         run: |
-          # Use the commit count on main as the patch number for a simple
-          # monotonically-increasing scheme: v0.0.<commit_count>
-          count=$(git rev-list --count HEAD)
-          tag="v0.0.${count}"
+          # Keep the Git tag and InfiniWolf's declared version identical.
+          version=$(python3 -c 'import pathlib, tomllib; print(tomllib.loads(pathlib.Path("pyproject.toml").read_text())["project"]["version"])')
+          if [[ ! "${version}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "pyproject.toml has an invalid release version: ${version}" >&2
+            exit 1
+          fi
+          tag="v${version}"
+          if git rev-parse --verify --quiet "refs/tags/${tag}"; then
+            echo "Release tag ${tag} already exists; bump the project version before merging to main." >&2
+            exit 1
+          fi
           echo "version_tag=${tag}" >> "$GITHUB_OUTPUT"
           git tag "${tag}"
           git push origin "${tag}"

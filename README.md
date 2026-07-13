@@ -6,9 +6,12 @@
 [![License](https://img.shields.io/github/license/voidnullvalue/InfiniWolf)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.11%2B-blue)](https://www.python.org/downloads/)
 
-InfiniWolf generates deterministic ten-map Wolfenstein 3D campaigns for ECWolf. It uses the player's registered WL6 data at runtime and never copies Wolfenstein graphics, sounds, music, or data files into generated packages.
+InfiniWolf generates deterministic ten-map Wolfenstein 3D campaigns for ECWolf, with varied building layouts, coherent room themes, staged progression, and context-aware encounters and rewards. The goal is simple: make each seed fun to explore and enjoyable to replay. It uses the player's registered WL6 data at runtime and never copies Wolfenstein graphics, sounds, music, or data files into generated packages.
 
-Curious how the generator actually works — floor grammar, room realisation, actor placement, and the rayscore facing pass? See [`DESIGN.md`](DESIGN.md).
+Curious how the generator actually works? Start with the human-readable
+[`GENERATION_FLOW.md`](GENERATION_FLOW.md) flowchart, then use
+[`DESIGN.md`](DESIGN.md) for the detailed floor grammar, room realization,
+actor placement, and validation rules.
 
 ## Prebuilt release (Windows / macOS / Linux)
 
@@ -58,7 +61,7 @@ python3 -m infiniwolf --seed 42 --guard-density 4 --enemy-toughness 3 \
 The desktop interface groups the original gameplay controls separately from
 the style controls. Style settings deliberately influence bounded choices
 rather than disabling map validation: decoration amount controls prop budget,
-room-shape variation controls notches and alcoves, patrol activity controls
+room-shape variation controls restrained mirrored notches, patrol activity controls
 patrol frequency, atmosphere controls how clean or grim rooms look, and secret
 reward quality shifts the secret-room reward mix. Theme bias strongly favors a
 floor identity without forcing every floor to repeat it; `mixed` keeps the
@@ -89,7 +92,7 @@ Generated packages contain only WAD map data, MAPINFO, and the reproducibility m
 pip install pyinstaller .
 pyinstaller --onefile --windowed --name InfiniWolf run.py
 pyinstaller --onefile --name infiniwolf-cli infiniwolf_cli.py
-python3 packaging/make_release.py --platform linux --version 0.1.0   # or windows / macos
+python3 packaging/make_release.py --platform linux --version 1.0.0   # or windows / macos
 ```
 
 The script downloads ECWolf's official prebuilt binary for the target platform from `maniacsvault.net`, checks it against a pinned SHA-256, and packages it alongside the two executables. It never touches Wolfenstein 3D game data.

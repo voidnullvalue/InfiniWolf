@@ -71,6 +71,13 @@ class CampaignConfig:
         payload = f"infiniwolf:locks:v1:{self.seed}".encode("ascii")
         return int.from_bytes(hashlib.blake2b(payload, digest_size=8).digest(), "little")
 
+    def circulation_seed(self, floor: int) -> int:
+        """Independent stream for a floor's building-circulation skeleton."""
+        if not 1 <= floor <= 10:
+            raise ValueError("floor must be between 1 and 10")
+        payload = f"infiniwolf:circulation:v1:{self.seed}:{floor}".encode("ascii")
+        return int.from_bytes(hashlib.blake2b(payload, digest_size=8).digest(), "little")
+
     def to_json(self) -> str:
         values = asdict(self)
         values.update({key: int(value) for key, value in values.items() if isinstance(value, IntEnum)})

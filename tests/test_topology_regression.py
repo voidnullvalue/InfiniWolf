@@ -1,4 +1,4 @@
-"""Regression guards for authored-feeling composition, not just validity.
+"""Regression guards for varied, enjoyable composition, not just validity.
 
 validate_map already guarantees a map is playable; these tests guard
 properties that make a *valid* map still look procedural or broken in a way

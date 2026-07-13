@@ -17,7 +17,7 @@ from infiniwolf.generator import (BOSSES, DECOR_WALLS, DOGS, ELEVATOR_TILE, FAKE
                                    PUSHWALL, Room, RoomSpec, SECRET_EXIT_ZONE, SS, WALL, WALL_THEMES,
                                    AMMO, CHAINGUN, FIRST_AID, MACHINE_GUN, ONE_UP, SILVER_KEY,
                                    _DECOR_ZONES, _apply_wall_theme, _at, _decor_theme, _hint_secrets,
-                                   _carve_alcoves, _carve_connection, _carve_notches, _is_floor, _path_bends,
+                                   _carve_connection, _carve_notches, _is_floor, _path_bends,
                                    _place_decorations, _place_zoned, _reachable,
                                    _place_planned_rooms, _plan_floor, _snap_offsets,
                                    _room_predecessor)
@@ -165,6 +165,51 @@ class GeneratorTests(unittest.TestCase):
         self.assertFalse(any(level.room_concepts[first] == level.room_concepts[second]
                              for first, second in level.edges))
 
+    def test_every_in_room_pickup_has_authored_provenance(self):
+        level = _generate_with_retries(CampaignConfig(seed=3332), 1, attempts=3)
+        tracked = {(x, y): item for placement in level.pickup_placements
+                   for x, y, item in placement.cells}
+        expected = {(index % GRID, index // GRID): item
+                    for index, item in enumerate(level.things)
+                    if item in generator.PICKUP_CODES
+                    and any(room.x <= index % GRID < room.x + room.w
+                            and room.y <= index // GRID < room.y + room.h
+                            for room in level.rooms)}
+        self.assertEqual(tracked, expected)
+        self.assertTrue(all(placement.template in
+                            generator.AUTHORED_PICKUP_TEMPLATES
+                            for placement in level.pickup_placements))
+        route = set(level.critical_route)
+        self.assertTrue(all(placement.room_index in route
+                            for placement in level.pickup_placements
+                            if placement.reason == "route-ammo"))
+        self.assertTrue(all(placement.reason == "exploration-treasure"
+                            for placement in level.pickup_placements
+                            if any(item in generator.TREASURE
+                                   for _, _, item in placement.cells)))
+
+    def test_wall_pickup_templates_are_actually_wall_backed(self):
+        level = _generate_with_retries(CampaignConfig(seed=3332), 1, attempts=3)
+        wall_templates = {"wall-cache", "entry-staging", "recovery-station",
+                          "treasure-display", "corner-cache"}
+        for placement in level.pickup_placements:
+            if placement.template not in wall_templates:
+                continue
+            room = level.rooms[placement.room_index]
+            for x, y, _ in placement.cells:
+                outside = []
+                if x == room.x:
+                    outside.append((x - 1, y))
+                if x == room.x + room.w - 1:
+                    outside.append((x + 1, y))
+                if y == room.y:
+                    outside.append((x, y - 1))
+                if y == room.y + room.h - 1:
+                    outside.append((x, y + 1))
+                self.assertTrue(any(not _is_floor(_at(level.tiles, *cell))
+                                    and _at(level.tiles, *cell) not in generator.DOORS
+                                    for cell in outside))
+
     def test_dog_food_is_contextual_and_capped(self):
         rooms = [Room(3, 3, 8, 8), Room(18, 3, 10, 10), Room(36, 3, 10, 10),
                  Room(50, 3, 9, 9)]
@@ -260,14 +305,43 @@ class GeneratorTests(unittest.TestCase):
         self.assertGreater(candidates, 0)
         self.assertGreaterEqual(aligned / candidates, 0.5)
 
+    def test_circulation_skeletons_vary_without_campaign_repeats(self):
+        observed = set()
+        for seed in range(12):
+            skeletons = generator._circulation_sequence(CampaignConfig(seed=seed))
+            observed.update(skeletons)
+            self.assertFalse(any(first == second
+                                 for first, second in zip(skeletons, skeletons[1:])))
+        self.assertEqual(observed, set(generator.CIRCULATION_SKELETONS))
+
+    def test_floor_plans_use_real_corridor_nodes_and_varied_district_modes(self):
+        observed_modes = set()
+        for skeleton in generator.CIRCULATION_SKELETONS:
+            rng = random.Random(100 + len(observed_modes))
+            plan = _plan_floor(rng, 3, 5, skeleton=skeleton)
+            placed = _place_planned_rooms(rng, plan, 5)
+            specs = [plan.specs[index] for index in placed.spec_indices]
+            corridors = [index for index, spec in enumerate(specs)
+                         if spec.tier == "corridor"]
+            self.assertGreaterEqual(len(corridors), 2)
+            self.assertTrue(all(max(placed.rooms[index].w, placed.rooms[index].h)
+                                >= 2 * min(placed.rooms[index].w,
+                                           placed.rooms[index].h)
+                                for index in corridors))
+            mediated = sum(first in corridors or second in corridors
+                           for first, second in placed.edges) / len(placed.edges)
+            self.assertGreaterEqual(mediated, 0.20)
+            observed_modes.update(plan.district_circulation)
+        self.assertGreaterEqual(len(observed_modes), 4)
+
     def test_mirrored_notches_produce_symmetric_bites(self):
         room = Room(20, 20, 10, 10)
         tiles = [WALL] * (GRID * GRID)
         for y in range(room.y, room.y + room.h):
             for x in range(room.x, room.x + room.w):
                 tiles[y * GRID + x] = FLOOR
-        _carve_notches(tiles, [room], random.Random(3), chance=1.0,
-                       mirrored_chance=1.0)
+        anchors = _carve_notches(tiles, [room], random.Random(3), chance=1.0)
+        self.assertIn(len(anchors[0]), (2, 4))
         mirror_x = all(_at(tiles, x, y) == _at(tiles, 2 * room.x + room.w - 1 - x, y)
                        for y in range(room.y, room.y + room.h)
                        for x in range(room.x, room.x + room.w))
@@ -281,21 +355,22 @@ class GeneratorTests(unittest.TestCase):
         self.assertTrue(all(_at(tiles, cx, y) == FLOOR
                             for y in range(room.y, room.y + room.h)))
 
-    def test_mirrored_alcoves_carve_matching_opposite_bumps(self):
+    def test_mirrored_notches_receive_matching_decorations(self):
         room = Room(20, 20, 10, 10)
         tiles = [WALL] * (GRID * GRID)
         for y in range(room.y, room.y + room.h):
             for x in range(room.x, room.x + room.w):
                 tiles[y * GRID + x] = FLOOR
-        _carve_alcoves(tiles, [room], random.Random(5), chance=1.0,
-                       mirrored_chance=1.0)
-        outside = {(x, y) for y in range(GRID) for x in range(GRID)
-                   if _at(tiles, x, y) == FLOOR
-                   and not (room.x <= x < room.x + room.w and room.y <= y < room.y + room.h)}
-        self.assertTrue(outside)
-        mirror_x = {(2 * room.x + room.w - 1 - x, y) for x, y in outside}
-        mirror_y = {(x, 2 * room.y + room.h - 1 - y) for x, y in outside}
-        self.assertTrue(outside == mirror_x or outside == mirror_y)
+        anchors = _carve_notches(tiles, [room], random.Random(5), chance=1.0)
+        things = [0] * len(tiles)
+        identity = generator.RoomIdentity("beat", "standard", "spine", 0,
+                                          "storehouse", "storage", "storage")
+        _place_decorations([room], tiles, things, set(), room.center,
+                           random.Random(5), identities=[identity],
+                           notch_anchors=anchors)
+        accents = [_at(things, *cell) for cell in anchors[0]]
+        self.assertTrue(all(accents))
+        self.assertEqual(len(set(accents)), 1)
 
     def test_aligned_rooms_get_a_straight_corridor(self):
         a, b = Room(10, 20, 6, 6), Room(30, 20, 6, 6)
@@ -454,7 +529,7 @@ class GeneratorTests(unittest.TestCase):
         self.assertNotIn(SILVER_KEY, final_floor.things)
 
     def test_exit_uses_long_post_climax_route(self):
-        level = generate_map(CampaignConfig(seed=3332), 1)
+        level = _generate_with_retries(CampaignConfig(seed=3332), 1, attempts=3)
         self.assertGreaterEqual(level.exit_depth_ratio, 0.75)
         self.assertGreaterEqual(len(level.critical_route),
                                 max(6, math.ceil(len(level.rooms) * 0.55)))
@@ -1058,13 +1133,15 @@ class GeneratorTests(unittest.TestCase):
                      for seed in range(20)}
         self.assertGreater(len(sequences), 1)
 
-    def test_generated_floor_records_its_variant_stably_across_attempts(self):
+    def test_generated_floor_records_variant_and_circulation_stably_across_attempts(self):
         config = CampaignConfig(seed=77)
-        expected = generator._variant_sequence(config)[2].name
+        expected = (generator._variant_sequence(config)[2].name,
+                    generator._circulation_sequence(config)[2])
         realized = []
         for attempt in range(10):
             try:
-                realized.append(generate_map(config, 3, attempt=attempt).variant)
+                level = generate_map(config, 3, attempt=attempt)
+                realized.append((level.variant, level.circulation_skeleton))
             except ValueError:
                 continue
             if len(realized) == 2:
@@ -1074,10 +1151,17 @@ class GeneratorTests(unittest.TestCase):
     def test_manifest_names_each_floors_variant(self):
         config = CampaignConfig(seed=4242)
         expected = [variant.name for variant in generator._variant_sequence(config)]
+        expected_skeletons = list(generator._circulation_sequence(config))
         with tempfile.TemporaryDirectory() as directory:
             package = generate_campaign(config, Path(directory) / "campaign.pk3")
             manifest = generator.read_manifest(package)
         self.assertEqual([floor["variant"] for floor in manifest["floors"]], expected)
+        self.assertEqual([floor["circulation_skeleton"]
+                          for floor in manifest["floors"]], expected_skeletons)
+        self.assertTrue(all(floor["district_circulation"]
+                            and floor["layout_signature"]
+                            and floor["pickup_compositions"]
+                            for floor in manifest["floors"]))
 
     def test_catacombs_variant_only_uses_pooled_wall_families(self):
         # catacombs pools blue stone/grey/brick; wood, metal, and BLUWALL
