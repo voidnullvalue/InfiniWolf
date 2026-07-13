@@ -15,7 +15,8 @@ from infiniwolf.generator import (BOSSES, DECOR_WALLS, DOGS, ELEVATOR_TILE, FAKE
                                    PUSHWALL, Room, RoomSpec, SECRET_EXIT_ZONE, SS, WALL, WALL_THEMES,
                                    AMMO, CHAINGUN, FIRST_AID, MACHINE_GUN, ONE_UP,
                                    _DECOR_ZONES, _apply_wall_theme, _at, _decor_theme, _hint_secrets,
-                                   _place_decorations, _place_zoned, _reachable, _room_predecessor)
+                                   _is_floor, _place_decorations, _place_zoned, _reachable,
+                                   _room_predecessor)
 from infiniwolf.generator import FLOOR, FLOOR_TEN_STONE_THEME, ZONE_MAX
 
 
@@ -414,7 +415,8 @@ class GeneratorTests(unittest.TestCase):
         _hint_secrets(tiles, things, component_of, group_theme, random.Random(0))
 
         families = {base: set(accents) | {base} for base, accents in WALL_THEMES}
-        families[FLOOR_TEN_STONE_THEME[0]] = {FLOOR_TEN_STONE_THEME[0]}
+        families[FLOOR_TEN_STONE_THEME[0]] = (set(FLOOR_TEN_STONE_THEME[1])
+                                              | {FLOOR_TEN_STONE_THEME[0]})
         for group, (x, y) in enumerate(pushwalls):
             base, accents = group_theme[group]
             tile = _at(tiles, x, y)
@@ -422,7 +424,7 @@ class GeneratorTests(unittest.TestCase):
             if accents:
                 self.assertIn(tile, set(accents) & DECOR_WALLS)
         self.assertIn(_at(tiles, 10, 10), (34, 36))
-        self.assertEqual(_at(tiles, 20, 10), 9)
+        self.assertEqual(_at(tiles, 20, 10), 41)
         self.assertNotIn(_at(tiles, 10, 10), (3, 4))
         self.assertNotIn(_at(tiles, 20, 10), (3, 4))
 
@@ -452,16 +454,31 @@ class GeneratorTests(unittest.TestCase):
                 self.assertNotIn(9, generate_map(CampaignConfig(seed=seed), number).tiles)
 
     def test_blue_stone_masonry_can_appear_on_floor_ten(self):
+        # The roll is ~25% per generation; 16 seeds left under 1% odds of an
+        # all-miss sample (0.75**16), which is exactly what an RNG-stream
+        # shift from an unrelated upstream change once hit. Widen the sample
+        # so this stays robust to that class of shift instead of re-picking
+        # a new lucky range every time upstream rng consumption changes.
         seen_masonry = any(9 in generate_map(CampaignConfig(seed=seed), 10).tiles
-                           for seed in range(16))
+                           for seed in range(48))
         self.assertTrue(seen_masonry)
 
     def test_wall_theme_varies_by_seed_not_just_floor_number(self):
+        # Counting every wall-plane tile (including deep interior rock that
+        # never borders floor and is therefore never painted or rendered)
+        # always makes literal WALL(1) the "dominant" material regardless of
+        # how varied the actual painted theme is -- only tiles with a floor
+        # neighbor are ever player-visible, so only those should count.
         dominant = set()
-        for seed in range(15):
+        for seed in range(40):
             level = generate_map(CampaignConfig(seed=seed), 2)
-            counts = Counter(tile for tile in level.tiles if 1 <= tile < 90)
-            dominant.add(counts.most_common(1)[0][0])
+            counts = Counter(
+                tile for index, tile in enumerate(level.tiles)
+                if 1 <= tile < 90
+                and any(_is_floor(_at(level.tiles, index % GRID + dx, index // GRID + dy))
+                       for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1))))
+            if counts:
+                dominant.add(counts.most_common(1)[0][0])
         self.assertGreater(len(dominant), 1,
                            "floor 2 always used the same dominant wall material across seeds")
 

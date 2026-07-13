@@ -136,9 +136,13 @@ WALL_THEMES = (
 )
 JAIL_CANDIDATE_PROBABILITY = 0.35
 # BSTONEB (9) is mottled blue-stone masonry, distinct from the BLUWALL panel.
-# Keep it out of the normal pool: floor 10 occasionally uses it as a rare bare
-# material, while floors 1--9 never do.
-FLOOR_TEN_STONE_THEME = (9, ())
+# Keep it out of the normal pool: floor 10 occasionally uses it as a rare
+# material, while floors 1--9 never do. It needs its own DECOR_WALLS accent
+# (the same BSTSIGN landmark the blue-stone theme uses) so a pushwall on this
+# material can still be hinted -- validate_map requires every pushwall be
+# hinted by a decor wall tile, and a theme with no accent at all has nothing
+# in-family to hint with otherwise (see _hint_secrets).
+FLOOR_TEN_STONE_THEME = (9, (41,))
 # Landmark decoration tiles (portraits, banners, insignia, signage/graffiti):
 # these should read as a single accent set into an otherwise plain wall, the
 # way they're used in the original game, never as the material of an entire
@@ -1015,7 +1019,7 @@ def _place_doors(config: CampaignConfig, tiles: list[int], things: list[int],
                 _set(tiles, x, y, 92 if code == DOOR_EW else 93)
             gated = exit_stand not in _reachable(tiles, start, locked_open=False,
                                                  extra_passable=pushwalls, blocked=rests)
-            key = _key_spot(tiles, rooms, roles, trial, start) if gated else None
+            key = _key_spot(tiles, things, rooms, roles, trial, start) if gated else None
             if key:
                 locked = trial
                 break
@@ -1042,12 +1046,16 @@ def _door_zone(tiles: list[int], cell: tuple[int, int]) -> set[tuple[int, int]]:
     return seen
 
 
-def _key_spot(tiles: list[int], rooms: list[Room], roles: list[str],
+def _key_spot(tiles: list[int], things: list[int], rooms: list[Room], roles: list[str],
               locked: tuple[tuple[int, int, int], ...],
               start: tuple[int, int]) -> tuple[int, int] | None:
     """Farthest reachable room center whose door-bounded region touches no
     locked door: finding the key beside the very door it opens is a
-    non-puzzle, so such rooms never host it."""
+    non-puzzle, so such rooms never host it. A room center is otherwise
+    always plain floor, but an earlier pass (bonus rewards, a secret, decor)
+    can already have claimed it by the time this runs, so skip any
+    candidate whose center isn't free rather than assuming the farthest
+    eligible room is always available."""
     pre_lock = _reachable(tiles, start, locked_open=False)
     lock_sides = {(x + dx, y + dy) for x, y, _ in locked
                   for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1))}
@@ -1057,6 +1065,8 @@ def _key_spot(tiles: list[int], rooms: list[Room], roles: list[str],
                                       abs(item[0][0] - start[0]) + abs(item[0][1] - start[1])),
                     reverse=True)
     for center, _ in candidates:
+        if _at(things, *center) != 0:
+            continue
         if not lock_sides & _door_zone(tiles, center):
             return center
     return None
@@ -2761,8 +2771,8 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
         if boss not in KEY_DROP_BOSSES:
             locked = tuple((index % GRID, index // GRID, tile)
                            for index, tile in enumerate(tiles) if tile == DOOR_GOLD_EW)
-            key = _key_spot(tiles, rooms, roles, locked, start)
-            if key is None or _at(things, *key) != 0:
+            key = _key_spot(tiles, things, rooms, roles, locked, start)
+            if key is None:
                 raise ValueError("boss elevator has no free gold-key location")
             _set(things, *key, GOLD_KEY)
             reserved.add(key)
