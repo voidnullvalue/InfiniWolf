@@ -2984,7 +2984,13 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
                     blocked_cells.add(deep)
                     static_headroom -= 1
                     continue
-            _set(things, *deep, rng.choice((67, 32)))
+            # A pocket hanging off a corridor reads as hallway, and the only
+            # ceiling decor that belongs in a hallway is a light -- hanging
+            # pots or remains there look like kitchen props in a corridor.
+            touches_room = any(_inside_room(rooms, m[0] + dx, m[1] + dy)
+                               for m in mouths
+                               for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)))
+            _set(things, *deep, rng.choice((67, 32)) if touches_room else 37)
             reserved.add(deep)
             static_headroom -= 1
 

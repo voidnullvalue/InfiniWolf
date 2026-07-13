@@ -475,6 +475,21 @@ class GeneratorTests(unittest.TestCase):
         self.assertEqual(niche[0][0], 19, "piece sits at the pocket's deepest cell")
         self.assertIn(_at(things, *niche[0]), (35, 31, 26, 58))
 
+    def test_corridor_pocket_open_decor_is_a_light_not_pots(self):
+        """Playtest bug: hanging pots/pans showed up in a hallway. Pockets
+        whose only mouth is a corridor must fall back to a ceiling light,
+        never kitchenware or remains."""
+        tiles = [WALL] * (GRID * GRID)
+        path = [(x, 20) for x in range(10, 26)]
+        for x, y in path:
+            tiles[y * GRID + x] = FLOOR
+        tiles[19 * GRID + 16] = FLOOR   # 1-cell dead-end stub off the hall
+        for seed in range(6):
+            things = [0] * len(tiles)
+            _place_decorations([], tiles, things, set(), path[0], random.Random(seed),
+                               paths=[path])
+            self.assertIn(_at(things, 16, 19), (0, 37))
+
     def test_open_decor_is_anchored_not_scattered(self):
         open_codes = {27, 37, 61, 67}
         for seed in (0, 3, 7):
