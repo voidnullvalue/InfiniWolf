@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections import deque
 from dataclasses import dataclass
+import heapq
 from itertools import combinations
 import json
 import math
@@ -329,6 +330,20 @@ class Room:
         return self.x + self.w // 2, self.y + self.h // 2
 
 
+def _snap_offsets(parent: Room, rw: int, rh: int, side: tuple[int, int],
+                  rng: random.Random) -> list[int]:
+    """Return cross-axis offsets, prioritizing architectural alignment."""
+    parent_dim, child_dim = (parent.h, rh) if side[0] else (parent.w, rw)
+    delta = parent_dim - child_dim
+    flush_low = -(delta // 2)
+    flush_high = delta - delta // 2
+    flushes = (flush_low, flush_high)
+    if rng.randrange(2):
+        flushes = flushes[::-1]
+    offsets = [0, *flushes, *(rng.randrange(-3, 4) for _ in range(3))]
+    return list(dict.fromkeys(offsets))
+
+
 @dataclass(frozen=True, slots=True)
 class RoomSpec:
     role: str
@@ -391,6 +406,13 @@ def _set(plane: list[int], x: int, y: int, value: int) -> None:
 
 def _is_floor(value: int) -> bool:
     return FLOOR <= value <= ZONE_MAX or value == SECRET_EXIT_ZONE
+
+
+def _path_bends(path: list[tuple[int, int]]) -> int:
+    """Number of direction changes along a carved corridor path."""
+    headings = [(end[0] - start[0], end[1] - start[1])
+                for start, end in zip(path, path[1:])]
+    return sum(current != previous for previous, current in zip(headings, headings[1:]))
 
 
 def _overlaps(a: Room, b: Room, pad: int = 2) -> bool:
@@ -563,7 +585,7 @@ def _place_planned_rooms(rng: random.Random, plan: FloorPlan, number: int = 0) -
             parent_index = parents[parent_index]
         parent = room_by_spec[parent_index]
         room = None
-        for _ in range(60):
+        for attempt in range(60):
             if index < spine_count:
                 dx, dy = heading
                 sides = [(dx, dy), (-dy, dx), (dy, -dx)]
@@ -576,14 +598,21 @@ def _place_planned_rooms(rng: random.Random, plan: FloorPlan, number: int = 0) -
                 side = rng.choices(sides, weights=[1 / (1 + 5 * counts.get(s, 0))
                                                    for s in sides], k=1)[0]
                 gap = rng.randrange(1, 4)
-            jitter = rng.randrange(-6, 7) if index < spine_count else rng.randrange(-11, 12)
-            candidate = adjacent(parent, sizes[index], side, gap, jitter)
-            if legal(candidate):
-                room = candidate
-                if index < spine_count:
-                    heading = side
-                else:
-                    counts[side] = counts.get(side, 0) + 1
+            # Human mappers align rooms; jitter is the fallback once these
+            # center and edge-flush placements have had a chance.
+            jitters = (_snap_offsets(parent, *sizes[index], side, rng)
+                       if attempt < 20 else
+                       [rng.randrange(-6, 7) if index < spine_count else rng.randrange(-11, 12)])
+            for jitter in jitters:
+                candidate = adjacent(parent, sizes[index], side, gap, jitter)
+                if legal(candidate):
+                    room = candidate
+                    if index < spine_count:
+                        heading = side
+                    else:
+                        counts[side] = counts.get(side, 0) + 1
+                    break
+            if room is not None:
                 break
         if room is None:
             # A crowded beat may need a second ring beyond its first wings;
@@ -627,11 +656,29 @@ def _place_planned_rooms(rng: random.Random, plan: FloorPlan, number: int = 0) -
 
 
 def _carve_notches(tiles: list[int], rooms: list[Room], rng: random.Random,
-                   chance: float = 0.35) -> None:
+                   chance: float = 0.35, mirrored_chance: float = 0.6) -> None:
     for room in rooms:
         if room.w < 6 or room.h < 6 or rng.random() >= chance:
             continue
         corners = [(False, False), (True, False), (False, True), (True, True)]
+        if rng.random() < mirrored_chance:
+            nw = rng.randint(2, min(3, (room.w - 2) // 2))
+            nh = rng.randint(2, min(3, (room.h - 2) // 2))
+            if rng.random() < 0.25:
+                selected = corners
+            elif rng.randrange(2):
+                bottom = rng.randrange(2) == 1
+                selected = [(False, bottom), (True, bottom)]
+            else:
+                right = rng.randrange(2) == 1
+                selected = [(right, False), (right, True)]
+            for right, bottom in selected:
+                nx = room.x + room.w - nw if right else room.x
+                ny = room.y + room.h - nh if bottom else room.y
+                for y in range(ny, ny + nh):
+                    for x in range(nx, nx + nw):
+                        _set(tiles, x, y, WALL)
+            continue
         rng.shuffle(corners)
         # The untouched center row and column join every remaining quadrant;
         # even two bites therefore cannot split the room.
@@ -647,7 +694,7 @@ def _carve_notches(tiles: list[int], rooms: list[Room], rng: random.Random,
 
 
 def _carve_alcoves(tiles: list[int], rooms: list[Room], rng: random.Random,
-                   chance: float = 0.3) -> None:
+                   chance: float = 0.3, mirrored_chance: float = 0.35) -> None:
     established = list(rooms)
     for room in rooms:
         if rng.random() >= chance:
@@ -655,22 +702,37 @@ def _carve_alcoves(tiles: list[int], rooms: list[Room], rng: random.Random,
         span, depth = rng.randrange(2, 4), rng.randrange(2, 4)
         directions = [(0, -1), (0, 1), (-1, 0), (1, 0)]
         rng.shuffle(directions)
-        for dx, dy in directions:
+
+        def bump_for(dx: int, dy: int) -> Room:
             if dx:
                 bx = room.x - depth if dx < 0 else room.x + room.w
                 by = room.y + (room.h - span) // 2
-                bump = Room(bx, by, depth, span)
-            else:
-                bx = room.x + (room.w - span) // 2
-                by = room.y - depth if dy < 0 else room.y + room.h
-                bump = Room(bx, by, span, depth)
-            if not (1 <= bump.x and bump.x + bump.w <= GRID - 1 and
-                    1 <= bump.y and bump.y + bump.h <= GRID - 1):
+                return Room(bx, by, depth, span)
+            bx = room.x + (room.w - span) // 2
+            by = room.y - depth if dy < 0 else room.y + room.h
+            return Room(bx, by, span, depth)
+
+        def legal(bump: Room) -> bool:
+            return (1 <= bump.x and bump.x + bump.w <= GRID - 1 and
+                    1 <= bump.y and bump.y + bump.h <= GRID - 1 and
+                    not any(other != room and _overlaps(bump, other, pad=2)
+                            for other in established))
+
+        if rng.random() < mirrored_chance:
+            dx, dy = rng.choice(((1, 0), (0, 1)))
+            pair = (bump_for(dx, dy), bump_for(-dx, -dy))
+            if all(legal(bump) for bump in pair):
+                for bump in pair:
+                    for y in range(bump.y, bump.y + bump.h):
+                        for x in range(bump.x, bump.x + bump.w):
+                            _set(tiles, x, y, FLOOR)
+                    established.append(bump)
                 continue
+        for dx, dy in directions:
+            bump = bump_for(dx, dy)
             # The normal rock buffer keeps a niche from quietly joining a
             # neighboring room or another room's niche into a shortcut.
-            if any(other != room and _overlaps(bump, other, pad=2)
-                   for other in established):
+            if not legal(bump):
                 continue
             for y in range(bump.y, bump.y + bump.h):
                 for x in range(bump.x, bump.x + bump.w):
@@ -723,12 +785,13 @@ def _far_from_doors(cell: tuple[int, int], avoid: set[tuple[int, int]],
 
 def _carve_connection(tiles: list[int], a: Room, b: Room,
                       rng: random.Random, complexity: int,
-                      avoid: set[tuple[int, int]] | None = None) -> list[tuple[int, int]]:
+                      avoid: set[tuple[int, int]] | None = None,
+                      *, turn_penalty: int = 4) -> list[tuple[int, int]]:
     """Carve the shortest rock-backed route between two clean thresholds."""
     avoid = set() if avoid is None else avoid
 
     def portals(room: Room) -> list[tuple[tuple[int, int], tuple[int, int],
-                                           tuple[int, int]]]:
+                                           tuple[int, int], tuple[int, int]]]:
         result = []
         sides = [((room.x - 1, y), (room.x, y), (-1, 0))
                  for y in range(room.y + 1, room.y + room.h - 1)]
@@ -746,23 +809,76 @@ def _carve_connection(tiles: list[int], a: Room, b: Room,
                     and _at(tiles, *beyond) == WALL
                     and all(_at(tiles, *cell) == WALL for cell in jambs)
                     and _far_from_doors(outer, avoid)):
-                result.append((outer, beyond, inner))
+                result.append((outer, beyond, inner, (dx, dy)))
         return result
+
+    def portal_centering(portal: tuple[tuple[int, int], tuple[int, int],
+                                       tuple[int, int], tuple[int, int]],
+                         room: Room) -> float:
+        outer, _, _, direction = portal
+        if direction[0]:
+            return abs(outer[1] - (room.y + (room.h - 1) / 2))
+        return abs(outer[0] - (room.x + (room.w - 1) / 2))
+
+    def estimated_bends(pa: tuple[tuple[int, int], tuple[int, int],
+                                  tuple[int, int], tuple[int, int]],
+                        pb: tuple[tuple[int, int], tuple[int, int],
+                                  tuple[int, int], tuple[int, int]]) -> int:
+        outer_a, _, _, direction_a = pa
+        outer_b, _, _, direction_b = pb
+        dx, dy = outer_b[0] - outer_a[0], outer_b[1] - outer_a[1]
+        if ((dx == 0 or dy == 0) and direction_a == (-direction_b[0], -direction_b[1])
+                and (dx * direction_a[0] > 0 or dy * direction_a[1] > 0)):
+            return 0
+        if direction_a[0] != direction_b[0] and direction_a[1] != direction_b[1]:
+            if direction_a[0]:
+                forward_a = dx * direction_a[0] >= 0
+                forward_b = -dy * direction_b[1] >= 0
+            else:
+                forward_a = dy * direction_a[1] >= 0
+                forward_b = -dx * direction_b[0] >= 0
+            if forward_a and forward_b:
+                return 1
+        return 2
 
     pairs = [(pa, pb) for pa in portals(a) for pb in portals(b)]
     rng.shuffle(pairs)
-    pairs.sort(key=lambda pair: abs(pair[0][0][0] - pair[1][0][0])
-               + abs(pair[0][0][1] - pair[1][0][1]))
+    pairs.sort(key=lambda pair: (
+        estimated_bends(*pair),
+        abs(pair[0][0][0] - pair[1][0][0]) + abs(pair[0][0][1] - pair[1][0][1]),
+        portal_centering(pair[0], a) + portal_centering(pair[1], b),
+    ))
     directions = [(1, 0), (-1, 0), (0, 1), (0, -1)]
     rng.shuffle(directions)
-    def find_route(start: tuple[int, int], goal: tuple[int, int]) -> list[tuple[int, int]] | None:
-        previous: dict[tuple[int, int], tuple[int, int] | None] = {start: None}
-        queue = deque([start])
-        while queue and goal not in previous:
-            x, y = queue.popleft()
+    def find_route(start: tuple[int, int], goal: tuple[int, int],
+                   start_heading: tuple[int, int],
+                   goal_heading: tuple[int, int]) -> list[tuple[int, int]] | None:
+        start_state = start, start_heading
+        previous: dict[tuple[tuple[int, int], tuple[int, int]],
+                       tuple[tuple[int, int], tuple[int, int]] | None] = {start_state: None}
+        dist = {start_state: 0}
+        queue = [(0, 0, start, start_heading)]
+        sequence = 1
+        best_goal_state = None
+        best_goal_cost = math.inf
+        while queue:
+            cost, _, (x, y), heading = heapq.heappop(queue)
+            state = (x, y), heading
+            if cost != dist[state]:
+                continue
+            if cost >= best_goal_cost:
+                break
+            if (x, y) == goal:
+                # A goal state popped later can carry a cheaper raw cost but a
+                # worse final-heading total; never let it displace a better one.
+                total = cost + (0 if heading == goal_heading else turn_penalty)
+                if total < best_goal_cost:
+                    best_goal_cost = total
+                    best_goal_state = state
+                continue
             for dx, dy in directions:
                 nxt = x + dx, y + dy
-                if nxt in previous or not (2 <= nxt[0] < GRID - 2 and 2 <= nxt[1] < GRID - 2):
+                if not (2 <= nxt[0] < GRID - 2 and 2 <= nxt[1] < GRID - 2):
                     continue
                 if _at(tiles, *nxt) != WALL:
                     continue
@@ -773,20 +889,27 @@ def _carve_connection(tiles: list[int], a: Room, b: Room,
                                 or _at(tiles, nxt[0] + sx, nxt[1] + sy) in DOORS
                                 for sx, sy in directions)):
                     continue
-                previous[nxt] = (x, y); queue.append(nxt)
-        if goal not in previous:
+                next_state = nxt, (dx, dy)
+                next_cost = cost + 1 + (turn_penalty if (dx, dy) != heading else 0)
+                if next_cost >= dist.get(next_state, math.inf):
+                    continue
+                dist[next_state] = next_cost
+                previous[next_state] = state
+                heapq.heappush(queue, (next_cost, sequence, nxt, (dx, dy)))
+                sequence += 1
+        if best_goal_state is None:
             return None
+        state = best_goal_state
         route = []
-        cell: tuple[int, int] | None = goal
-        while cell is not None:
-            route.append(cell); cell = previous[cell]
+        while state is not None:
+            route.append(state[0]); state = previous[state]
         route.reverse()
         return route
 
     # Cheap clean thresholds are common; exhaust them before relaxing the
     # rock buffer around a crowded hub.
-    for (outer_a, start, _), (outer_b, goal, _) in pairs:
-        route = find_route(start, goal)
+    for (outer_a, start, _, direction_a), (outer_b, goal, _, direction_b) in pairs:
+        route = find_route(start, goal, direction_a, (-direction_b[0], -direction_b[1]))
         if route is None:
             continue
         path = [outer_a] + route + [outer_b]

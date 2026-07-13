@@ -1,4 +1,5 @@
 from collections import Counter
+from itertools import combinations
 import json
 from pathlib import Path
 import random
@@ -15,7 +16,9 @@ from infiniwolf.generator import (BOSSES, DECOR_WALLS, DOGS, ELEVATOR_TILE, FAKE
                                    PUSHWALL, Room, RoomSpec, SECRET_EXIT_ZONE, SS, WALL, WALL_THEMES,
                                    AMMO, CHAINGUN, FIRST_AID, MACHINE_GUN, ONE_UP,
                                    _DECOR_ZONES, _apply_wall_theme, _at, _decor_theme, _hint_secrets,
-                                   _is_floor, _place_decorations, _place_zoned, _reachable,
+                                   _carve_alcoves, _carve_connection, _carve_notches, _is_floor, _path_bends,
+                                   _place_decorations, _place_zoned, _reachable,
+                                   _place_planned_rooms, _plan_floor, _snap_offsets,
                                    _room_predecessor)
 from infiniwolf.generator import FLOOR, FLOOR_TEN_STONE_THEME, ZONE_MAX
 
@@ -34,6 +37,103 @@ def _generate_with_retries(config: CampaignConfig, floor: int, attempts: int = 5
 
 
 class GeneratorTests(unittest.TestCase):
+    def test_snap_offsets_prefers_center_then_flush_edges(self):
+        parent = Room(10, 10, 12, 10)
+        offsets = _snap_offsets(parent, rw=6, rh=4, side=(1, 0),
+                                rng=random.Random(7))
+        # Horizontal attachment aligns the child on the parent's y-axis:
+        # centre first, then its two possible edge-flush positions.  The
+        # random fallback offsets must not displace those architectural picks.
+        self.assertEqual(offsets[0], 0)
+        self.assertEqual(set(offsets[1:3]), {-3, 3})
+        self.assertEqual(len(offsets), len(set(offsets)))
+
+    def test_adjacent_rooms_usually_align_or_flush(self):
+        aligned = candidates = 0
+        for seed in range(8):
+            config = CampaignConfig(seed=seed)
+            rng = random.Random(config.floor_seed(5, 0))
+            plan = _plan_floor(rng, int(config.layout_complexity), 5)
+            placed = _place_planned_rooms(rng, plan, 5)
+            for first, second in combinations(placed.rooms, 2):
+                horizontal_gap = max(first.x, second.x) - min(first.x + first.w,
+                                                               second.x + second.w)
+                vertical_gap = max(first.y, second.y) - min(first.y + first.h,
+                                                             second.y + second.h)
+                if 1 <= horizontal_gap <= 3 and vertical_gap < 0:
+                    candidates += 1
+                    aligned += (first.center[1] == second.center[1]
+                                or first.y == second.y
+                                or first.y + first.h == second.y + second.h)
+                elif 1 <= vertical_gap <= 3 and horizontal_gap < 0:
+                    candidates += 1
+                    aligned += (first.center[0] == second.center[0]
+                                or first.x == second.x
+                                or first.x + first.w == second.x + second.w)
+        self.assertGreater(candidates, 0)
+        self.assertGreaterEqual(aligned / candidates, 0.5)
+
+    def test_mirrored_notches_produce_symmetric_bites(self):
+        room = Room(20, 20, 10, 10)
+        tiles = [WALL] * (GRID * GRID)
+        for y in range(room.y, room.y + room.h):
+            for x in range(room.x, room.x + room.w):
+                tiles[y * GRID + x] = FLOOR
+        _carve_notches(tiles, [room], random.Random(3), chance=1.0,
+                       mirrored_chance=1.0)
+        mirror_x = all(_at(tiles, x, y) == _at(tiles, 2 * room.x + room.w - 1 - x, y)
+                       for y in range(room.y, room.y + room.h)
+                       for x in range(room.x, room.x + room.w))
+        mirror_y = all(_at(tiles, x, y) == _at(tiles, x, 2 * room.y + room.h - 1 - y)
+                       for y in range(room.y, room.y + room.h)
+                       for x in range(room.x, room.x + room.w))
+        self.assertTrue(mirror_x or mirror_y)
+        cx, cy = room.center
+        self.assertTrue(all(_at(tiles, x, cy) == FLOOR
+                            for x in range(room.x, room.x + room.w)))
+        self.assertTrue(all(_at(tiles, cx, y) == FLOOR
+                            for y in range(room.y, room.y + room.h)))
+
+    def test_mirrored_alcoves_carve_matching_opposite_bumps(self):
+        room = Room(20, 20, 10, 10)
+        tiles = [WALL] * (GRID * GRID)
+        for y in range(room.y, room.y + room.h):
+            for x in range(room.x, room.x + room.w):
+                tiles[y * GRID + x] = FLOOR
+        _carve_alcoves(tiles, [room], random.Random(5), chance=1.0,
+                       mirrored_chance=1.0)
+        outside = {(x, y) for y in range(GRID) for x in range(GRID)
+                   if _at(tiles, x, y) == FLOOR
+                   and not (room.x <= x < room.x + room.w and room.y <= y < room.y + room.h)}
+        self.assertTrue(outside)
+        mirror_x = {(2 * room.x + room.w - 1 - x, y) for x, y in outside}
+        mirror_y = {(x, 2 * room.y + room.h - 1 - y) for x, y in outside}
+        self.assertTrue(outside == mirror_x or outside == mirror_y)
+
+    def test_aligned_rooms_get_a_straight_corridor(self):
+        a, b = Room(10, 20, 6, 6), Room(30, 20, 6, 6)
+        for seed in range(4):
+            tiles = [WALL] * (GRID * GRID)
+            for room in (a, b):
+                for y in range(room.y, room.y + room.h):
+                    for x in range(room.x, room.x + room.w):
+                        tiles[y * GRID + x] = FLOOR
+            path = _carve_connection(tiles, a, b, random.Random(seed), complexity=3,
+                                     avoid=set())
+            self.assertEqual(_path_bends(path), 0)
+
+    def test_offset_rooms_get_a_single_elbow(self):
+        a, b = Room(10, 10, 6, 6), Room(30, 30, 6, 6)
+        for seed in range(4):
+            tiles = [WALL] * (GRID * GRID)
+            for room in (a, b):
+                for y in range(room.y, room.y + room.h):
+                    for x in range(room.x, room.x + room.w):
+                        tiles[y * GRID + x] = FLOOR
+            path = _carve_connection(tiles, a, b, random.Random(seed), complexity=3,
+                                     avoid=set())
+            self.assertLessEqual(_path_bends(path), 1)
+
     def test_actor_thing_codes_are_ordered_for_ecwolfs_engine_not_compass_order(self):
         """ECWolf's old-format loader computes each thing's angle as
         (oldnum - base) * 90 and casts it to MapTile::Side, an enum ordered
