@@ -1086,6 +1086,182 @@ def _floor_components(tiles: list[int]) -> list[set[tuple[int, int]]]:
     return components
 
 
+def _spatial_districts(rooms: list[Room], k: int) -> list[int]:
+    """Re-label rooms into count-balanced geometric districts.
+
+    Planning assigns districts along the progression spine before rooms have
+    coordinates.  The theme pass benefits instead from nearby rooms sharing
+    a district, so split the wider placed axis into contiguous rank groups.
+    """
+    if not rooms or k <= 1:
+        return [0] * len(rooms)
+    centers = [room.center for room in rooms]
+    x_spread = max(x for x, _ in centers) - min(x for x, _ in centers)
+    y_spread = max(y for _, y in centers) - min(y for _, y in centers)
+    axis = 0 if x_spread >= y_spread else 1
+    ranked = sorted(range(len(rooms)), key=lambda index: (centers[index][axis], index))
+    districts = [0] * len(rooms)
+    for rank, index in enumerate(ranked):
+        districts[index] = rank * k // len(rooms)
+    return districts
+
+
+def _limit_theme_merge_size(tiles: list[int], rooms: list[Room], rng: random.Random,
+                            reserved: set[tuple[int, int]],
+                            cap_fraction: float = 0.50,
+                            max_conversions: int = 2) -> int:
+    """Door off a few leak walls that would otherwise join huge theme groups.
+
+    _assign_area_themes must merge every pair of floor components touching a
+    bare wall: leaving that rule intact is what prevents materials leaking
+    across a thin undoored seam.  This earlier pass only turns a handful of
+    useful, valid chokepoint seams into real doors, prioritising bridges that
+    divide the largest resulting theme group most evenly.
+    """
+    if not rooms:
+        return 0
+    placed = 0
+    door_zones = {(x, y) for y in range(GRID) for x in range(GRID)
+                  if _at(tiles, x, y) in DOORS}
+    while placed < max_conversions:
+        components = _floor_components(tiles)
+        total = sum(map(len, components))
+        if not total:
+            break
+        owner = {cell: index for index, component in enumerate(components)
+                 for cell in component}
+
+        # The full edge map mirrors _assign_area_themes.  A component pair
+        # can have several legal door cells; retain all of them so selection
+        # can pick a randomized physical seam after choosing the graph edge.
+        edge_cells: dict[tuple[int, int], list[tuple[int, int]]] = {}
+        for index, tile in enumerate(tiles):
+            if tile != WALL:
+                continue
+            x, y = index % GRID, index // GRID
+            neighbors = sorted({owner[cell] for cell in ((x + 1, y), (x - 1, y),
+                                                          (x, y + 1), (x, y - 1))
+                                if cell in owner})
+            candidate_pair = None
+            axis = _door_axis(tiles, x, y)
+            if axis and (x, y) not in reserved and _far_from_doors((x, y), door_zones):
+                dx, dy = (1, 0) if axis == DOOR_EW else (0, 1)
+                first = owner.get((x - dx, y - dy))
+                second = owner.get((x + dx, y + dy))
+                if first is not None and second is not None and first != second:
+                    candidate_pair = tuple(sorted((first, second)))
+            for first, second in combinations(neighbors, 2):
+                edge = first, second
+                edge_cells.setdefault(edge, [])
+                if edge == candidate_pair:
+                    edge_cells[edge].append((x, y))
+
+        # This is deliberately after secrets and locks are complete.  A new
+        # door can be far from a pushwall yet open its protected back room,
+        # or can reach the far side of an existing lock.  Recognize the
+        # finalized pushwall shape from its reserved approach cell and reject
+        # only candidates that create one of those new routes.
+        start = rooms[0].center
+        open_before = _reachable(tiles, start, locked_open=True)
+        locked_before = _reachable(tiles, start, locked_open=False)
+        pushwalls = {(x + 1, y) for x, y in reserved
+                     if (_at(tiles, x + 1, y) == WALL
+                         and _is_floor(_at(tiles, x, y))
+                         and all(_is_floor(_at(tiles, x + step, y)) for step in (2, 3))
+                         and _at(tiles, x + 1, y - 1) == WALL
+                         and _at(tiles, x + 1, y + 1) == WALL)}
+        lock_sides = {(x + dx, y + dy)
+                      for index, tile in enumerate(tiles) if tile in (DOOR_GOLD_EW, 93)
+                      for x, y in ((index % GRID, index // GRID),)
+                      for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1))}
+
+        def preserves_gates(cell: tuple[int, int]) -> bool:
+            axis = _door_axis(tiles, *cell)
+            assert axis is not None
+            _set(tiles, *cell, axis)
+            open_after = _reachable(tiles, start, locked_open=True)
+            locked_after = _reachable(tiles, start, locked_open=False)
+            opens_secret = any((wall[0] + 1, wall[1]) not in open_before
+                               and (wall[0] + 1, wall[1]) in open_after
+                               for wall in pushwalls)
+            crosses_lock = bool(lock_sides & (locked_after - locked_before))
+            _set(tiles, *cell, WALL)
+            return not opens_secret and not crosses_lock
+
+        parents = list(range(len(components)))
+
+        def find(component: int) -> int:
+            while parents[component] != component:
+                parents[component] = parents[parents[component]]
+                component = parents[component]
+            return component
+
+        def union(first: int, second: int) -> None:
+            first, second = find(first), find(second)
+            if first != second:
+                parents[second] = first
+
+        for first, second in edge_cells:
+            union(first, second)
+        groups: dict[int, list[int]] = {}
+        for component in range(len(components)):
+            groups.setdefault(find(component), []).append(component)
+        largest, nodes = max(groups.items(),
+                             key=lambda item: sum(len(components[node]) for node in item[1]))
+        largest_size = sum(len(components[node]) for node in nodes)
+        if largest_size <= total * cap_fraction:
+            break
+
+        node_set = set(nodes)
+        best_imbalance = None
+        best_edges: list[tuple[int, int]] = []
+        for removed, candidates in edge_cells.items():
+            first, second = removed
+            if not candidates or find(first) != largest or find(second) != largest:
+                continue
+            links = {node: set() for node in nodes}
+            for (left, right) in edge_cells:
+                if (left, right) == removed or left not in node_set or right not in node_set:
+                    continue
+                links[left].add(right); links[right].add(left)
+            seen = {first}
+            queue = deque([first])
+            while queue:
+                node = queue.popleft()
+                for neighbor in links[node] - seen:
+                    seen.add(neighbor); queue.append(neighbor)
+            if len(seen) == len(nodes):
+                continue
+            first_size = sum(len(components[node]) for node in seen)
+            second_size = largest_size - first_size
+            imbalance = abs(first_size - second_size)
+            if best_imbalance is None or imbalance < best_imbalance:
+                best_imbalance = imbalance
+                best_edges = [removed]
+            elif imbalance == best_imbalance:
+                best_edges.append(removed)
+        if not best_edges:
+            break
+        cell = None
+        unchecked_edges = list(best_edges)
+        while unchecked_edges and cell is None:
+            edge = rng.choice(unchecked_edges)
+            unchecked_edges.remove(edge)
+            cells = list(edge_cells[edge])
+            while cells and cell is None:
+                candidate = rng.choice(cells)
+                cells.remove(candidate)
+                if preserves_gates(candidate):
+                    cell = candidate
+        if cell is None:
+            break
+        _set(tiles, *cell, _door_axis(tiles, *cell))
+        reserved.add(cell)
+        door_zones.add(cell)
+        placed += 1
+    return placed
+
+
 def _critique(level: GeneratedMap) -> tuple[str, ...]:
     components = _floor_components(level.tiles)
     owner = {cell: index for index, component in enumerate(components) for cell in component}
@@ -2263,7 +2439,7 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
     edges = placed.edges
     specs = [plan.specs[index] for index in placed.spec_indices]
     roles = [spec.role for spec in specs]
-    districts = [spec.district for spec in specs]
+    districts = _spatial_districts(rooms, len({spec.district for spec in specs}))
     for room in rooms:
         for y in range(room.y, room.y + room.h):
             for x in range(room.x, room.x + room.w):
@@ -2382,6 +2558,10 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
         # pass correctly treated as interrupted; repair only that new case.
         _break_long_sightlines(tiles, things, rooms, reserved, rng, start,
                                allow_doors=False, walls_for_redundant_doors=True)
+    # With the gate probe below, seeds 0--19 on floors 2/5/8 placed at most
+    # two doors (40 total doors at most), retried no maps, and left 41/60
+    # samples with a second visible base material share of at least 10%.
+    _limit_theme_merge_size(tiles, rooms, rng, reserved)
     if sum(tile in DOORS for tile in tiles) > 56:
         raise ValueError("door budget exceeded")
     if is_boss:

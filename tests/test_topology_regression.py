@@ -7,6 +7,7 @@ open sightline by a corridor-routing fallback. Each test names the concrete
 failure mode it exists to catch.
 """
 from collections import deque
+import random
 import unittest
 
 from infiniwolf.config import CampaignConfig
@@ -14,7 +15,7 @@ from infiniwolf.generator import (DOGS, DOOR_ELEVATOR, DOOR_EW, DOOR_GOLD_EW, DO
                                    ELEVATOR_TILE, FLOOR, GRID, GUARDS, OFFICERS, SS,
                                    SECRET_EXIT_ZONE, STATIC_BLOCKING, ZONE_MAX, _at,
                                    _floor_components, _is_floor, FLOOR_TEN_STONE_THEME,
-                                   WALL_THEMES, generate_map)
+                                   WALL_THEMES, _plan_floor, generate_map)
 
 
 def _generate_with_retries(config: CampaignConfig, floor: int, attempts: int = 50):
@@ -70,6 +71,25 @@ def _test_floor_components(tiles: list[int]) -> list[set[tuple[int, int]]]:
                     queue.append(nxt)
         components.append(component)
     return components
+
+
+def _visible_wall_material_shares(tiles: list[int]) -> list[float]:
+    """Base-material shares for wall columns that actually face plain floor."""
+    base_by_tile = {tile: base for base, accents in WALL_THEMES
+                    for tile in (base, *accents)}
+    base_by_tile[FLOOR_TEN_STONE_THEME[0]] = FLOOR_TEN_STONE_THEME[0]
+    counts = {}
+    for index, tile in enumerate(tiles):
+        if tile not in base_by_tile:
+            continue
+        x, y = index % GRID, index // GRID
+        if not any(_is_floor(_at(tiles, x + dx, y + dy))
+                   for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1))):
+            continue
+        base = base_by_tile[tile]
+        counts[base] = counts.get(base, 0) + 1
+    total = sum(counts.values()) or 1
+    return sorted((count / total for count in counts.values()), reverse=True)
 
 
 # ECWolf's old-format loader computes each thing's facing angle as
@@ -227,6 +247,32 @@ class TopologyRegressionTests(unittest.TestCase):
 
 
 class AreaThemeRegressionTests(unittest.TestCase):
+    def test_wall_material_balance_across_seeds(self):
+        """Enough floors show a meaningful second visible wall material.
+
+        This is deliberately aggregate rather than per-floor: theme regions
+        legitimately vary with the layout, but a return to one huge merged
+        group should not make almost every deterministic sample monochrome.
+        """
+        second_shares = []
+        for seed in range(20):
+            config = CampaignConfig(seed=seed)
+            for floor in (2, 5, 8):
+                level = _generate_with_retries(config, floor)
+                plan = _plan_floor(random.Random(level.seed),
+                                   int(config.layout_complexity), floor)
+                if len({spec.district for spec in plan.specs}) < 2:
+                    continue
+                shares = _visible_wall_material_shares(level.tiles)
+                second_shares.append(shares[1] if len(shares) > 1 else 0.0)
+        required = (65 * len(second_shares) + 99) // 100
+        balanced = sum(share >= 0.10 for share in second_shares)
+        self.assertGreaterEqual(
+            balanced, required,
+            f"only {balanced}/{len(second_shares)} samples have a second base material "
+            f"at or above 10%; second-largest shares="
+            f"{[round(share, 3) for share in second_shares]}")
+
     def test_wall_material_never_leaks_across_a_non_door_boundary(self):
         """A wall-plane tile may touch only one final material region.
 
