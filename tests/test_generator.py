@@ -74,7 +74,12 @@ class GeneratorTests(unittest.TestCase):
                 manifest = json.loads(package.read("infiniwolf-manifest.json"))
                 self.assertEqual(manifest["seed"], config.seed)
                 self.assertTrue(all(floor["validation"]["passed"] for floor in manifest["floors"]))
-                self.assertIn("par =", package.read("mapinfo.txt").decode("utf-8"))
+                mapinfo = package.read("mapinfo.txt").decode("utf-8")
+                self.assertIn("par =", mapinfo)
+                # Without an explicit floornumber ECWolf shows "Floor 1" on
+                # every status bar and score tally (its default is "1").
+                for number in range(1, 11):
+                    self.assertIn(f"floornumber = {number} ", mapinfo)
             self.assertEqual(validate_package(first)["seed"], config.seed)
 
     def test_cancellation_preserves_previous_output(self):
@@ -327,8 +332,9 @@ class GeneratorTests(unittest.TestCase):
                       for y in range(room.y, room.y + room.h)
                       for x in range(room.x, room.x + room.w) if _at(things, x, y)]
             # 32 is the flat skeleton the jail-remains corner vignette lays
-            # down; everything else stays barrels, blood, and bone variants.
-            self.assertTrue(set(placed) <= {58, 61, 42, 64, 65, 66, 32})
+            # down; 40/41 are the hanging/skeleton cages -- everything else
+            # stays barrels, blood, and bone variants.
+            self.assertTrue(set(placed) <= {58, 61, 42, 64, 65, 66, 32, 40, 41})
 
     def test_decoration_zoning_splits_across_room_halves(self):
         class ThemedRandom(random.Random):

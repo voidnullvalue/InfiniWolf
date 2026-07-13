@@ -180,13 +180,13 @@ STATIC_OPEN = (
 # placement patterns: guard rooms get lamps and vases, storage closets get
 # barrel clusters, grand anchor rooms get pillar pairs, barracks get tables.
 _DECOR_BLOCKING: dict[str, tuple[int, ...]] = {
-    "guardpost": (26, 35, 31),   # FloorLamp, Vase, GreenPlant
-    "grand":     (30, 26, 35),   # WhitePillar, FloorLamp, Vase
-    "barracks":  (25, 36, 58),   # TableWithChairs, BareTable, Barrel
-    "storage":   (58, 24, 59),   # Barrel, GreenBarrel, Well
-    "lounge":    (25, 35, 34),   # TableWithChairs, Vase, BrownPlant
-    "corridor":  (26,),          # FloorLamp only
-    "jail":      (58,),          # Barrel -- bare cells
+    "guardpost": (26, 35, 31, 62),       # FloorLamp, Vase, GreenPlant, Flag
+    "grand":     (30, 26, 35, 39),       # WhitePillar, FloorLamp, Vase, SuitOfArmor
+    "barracks":  (25, 36, 58, 45),       # TableWithChairs, BareTable, Barrel, BunkBed
+    "storage":   (58, 24, 59, 60),       # Barrel, GreenBarrel, Well, EmptyWell
+    "lounge":    (25, 35, 34),           # TableWithChairs, Vase, BrownPlant
+    "corridor":  (26,),                  # FloorLamp only
+    "jail":      (58, 40, 41),           # Barrel, HangingCage, SkeletonCage
 }
 _DECOR_OPEN: dict[str, tuple[int, ...]] = {
     "guardpost": (37, 27),   # CeilingLight, Chandelier
@@ -2511,8 +2511,9 @@ def _ensure_early_heal(tiles: list[int], things: list[int], rooms: list[Room],
 
 
 # Items that read as a deliberate matched pair when mirrored beside a door
-# or under a landmark wall: plants, lamps, pillars, vases, and barrels.
-_FRAMEABLE = frozenset({24, 26, 30, 31, 34, 35, 58})
+# or under a landmark wall: plants, lamps, pillars, vases, barrels, suits
+# of armor, and flags.
+_FRAMEABLE = frozenset({24, 26, 30, 31, 34, 35, 39, 58, 62})
 
 
 @dataclass(frozen=True, slots=True)
@@ -3455,10 +3456,14 @@ def _mapinfo(secret_from: int, variants: tuple[str, ...] = ()) -> str:
         title = (_VARIANT_TITLES.get(variants[number - 1], "")
                  if number <= len(variants) else "")
         name = f"Floor {number}: {title}" if title else f"Random Floor {number}"
+        # ECWolf's MAPINFO FloorNumber defaults to "1" for any map that does
+        # not set it (g_mapinfo.cpp), so without this every floor reads
+        # "Floor 1" on the status bar and the score tally.
         lines.append(f'map "IW{number:02d}" "{name}" {{ next = "{nxt}"{secret} '
-                     f'levelnum = {number} par = {par} defaultceiling = "{ceiling}" music = "{music}" }}')
+                     f'levelnum = {number} floornumber = {number} par = {par} '
+                     f'defaultceiling = "{ceiling}" music = "{music}" }}')
     lines.append(f'map "IW10" "Secret Floor" {{ next = "IW{secret_from + 1:02d}" levelnum = 10 '
-                 f'par = 360 defaultceiling = "{CEILINGS[4]}" music = "{MUSIC[5]}" }}')
+                 f'floornumber = 10 par = 360 defaultceiling = "{CEILINGS[4]}" music = "{MUSIC[5]}" }}')
     return "\n".join(lines) + "\n"
 
 
