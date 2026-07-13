@@ -126,6 +126,36 @@ class GeneratorTests(unittest.TestCase):
                                         + abs(first[1] - second[1]), 4)
         self.assertEqual(sink_presence, {False, True})
 
+    def test_suits_of_armor_are_wall_backed(self):
+        room = Room(10, 10, 10, 8)
+        tiles = [WALL] * (GRID * GRID)
+        for y in range(room.y, room.y + room.h):
+            for x in range(room.x, room.x + room.w):
+                tiles[y * GRID + x] = FLOOR
+        things = [0] * len(tiles)
+        identity = generator.RoomIdentity("climax", "anchor", "spine", 0,
+                                          "grand-halls", "war-room", "grand")
+        _place_decorations([room], tiles, things, set(), room.center,
+                           random.Random(2), identities=[identity])
+
+        armor = [(index % GRID, index // GRID)
+                 for index, item in enumerate(things) if item == 39]
+        self.assertTrue(armor)
+        for x, y in armor:
+            outside = []
+            if x == room.x:
+                outside.append((x - 1, y))
+            if x == room.x + room.w - 1:
+                outside.append((x + 1, y))
+            if y == room.y:
+                outside.append((x, y - 1))
+            if y == room.y + room.h - 1:
+                outside.append((x, y + 1))
+            self.assertTrue(outside)
+            self.assertTrue(any(not _is_floor(_at(tiles, *cell))
+                                and _at(tiles, *cell) not in generator.DOORS
+                                for cell in outside))
+
     def test_seed_3332_floor_one_balances_room_concepts_and_caps_kitchens(self):
         level = _generate_with_retries(CampaignConfig(seed=3332), 1, attempts=3)
         self.assertEqual(level.variant, "grand-halls")

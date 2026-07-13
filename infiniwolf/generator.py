@@ -3261,6 +3261,22 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
             return (x <= room.x + 2 or x >= room.x + room.w - 3
                     or y <= room.y + 2 or y >= room.y + room.h - 3)
 
+        def _wall_backed(cell: tuple[int, int]) -> bool:
+            """True only on the room perimeter with a solid wall behind it."""
+            x, y = cell
+            outward = []
+            if x == room.x:
+                outward.append((x - 1, y))
+            if x == room.x + room.w - 1:
+                outward.append((x + 1, y))
+            if y == room.y:
+                outward.append((x, y - 1))
+            if y == room.y + room.h - 1:
+                outward.append((x, y + 1))
+            return any(not _is_floor(_at(tiles, *neighbor))
+                       and _at(tiles, *neighbor) not in DOORS
+                       for neighbor in outward)
+
         def _try_place_items(pieces: list[tuple[tuple[int, int], int]]) -> bool:
             """Commit a blocking group if all cells are free, no doorway
             approach is jammed, statics headroom remains, and reachability
@@ -3271,6 +3287,10 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
                 return False
             if not all((c in free or c in edge_free) and c not in keep_clear
                        for c in cells):
+                return False
+            # SuitOfArmor is a wall display, never freestanding furniture.
+            if any(item == 39 and not _wall_backed(cell)
+                   for cell, item in pieces):
                 return False
             candidate = blocked_cells | set(cells)
             if len(_reachable(tiles, start, locked_open=True, blocked=candidate)) < baseline - len(candidate):
@@ -3371,9 +3391,9 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
                 "guardpost": [((room.x + 1, room.y + 1), 26),
                                ((room.x + room.w - 2, room.y + 1), 26)],
                 "checkpoint": [((room.x + 1, room.y + 1), 62)],
-                "war-room": [((room.x + 1, room.y + 1), 39),
-                              ((room.x + room.w - 2, room.y + 1), 39)],
-                "trophy-hall": [((room.x + 1, room.y + 1), 39),
+                "war-room": [((room.x, room.y + 1), 39),
+                              ((room.x + room.w - 1, room.y + 1), 39)],
+                "trophy-hall": [((room.x, cy), 39),
                                 ((room.x + room.w - 2, room.y + 1), 62)],
                 "courtyard": [((cx, cy), 59)],
                 "storage": [((room.x + 1, room.y + 1), 58),
@@ -3383,7 +3403,7 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
                 "workshop": [((room.x + 1, cy), 36),
                              ((room.x + room.w - 2, cy), 69)],
                 "lounge": [((cx, cy), 25)],
-                "gallery": [((room.x + 1, cy), 39)],
+                "gallery": [((room.x, cy), 39)],
                 "dining-hall": [((cx, cy), 25)],
                 "officers-quarters": [((room.x + 1, room.y + 1), 45),
                                       ((room.x + room.w - 2,
@@ -3407,21 +3427,6 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
                 # selected independently and kept apart, so a kitchen reads
                 # as a room-sized work area instead of one repeated four-item
                 # clump. The sink is optional rather than welded to the stove.
-                def _wall_backed(cell: tuple[int, int]) -> bool:
-                    x, y = cell
-                    outward = []
-                    if x == room.x:
-                        outward.append((x - 1, y))
-                    if x == room.x + room.w - 1:
-                        outward.append((x + 1, y))
-                    if y == room.y:
-                        outward.append((x, y - 1))
-                    if y == room.y + room.h - 1:
-                        outward.append((x, y + 1))
-                    return any(not _is_floor(_at(tiles, *neighbor))
-                               and _at(tiles, *neighbor) not in DOORS
-                               for neighbor in outward)
-
                 wall_cells = [cell for cell in free | edge_free
                               if cell not in keep_clear and _wall_backed(cell)]
                 rng.shuffle(wall_cells)
