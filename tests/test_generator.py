@@ -10,9 +10,9 @@ from infiniwolf.config import CampaignConfig, Intensity
 from infiniwolf.generator import GenerationCancelled, generate_campaign, generate_map, validate_map, validate_package
 from infiniwolf.generator import (BOSSES, DECOR_WALLS, DOGS, ELEVATOR_TILE, FAKE_HITLER,
                                    GHOSTS, GOLD_KEY, GRID, GUARDS, KEY_DROP_BOSSES, OFFICERS,
-                                   Room, SECRET_EXIT_ZONE, SS, WALL, WALL_THEMES,
-                                   _apply_wall_theme, _at, _reachable)
-from infiniwolf.generator import FLOOR, ZONE_MAX
+                                   PUSHWALL, Room, SECRET_EXIT_ZONE, SS, WALL, WALL_THEMES,
+                                   _apply_wall_theme, _at, _hint_secrets, _reachable)
+from infiniwolf.generator import FLOOR, FLOOR_TEN_STONE_THEME, ZONE_MAX
 
 
 class GeneratorTests(unittest.TestCase):
@@ -198,6 +198,38 @@ class GeneratorTests(unittest.TestCase):
         corners = {(room.x - 1, room.y - 1), (room.x + room.w, room.y - 1),
                    (room.x - 1, room.y + room.h), (room.x + room.w, room.y + room.h)}
         self.assertTrue(all(_at(tiles, *cell) == 40 for cell in cells - corners))
+
+    def test_secret_hint_never_mixes_material_families(self):
+        """Empty-accent themes borrow only same-base decor, if it exists."""
+        tiles = [WALL] * (GRID * GRID)
+        things = [0] * (GRID * GRID)
+        component_of = {}
+        group_theme = {
+            0: (40, ()),
+            1: FLOOR_TEN_STONE_THEME,
+            2: (1, (2, 3, 4)),
+            3: (8, (7, 41)),
+        }
+        pushwalls = ((10, 10), (20, 10), (30, 10), (40, 10))
+        for group, (x, y) in enumerate(pushwalls):
+            tiles[y * GRID + x] = group_theme[group][0]
+            things[y * GRID + x] = PUSHWALL
+            component_of[x + 1, y] = group
+
+        _hint_secrets(tiles, things, component_of, group_theme, random.Random(0))
+
+        families = {base: set(accents) | {base} for base, accents in WALL_THEMES}
+        families[FLOOR_TEN_STONE_THEME[0]] = {FLOOR_TEN_STONE_THEME[0]}
+        for group, (x, y) in enumerate(pushwalls):
+            base, accents = group_theme[group]
+            tile = _at(tiles, x, y)
+            self.assertIn(tile, families[base])
+            if accents:
+                self.assertIn(tile, set(accents) & DECOR_WALLS)
+        self.assertIn(_at(tiles, 10, 10), (34, 36))
+        self.assertEqual(_at(tiles, 20, 10), 9)
+        self.assertNotIn(_at(tiles, 10, 10), (3, 4))
+        self.assertNotIn(_at(tiles, 20, 10), (3, 4))
 
     def test_blue_insignia_panels_are_single_landmarks_not_room_material(self):
         self.assertTrue({34, 36} <= DECOR_WALLS)

@@ -144,10 +144,6 @@ FLOOR_TEN_STONE_THEME = (9, ())
 # room. Every other accent above is just an alternate plain material and is
 # fine covering a whole room's walls.
 DECOR_WALLS = frozenset({3, 4, 7, 10, 11, 14, 18, 20, 23, 34, 36, 41})
-# Fallback secret hints when a floor's theme has no decor accent of its own:
-# the grey-stone swastika banner and Hitler portrait, the two tiles the
-# original episodes most often hang on a pushwall.
-SECRET_HINTS = (3, 4)
 
 # Native WL6 furniture (things-plane old-num, from wolf3d.txt's xlat things
 # table). BLOCKING entries are +SOLID actors (verified against
@@ -1403,7 +1399,9 @@ def _hint_secrets(tiles: list[int], things: list[int],
     """Hang a landmark decor tile (banner, portrait, insignia) on every
     pushwall, the way the original episodes telegraph most of theirs. Runs
     after _apply_wall_theme so the theme can't repaint the hint, and prefers
-    the floor theme's own decor accents so the hint matches the material."""
+    the floor theme's own decor accents so the hint matches the material.
+    Falls back to a same-base sibling theme's accents rather than a hardcoded
+    cross-family constant, so a hint tile can never mix material families."""
     for index, thing in enumerate(things):
         if thing != PUSHWALL:
             continue
@@ -1411,9 +1409,15 @@ def _hint_secrets(tiles: list[int], things: list[int],
         group = next((component_of[cell] for cell in ((x + 1, y), (x - 1, y),
                                                        (x, y + 1), (x, y - 1))
                       if cell in component_of), None)
-        if group is not None:
-            _, accents = group_theme[group]
-            hints = tuple(accent for accent in accents if accent in DECOR_WALLS) or SECRET_HINTS
+        if group is None:
+            continue
+        base, accents = group_theme[group]
+        hints = tuple(accent for accent in accents if accent in DECOR_WALLS)
+        if not hints:
+            hints = tuple(accent for other_base, other_accents in WALL_THEMES
+                          if other_base == base
+                          for accent in other_accents if accent in DECOR_WALLS)
+        if hints:
             tiles[index] = rng.choice(hints)
 
 
