@@ -70,17 +70,30 @@ def _floor_components(tiles: list[int]) -> list[set[tuple[int, int]]]:
     return components
 
 
-_ACTOR_FACINGS = ((0, -1), (1, 0), (0, 1), (-1, 0))
+# ECWolf's old-format loader computes each thing's facing angle as
+# (oldnum - base) * 90 and casts it straight to MapTile::Side, whose enum
+# order is {East, North, West, South} (gamemap.h) -- deliberately hardcoded
+# here from the raw base thing-codes (108/116/126/134) and that enum order,
+# independent of however infiniwolf.generator's GUARDS/OFFICERS/SS/DOGS
+# tuples happen to be arranged. A test that instead re-derived this from
+# those tuples would just re-check the generator's own assumption about
+# itself -- exactly how the previous version of this test passed for weeks
+# while actors were still visibly facing walls in-game, because the
+# generator's facings tuple and this test agreed with each other while both
+# were wrong relative to the engine.
+_ENGINE_SIDE_DELTA = ((1, 0), (0, -1), (-1, 0), (0, 1))  # East, North, West, South
+_ENGINE_BASE = {108: GUARDS, 116: OFFICERS, 126: SS, 134: DOGS}
 
 
-def _actor_facing_index(code: int) -> int | None:
-    """Decode a things-plane code back to its N/E/S/W facing, across the
-    tier offsets (+36/+72) that skill 2/3 copies use."""
-    for family in (GUARDS, OFFICERS, SS, DOGS):
+def _engine_facing_delta(code: int) -> tuple[int, int] | None:
+    """Decode a things-plane code back to the direction ECWolf will actually
+    render it facing, across the tier offsets (+36/+72) skill 2/3 copies use.
+    36 is a multiple of 4 so it never perturbs the angle offset mod 4."""
+    for base, family in _ENGINE_BASE.items():
         for tier in (0, 1, 2):
-            base = code - 36 * tier
-            if base in family:
-                return family.index(base)
+            candidate = code - 36 * tier
+            if candidate in family:
+                return _ENGINE_SIDE_DELTA[(candidate - base) % 4]
     return None
 
 
@@ -91,7 +104,10 @@ class ActorFacingRegressionTests(unittest.TestCase):
         who was facing it, so a pillar/barrel/table could land directly in a
         guard's face -- indistinguishable in-game from facing a wall. Covers
         both the literal-wall case and the blocking-decoration case that
-        earlier tests never exercised."""
+        earlier tests never exercised. Checks against ECWolf's actual
+        East/North/West/South thing-angle convention, not the generator's own
+        (formerly mismatched) facings-tuple assumption -- see
+        _engine_facing_delta."""
         blocking = set(STATIC_BLOCKING)
         for seed in REGRESSION_SEEDS:
             config = CampaignConfig(seed=seed)
@@ -99,11 +115,11 @@ class ActorFacingRegressionTests(unittest.TestCase):
                 level = _generate_with_retries(config, floor)
                 tiles, things = level.tiles, level.things
                 for index, code in enumerate(things):
-                    facing = _actor_facing_index(code)
-                    if facing is None:
+                    delta = _engine_facing_delta(code)
+                    if delta is None:
                         continue
                     x, y = index % GRID, index // GRID
-                    dx, dy = _ACTOR_FACINGS[facing]
+                    dx, dy = delta
                     fx, fy = x + dx, y + dy
                     ahead_tile = _at(tiles, fx, fy)
                     ahead_thing = _at(things, fx, fy)

@@ -48,10 +48,22 @@ HANS_GROSSE = 214
 BOSSES = (HANS_GROSSE, 196, 197, 215, 179, 160, 178)
 
 # Native Wolf3D map object numbers, interpreted by ECWolf's base translator.
-GUARDS = (108, 109, 110, 111)
-OFFICERS = (116, 117, 118, 119)
-SS = (126, 127, 128, 129)
-DOGS = (134, 135, 136, 137)
+# ECWolf's old-format loader computes each thing's facing angle as
+# (oldnum - base) * 90 and casts it straight to MapTile::Side, whose enum
+# order is {East, North, West, South} (gamemap.h) -- NOT the North-first
+# order these arrays are indexed in throughout this file (facings tuple,
+# _pick_stationary_facing, etc. all reason in (N, E, S, W) order). Every
+# tuple here is reordered so index 0/1/2/3 already lines up with N/E/S/W,
+# i.e. GUARDS[0] (base+1) faces north in-engine, GUARDS[1] (base+0) faces
+# east, GUARDS[2] (base+3) faces south, GUARDS[3] (base+2) faces west.
+# Without this reorder, every facing decision computed correctly against
+# the floor plan still placed the wrong one of the 4 thing-codes, so
+# actors could face a wall the generator had explicitly avoided -- a bug
+# invisible to any test that (like the generator) assumes N/E/S/W order.
+GUARDS = (109, 108, 111, 110)
+OFFICERS = (117, 116, 119, 118)
+SS = (127, 126, 129, 128)
+DOGS = (135, 134, 137, 136)
 PATROL_GUARDS = tuple(code + 4 for code in GUARDS)
 PATROL_OFFICERS = tuple(code + 4 for code in OFFICERS)
 PATROL_SS = tuple(code + 4 for code in SS)

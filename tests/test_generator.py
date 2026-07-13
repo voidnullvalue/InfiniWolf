@@ -7,11 +7,29 @@ import zipfile
 
 from infiniwolf.config import CampaignConfig, Intensity
 from infiniwolf.generator import GenerationCancelled, generate_campaign, generate_map, validate_map, validate_package
-from infiniwolf.generator import BOSSES, ELEVATOR_TILE, GOLD_KEY, SECRET_EXIT_ZONE, WALL_THEMES, _at, _reachable
+from infiniwolf.generator import (BOSSES, DOGS, ELEVATOR_TILE, GOLD_KEY, GUARDS, OFFICERS, SS,
+                                   SECRET_EXIT_ZONE, WALL_THEMES, _at, _reachable)
 from infiniwolf.generator import FLOOR, ZONE_MAX
 
 
 class GeneratorTests(unittest.TestCase):
+    def test_actor_thing_codes_are_ordered_for_ecwolfs_engine_not_compass_order(self):
+        """ECWolf's old-format loader computes each thing's angle as
+        (oldnum - base) * 90 and casts it to MapTile::Side, an enum ordered
+        {East, North, West, South} (gamemap.h) -- not the North-first order
+        a human would guess. Every place in generator.py that indexes these
+        arrays (facings tuple, _pick_stationary_facing, the hardcoded vault
+        guard) assumes index 0/1/2/3 means N/E/S/W, so the tuples themselves
+        must be pre-permuted to match: [0]=base+1 (north), [1]=base+0
+        (east), [2]=base+3 (south), [3]=base+2 (west). Getting this backwards
+        made every "correctly" computed facing decision place the wrong one
+        of the 4 thing-codes -- actors could face a wall the generator had
+        explicitly steered them away from, invisible to any test that (like
+        the generator) assumed compass order instead of checking against the
+        engine's actual angle formula."""
+        for family, base in ((GUARDS, 108), (OFFICERS, 116), (SS, 126), (DOGS, 134)):
+            self.assertEqual(family, (base + 1, base + 0, base + 3, base + 2))
+
     def test_maps_validate_across_settings(self):
         for seed in range(12):
             for intensity in (Intensity.VERY_LOW, Intensity.NORMAL, Intensity.VERY_HIGH):
