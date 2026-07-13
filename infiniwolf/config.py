@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
-from enum import IntEnum
+from enum import Enum, IntEnum
 import hashlib
 import json
 from pathlib import Path
@@ -18,6 +18,15 @@ class Intensity(IntEnum):
     VERY_HIGH = 5
 
 
+class ThemeBias(str, Enum):
+    MIXED = "mixed"
+    GARRISON = "garrison"
+    CATACOMBS = "catacombs"
+    GRAND_HALLS = "grand-halls"
+    STOREHOUSE = "storehouse"
+    QUARTERS = "quarters"
+
+
 @dataclass(frozen=True, slots=True)
 class CampaignConfig:
     seed: int
@@ -28,6 +37,12 @@ class CampaignConfig:
     secrets: Intensity = Intensity.NORMAL
     locked_doors: Intensity = Intensity.NORMAL
     layout_complexity: Intensity = Intensity.NORMAL
+    decoration_amount: Intensity = Intensity.NORMAL
+    room_shape_variation: Intensity = Intensity.NORMAL
+    patrol_activity: Intensity = Intensity.NORMAL
+    atmosphere: Intensity = Intensity.NORMAL
+    secret_reward_quality: Intensity = Intensity.NORMAL
+    theme_bias: ThemeBias = ThemeBias.MIXED
 
     @classmethod
     def with_seed(cls, seed: str | int | None = None, **settings: object) -> "CampaignConfig":
@@ -51,9 +66,15 @@ class CampaignConfig:
         payload = f"infiniwolf:variant:v1:{self.seed}:{floor}".encode("ascii")
         return int.from_bytes(hashlib.blake2b(payload, digest_size=8).digest(), "little")
 
+    def lock_seed(self) -> int:
+        """Campaign-wide stream for the authored lock/key schedule."""
+        payload = f"infiniwolf:locks:v1:{self.seed}".encode("ascii")
+        return int.from_bytes(hashlib.blake2b(payload, digest_size=8).digest(), "little")
+
     def to_json(self) -> str:
         values = asdict(self)
         values.update({key: int(value) for key, value in values.items() if isinstance(value, IntEnum)})
+        values.update({key: value.value for key, value in values.items() if isinstance(value, Enum)})
         return json.dumps(values, indent=2, sort_keys=True)
 
 
@@ -78,4 +99,3 @@ def resolve_seed(value: str | int | None) -> int:
     if seed < 0:
         raise ValueError("seed must not be negative")
     return seed & ((1 << 64) - 1)
-

@@ -50,10 +50,21 @@ Every intensity option accepts `1` through `5`:
 ```sh
 python3 -m infiniwolf --seed 42 --guard-density 4 --enemy-toughness 3 \
   --supplies 3 --treasure 2 --secrets 4 --locked-doors 3 \
-  --layout-complexity 5 --output infiniwolf.pk3
+  --layout-complexity 5 --decoration-amount 4 --room-shape-variation 4 \
+  --patrol-activity 3 --atmosphere 2 --secret-reward-quality 4 \
+  --theme-bias catacombs --output infiniwolf.pk3
 ```
 
-Using the same version, seed, and settings produces byte-identical output. A manifest inside the PK3 records the resolved seed, settings, floor seeds, enemy tiers, locks, secrets, and boss floor.
+The desktop interface groups the original gameplay controls separately from
+the style controls. Style settings deliberately influence bounded choices
+rather than disabling map validation: decoration amount controls prop budget,
+room-shape variation controls notches and alcoves, patrol activity controls
+patrol frequency, atmosphere controls how clean or grim rooms look, and secret
+reward quality shifts the secret-room reward mix. Theme bias strongly favors a
+floor identity without forcing every floor to repeat it; `mixed` keeps the
+default rotating sequence.
+
+Using the same version, seed, and settings produces byte-identical output. A manifest inside the PK3 records the resolved seed, settings, floor seeds, enemy tiers, the seeded campaign lock schedule, realized gold/silver key order, exit-depth measurements, secrets, and boss floor.
 
 ## Tests
 

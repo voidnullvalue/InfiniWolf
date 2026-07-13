@@ -7,12 +7,12 @@ from pathlib import Path
 import threading
 from tkinter import filedialog, messagebox, ttk
 
-from .config import CampaignConfig, Intensity
+from .config import CampaignConfig, Intensity, ThemeBias
 from .generator import GenerationCancelled, generate_campaign, read_manifest
 from .runtime import AppSettings, launch_ecwolf, load_settings, save_settings, validate_settings
 
 
-CONTROL_LABELS = (
+GAMEPLAY_CONTROLS = (
     ("guard_density", "Guard density"),
     ("enemy_toughness", "Enemy toughness"),
     ("supplies", "Health and ammunition"),
@@ -21,7 +21,23 @@ CONTROL_LABELS = (
     ("locked_doors", "Locked doors"),
     ("layout_complexity", "Layout complexity"),
 )
+STYLE_CONTROLS = (
+    ("decoration_amount", "Decoration amount"),
+    ("room_shape_variation", "Room-shape variation"),
+    ("patrol_activity", "Patrol activity"),
+    ("atmosphere", "Atmosphere"),
+    ("secret_reward_quality", "Secret reward quality"),
+)
+CONTROL_LABELS = GAMEPLAY_CONTROLS + STYLE_CONTROLS
 INTENSITY_NAMES = ("", "Very Low", "Low", "Normal", "High", "Very High")
+THEME_NAMES = {
+    ThemeBias.MIXED.value: "Mixed",
+    ThemeBias.GARRISON.value: "Garrison",
+    ThemeBias.CATACOMBS.value: "Catacombs",
+    ThemeBias.GRAND_HALLS.value: "Grand halls",
+    ThemeBias.STOREHOUSE.value: "Storehouse",
+    ThemeBias.QUARTERS.value: "Quarters",
+}
 
 
 class App(ttk.Frame):
@@ -39,30 +55,54 @@ class App(ttk.Frame):
         self.output = tk.StringVar(value=saved.output)
         self.values = {name: tk.IntVar(value=3) for name, _ in CONTROL_LABELS}
         self.value_labels = {name: tk.StringVar(value=INTENSITY_NAMES[3]) for name, _ in CONTROL_LABELS}
+        self.theme_bias = tk.StringVar(value=ThemeBias.MIXED.value)
         self.cancel_event = threading.Event()
         self._build()
 
     def _build(self) -> None:
         ttk.Label(self, text="Campaign seed (blank = time-based)").grid(row=0, column=0, sticky="w")
         ttk.Entry(self, textvariable=self.seed, width=32).grid(row=0, column=1, sticky="ew", padx=(12, 0))
-        for row, (name, label) in enumerate(CONTROL_LABELS, 1):
-            ttk.Label(self, text=label).grid(row=row, column=0, sticky="w", pady=4)
-            scale = ttk.Scale(self, from_=1, to=5, variable=self.values[name], orient="horizontal",
+        notebook = ttk.Notebook(self)
+        gameplay = ttk.Frame(notebook, padding=8)
+        style = ttk.Frame(notebook, padding=8)
+        notebook.add(gameplay, text="Gameplay")
+        notebook.add(style, text="Style")
+        notebook.grid(row=1, column=0, columnspan=3, sticky="nsew", pady=(10, 4))
+        self._control_tab(gameplay, GAMEPLAY_CONTROLS)
+        self._control_tab(style, STYLE_CONTROLS)
+        theme_row = len(STYLE_CONTROLS)
+        ttk.Label(style, text="Theme bias").grid(row=theme_row, column=0, sticky="w", pady=4)
+        theme = ttk.Combobox(style, state="readonly", width=18,
+                             values=tuple(THEME_NAMES.values()))
+        theme.set(THEME_NAMES[self.theme_bias.get()])
+        theme.grid(row=theme_row, column=1, columnspan=2, sticky="ew", padx=(12, 0))
+        theme.bind("<<ComboboxSelected>>",
+                   lambda _event: self.theme_bias.set(next(key for key, label in THEME_NAMES.items()
+                                                          if label == theme.get())))
+        self._path_row(2, "ECWolf executable", self.ecwolf, self._choose_ecwolf, False)
+        self._path_row(3, "Registered WL6 data", self.wl6_data, self._choose_data, True)
+        self._path_row(4, "Output PK3", self.output, self._choose_output, False)
+        self.generate_button = ttk.Button(self, text="Generate", command=self._generate)
+        self.generate_button.grid(row=5, column=0, pady=(16, 0), sticky="w")
+        self.cancel_button = ttk.Button(self, text="Cancel", command=self._cancel, state="disabled")
+        self.cancel_button.grid(row=5, column=1, pady=(16, 0))
+        self.play_button = ttk.Button(self, text="Play", command=self._play)
+        self.play_button.grid(row=5, column=2, pady=(16, 0), sticky="e")
+        self._sync_play_state()
+        ttk.Label(self, textvariable=self.status, wraplength=520).grid(row=6, column=0, columnspan=3, sticky="w", pady=(12, 0))
+        self.columnconfigure(1, weight=1)
+
+    def _control_tab(self, frame: ttk.Frame,
+                     controls: tuple[tuple[str, str], ...]) -> None:
+        for row, (name, label) in enumerate(controls):
+            ttk.Label(frame, text=label).grid(row=row, column=0, sticky="w", pady=4)
+            scale = ttk.Scale(frame, from_=1, to=5, variable=self.values[name],
+                              orient="horizontal",
                               command=lambda raw, key=name: self._snap_intensity(key, raw))
             scale.grid(row=row, column=1, sticky="ew", padx=(12, 0))
-            ttk.Label(self, textvariable=self.value_labels[name], width=9).grid(row=row, column=2, sticky="e")
-        self._path_row(8, "ECWolf executable", self.ecwolf, self._choose_ecwolf, False)
-        self._path_row(9, "Registered WL6 data", self.wl6_data, self._choose_data, True)
-        self._path_row(10, "Output PK3", self.output, self._choose_output, False)
-        self.generate_button = ttk.Button(self, text="Generate", command=self._generate)
-        self.generate_button.grid(row=11, column=0, pady=(16, 0), sticky="w")
-        self.cancel_button = ttk.Button(self, text="Cancel", command=self._cancel, state="disabled")
-        self.cancel_button.grid(row=11, column=1, pady=(16, 0))
-        self.play_button = ttk.Button(self, text="Play", command=self._play)
-        self.play_button.grid(row=11, column=2, pady=(16, 0), sticky="e")
-        self._sync_play_state()
-        ttk.Label(self, textvariable=self.status, wraplength=520).grid(row=12, column=0, columnspan=3, sticky="w", pady=(12, 0))
-        self.columnconfigure(1, weight=1)
+            ttk.Label(frame, textvariable=self.value_labels[name], width=9).grid(
+                row=row, column=2, sticky="e")
+        frame.columnconfigure(1, weight=1)
 
     def _snap_intensity(self, name: str, raw: str) -> None:
         value = min(5, max(1, round(float(raw))))
@@ -98,6 +138,7 @@ class App(ttk.Frame):
     def _generate(self) -> None:
         try:
             settings = {name: Intensity(value.get()) for name, value in self.values.items()}
+            settings["theme_bias"] = ThemeBias(self.theme_bias.get())
             config = CampaignConfig.with_seed(self.seed.get(), **settings)
         except ValueError as error:
             messagebox.showerror("Invalid configuration", str(error), parent=self)
