@@ -3359,12 +3359,11 @@ def _place_elevator(tiles: list[int], room: Room, locked: bool = False) -> tuple
             continue
         for depth in (1, 2):
             _set(tiles, wx + dx * depth, wy, FLOOR)
-        # Keep the first tile behind the door as a wall-material vestibule.
-        # Starting tile-21 side rails flush with the threshold exposes their
-        # east/west switch face around the edge of a closed or partly-open
-        # door when viewed obliquely from the room.  The stand and back wall
-        # retain the authentic elevator paneling one tile farther in.
-        for depth in (2, 3):
+        # Dress the complete car from the doorway to the switch wall. The
+        # five-by-five rock footprint keeps these rails invisible from any
+        # neighboring room; delaying them by one tile instead exposes an
+        # ordinary wall strip inside a three-deep elevator.
+        for depth in (1, 2, 3):
             for side in (-1, 1):
                 _set(tiles, wx + dx * depth, wy + side, ELEVATOR_TILE)
         _set(tiles, wx + dx * 3, wy, ELEVATOR_TILE)
@@ -3441,10 +3440,10 @@ def _place_arrival_elevator(tiles: list[int], room: Room,
                               for depth in (1, 2))
             for cell in car_cells:
                 _set(tiles, *cell, FLOOR)
-            # Leave a plain jamb immediately behind the door.  Besides making
-            # the threshold read as a doorway, this keeps the outward face of
-            # the inert elevator rails out of the room's oblique sightline.
-            for depth in (2, 3):
+            # The rock-backed footprint contains the car, so its inert panels
+            # can begin immediately behind the door without leaking into an
+            # adjacent room or leaving a normal wall strip inside the lift.
+            for depth in (1, 2, 3):
                 for side in (-1, 1):
                     _set(tiles, panel[0] + depth * dx + side * px,
                          panel[1] + depth * dy + side * py,
@@ -6784,7 +6783,7 @@ def validate_map(level: GeneratedMap) -> None:
         dressed = {
             (arrival.portal[0] + depth * outward[0] + side * px,
              arrival.portal[1] + depth * outward[1] + side * py)
-            for depth in (2, 3) for side in (-1, 1)}
+            for depth in (1, 2, 3) for side in (-1, 1)}
         dressed.add((arrival.portal[0] + 3 * outward[0],
                      arrival.portal[1] + 3 * outward[1]))
         if any(_at(level.tiles, *cell) != DUMMY_ELEVATOR_TILE
@@ -7200,9 +7199,9 @@ def validate_map(level: GeneratedMap) -> None:
     switch_dx = next(dx for dx in (1, -1)
                      if _at(level.tiles, sx + dx, sy) == ELEVATOR_TILE)
     threshold = (sx - switch_dx, sy)
-    if any(_at(level.tiles, threshold[0], threshold[1] + side) == ELEVATOR_TILE
+    if any(_at(level.tiles, threshold[0], threshold[1] + side) != ELEVATOR_TILE
            for side in (-1, 1)):
-        raise ValueError("elevator side rail is exposed at the doorway")
+        raise ValueError("elevator exposes a non-elevator wall inside the doorway")
     if level.rooms and level.critical_route:
         distances = _floor_distances(level.tiles, level.start)
         deepest_room = max((distances.get(room.center, 0) for room in level.rooms),

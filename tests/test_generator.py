@@ -86,13 +86,32 @@ class GeneratorTests(unittest.TestCase):
                         "every full arrival car must retain an elevator door")
                     outward = (-dx, -dy)
                     px, py = -outward[1], outward[0]
-                    for side in (-1, 1):
-                        self.assertNotEqual(
-                            _at(tiles, arrival.portal[0] + outward[0] + side * px,
-                                arrival.portal[1] + outward[1] + side * py),
-                            generator.DUMMY_ELEVATOR_TILE,
-                            "arrival rail must begin behind the doorway sightline")
+                    for depth in (1, 2, 3):
+                        for side in (-1, 1):
+                            self.assertEqual(
+                                _at(tiles,
+                                    arrival.portal[0] + depth * outward[0] + side * px,
+                                    arrival.portal[1] + depth * outward[1] + side * py),
+                                generator.DUMMY_ELEVATOR_TILE,
+                                "arrival car exposes a non-elevator side wall")
                 self.assertEqual(bool(arrival.item), kind == "outside-supply")
+
+    def test_terminal_elevator_has_no_plain_wall_strip_inside_car(self):
+        room = Room(20, 20, 8, 8)
+        tiles = [WALL] * (GRID * GRID)
+        for y in range(room.y, room.y + room.h):
+            for x in range(room.x, room.x + room.w):
+                tiles[y * GRID + x] = FLOOR
+        stand = generator._place_elevator(tiles, room)
+        switch_dx = (1 if _at(tiles, stand[0] + 1, stand[1]) == ELEVATOR_TILE
+                     else -1)
+        door = stand[0] - 2 * switch_dx, stand[1]
+        self.assertEqual(_at(tiles, *door), generator.DOOR_ELEVATOR)
+        for depth in (1, 2, 3):
+            x = door[0] + depth * switch_dx
+            for side in (-1, 1):
+                self.assertEqual(_at(tiles, x, door[1] + side), ELEVATOR_TILE,
+                                 "terminal car exposes a non-elevator side wall")
 
     def test_generated_floors_record_purposeful_encounters_and_real_patrols(self):
         level = _generate_with_retries(CampaignConfig(seed=42), 4)
@@ -1633,10 +1652,10 @@ class GeneratorTests(unittest.TestCase):
                              "elevator entrance must be a real elevator door")
             switch_dx = 1 if switch_east else -1
             threshold_x = sx - switch_dx
-            self.assertNotEqual(_at(level.tiles, threshold_x, sy - 1), ELEVATOR_TILE,
-                                "upper rail must begin behind the doorway sightline")
-            self.assertNotEqual(_at(level.tiles, threshold_x, sy + 1), ELEVATOR_TILE,
-                                "lower rail must begin behind the doorway sightline")
+            self.assertEqual(_at(level.tiles, threshold_x, sy - 1), ELEVATOR_TILE,
+                             "upper rail must begin immediately behind the door")
+            self.assertEqual(_at(level.tiles, threshold_x, sy + 1), ELEVATOR_TILE,
+                             "lower rail must begin immediately behind the door")
             self.assertEqual(_at(level.tiles, sx, sy - 1), ELEVATOR_TILE)
             self.assertEqual(_at(level.tiles, sx, sy + 1), ELEVATOR_TILE)
 
