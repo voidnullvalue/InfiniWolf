@@ -156,6 +156,92 @@ class GeneratorTests(unittest.TestCase):
                                 and _at(tiles, *cell) not in generator.DOORS
                                 for cell in outside))
 
+    def test_symmetric_room_profiles_are_varied_but_never_dominate(self):
+        rooms = [Room(3 + (index % 4) * 14, 3 + (index // 4) * 16, 10, 10)
+                 for index in range(8)]
+        tiles = [WALL] * (GRID * GRID)
+        for room in rooms:
+            for y in range(room.y, room.y + room.h):
+                for x in range(room.x, room.x + room.w):
+                    tiles[y * GRID + x] = FLOOR
+        anchors, shapes = generator._carve_symmetric_profiles(
+            tiles, rooms, random.Random(4), chance=1.0, max_rooms=2)
+        self.assertEqual(len(shapes), 2)
+        self.assertEqual(set(anchors), set(shapes))
+        self.assertLessEqual(len(shapes), len(rooms) // 4)
+        for room_index in shapes:
+            room = rooms[room_index]
+            carved = {(x, y) for y in range(room.y, room.y + room.h)
+                      for x in range(room.x, room.x + room.w)
+                      if _at(tiles, x, y) == WALL}
+            self.assertTrue(carved)
+            for x, y in carved:
+                self.assertIn((2 * room.x + room.w - 1 - x, y), carved)
+                self.assertIn((x, 2 * room.y + room.h - 1 - y), carved)
+
+    def test_spears_are_wall_backed_armory_displays(self):
+        room = Room(10, 10, 12, 10)
+        tiles = [WALL] * (GRID * GRID)
+        for y in range(room.y, room.y + room.h):
+            for x in range(room.x, room.x + room.w):
+                tiles[y * GRID + x] = FLOOR
+        things = [0] * len(tiles)
+        identity = generator.RoomIdentity("beat", "standard", "spine", 0,
+                                          "garrison", "armory", "guardpost")
+        _place_decorations([room], tiles, things, set(), room.center,
+                           random.Random(2), identities=[identity])
+        spears = [(index % GRID, index // GRID)
+                  for index, item in enumerate(things) if item == 69]
+        self.assertTrue(spears)
+        for x, y in spears:
+            self.assertTrue(x in (room.x, room.x + room.w - 1)
+                            or y in (room.y, room.y + room.h - 1))
+
+    def test_each_room_uses_at_most_one_lighting_family(self):
+        room = Room(10, 10, 12, 10)
+        identity = generator.RoomIdentity("climax", "anchor", "spine", 0,
+                                          "grand-halls", "trophy-hall", "grand")
+        realized = set()
+        for seed in range(12):
+            tiles = [WALL] * (GRID * GRID)
+            for y in range(room.y, room.y + room.h):
+                for x in range(room.x, room.x + room.w):
+                    tiles[y * GRID + x] = FLOOR
+            things = [0] * len(tiles)
+            families, _ = _place_decorations(
+                [room], tiles, things, set(), room.center, random.Random(seed),
+                identities=[identity])
+            family = families[0]
+            fixtures = {item for item in things if item in generator.LIGHTING_ITEMS}
+            self.assertLessEqual(fixtures, generator.LIGHTING_FAMILY_ITEMS[family])
+            realized.add(family)
+        self.assertGreaterEqual(len(realized), 2)
+
+    def test_vines_only_form_complete_room_screens(self):
+        room = Room(10, 10, 12, 10)
+        identity = generator.RoomIdentity("climax", "anchor", "spine", 0,
+                                          "grand-halls", "courtyard", "grand")
+        found = None
+        for seed in range(40):
+            tiles = [WALL] * (GRID * GRID)
+            for y in range(room.y, room.y + room.h):
+                for x in range(room.x, room.x + room.w):
+                    tiles[y * GRID + x] = FLOOR
+            things = [0] * len(tiles)
+            _, screens = _place_decorations(
+                [room], tiles, things, set(), room.center, random.Random(seed),
+                identities=[identity])
+            if screens:
+                found = screens[0]
+                break
+        self.assertIsNotNone(found)
+        self.assertEqual(found.kind, "room-divider")
+        xs = {x for x, _ in found.cells}
+        ys = {y for _, y in found.cells}
+        self.assertTrue((len(xs) == 1 and ys == set(range(room.y, room.y + room.h)))
+                        or (len(ys) == 1
+                            and xs == set(range(room.x, room.x + room.w))))
+
     def test_seed_3332_floor_one_balances_room_concepts_and_caps_kitchens(self):
         level = _generate_with_retries(CampaignConfig(seed=3332), 1, attempts=3)
         self.assertEqual(level.variant, "grand-halls")
@@ -460,6 +546,7 @@ class GeneratorTests(unittest.TestCase):
                 self.assertFalse(any(name.lower().endswith((".png", ".wav", ".wl6")) for name in names))
                 manifest = json.loads(package.read("infiniwolf-manifest.json"))
                 self.assertEqual(manifest["seed"], config.seed)
+                self.assertEqual(manifest["seed_source"], "LittleEntropyMachine")
                 self.assertTrue(all(floor["validation"]["passed"] for floor in manifest["floors"]))
                 mapinfo = package.read("mapinfo.txt").decode("utf-8")
                 self.assertIn("par =", mapinfo)
@@ -489,6 +576,23 @@ class GeneratorTests(unittest.TestCase):
         # is what ECWolf rewrites into an Exit_Secret trigger.
         self.assertEqual(_at(level.tiles, index % 64 + 1, index // 64), ELEVATOR_TILE)
         self.assertTrue(level.secret_rewards)
+        zx, zy = index % GRID, index // GRID
+        self.assertEqual(_at(level.tiles, zx - 2, zy), generator.DOOR_ELEVATOR)
+        self.assertTrue(all(_at(level.tiles, x, zy + side) == ELEVATOR_TILE
+                            for x in range(zx - 1, zx + 2)
+                            for side in (-1, 1)))
+        self.assertTrue(all(not _is_floor(_at(level.tiles, *cell))
+                            and _at(level.tiles, *cell) not in generator.DOORS
+                            for cell in ({(zx + 2, zy + side)
+                                         for side in range(-2, 3)}
+                                         | {(x, zy + side)
+                                            for x in range(zx - 2, zx + 3)
+                                            for side in (-2, 2)})))
+        closed = _reachable(level.tiles, level.start, locked_open=True)
+        self.assertNotIn((zx, zy), closed)
+        detail = next(detail for detail in level.secret_details if detail.secret_exit)
+        self.assertNotEqual(detail.shape, "square")
+        self.assertGreaterEqual(detail.depth_ratio, 0.45)
 
     def test_lock_setting_changes_progression_content(self):
         # Seed 122, not 121: lock placement can legitimately come up empty on
@@ -541,6 +645,14 @@ class GeneratorTests(unittest.TestCase):
         self.assertIn((silver_index % GRID, silver_index // GRID), gold_open)
         self.assertNotIn(level.exit_stand, gold_open)
         self.assertIn(level.exit_stand, both_open)
+        self.assertEqual(tuple(objective.color for objective in level.key_objectives),
+                         level.key_order)
+        self.assertTrue(all(objective.detour >= 2
+                            and objective.cell
+                            != level.rooms[objective.host_room].center
+                            for objective in level.key_objectives))
+        self.assertEqual(len({objective.host_room
+                              for objective in level.key_objectives}), 2)
 
     def test_boss_floor_can_add_silver_before_gold_and_floor_ten_stays_open(self):
         boss_floor = _generate_with_retries(CampaignConfig(seed=0), 9, attempts=5)
@@ -603,21 +715,19 @@ class GeneratorTests(unittest.TestCase):
                         and room.y <= index // GRID < room.y + room.h)
             self.assertGreaterEqual(count, 2)
 
-    def test_non_key_drop_bosses_get_a_reachable_physical_key(self):
-        seen_non_droppers = set()
+    def test_boss_elevator_key_is_a_verified_native_boss_drop(self):
+        seen_bosses = set()
         for seed in range(6):
             level = _generate_with_retries(CampaignConfig(seed=seed), 9, attempts=10)
             boss = next(thing for thing in level.things if thing in BOSSES)
-            if boss in KEY_DROP_BOSSES:
-                continue
-            seen_non_droppers.add(boss)
-            self.assertIn(GOLD_KEY, level.things)
-            key_index = level.things.index(GOLD_KEY)
-            prior = set(level.key_order[:level.key_order.index("gold")])
-            self.assertIn((key_index % 64, key_index // 64),
-                          _reachable(level.tiles, level.start, locked_open=False,
-                                     open_lock_codes=generator._codes_for_colors(prior)))
-        self.assertTrue(seen_non_droppers)
+            seen_bosses.add(boss)
+            self.assertIn(boss, KEY_DROP_BOSSES)
+            self.assertNotIn(GOLD_KEY, level.things)
+            objective = next(objective for objective in level.key_objectives
+                             if objective.color == "gold")
+            self.assertEqual(objective.treatment, "boss-drop")
+            self.assertEqual(_at(level.things, *objective.cell), boss)
+        self.assertGreater(len(seen_bosses), 1)
 
     def test_fake_hitler_is_not_a_boss_and_only_spawns_on_floor_nine(self):
         self.assertNotIn(FAKE_HITLER, BOSSES)
@@ -643,6 +753,44 @@ class GeneratorTests(unittest.TestCase):
                        if thing in BOSSES)
                   for seed in range(20)}
         self.assertGreater(len(bosses), 1, "boss floor always picked the same boss across seeds")
+
+    def test_special_floor_grammars_keep_plenty_of_cross_seed_variation(self):
+        boss_plans = [_plan_floor(random.Random(seed), 3, 9,
+                                  variant=generator.VARIANT_STRONGHOLD)
+                      for seed in range(32)]
+        vault_plans = [_plan_floor(random.Random(seed), 3, 10,
+                                   variant=generator.VARIANT_VAULT)
+                       for seed in range(32)]
+        for plans in (boss_plans, vault_plans):
+            self.assertGreaterEqual(len({plan.special_family for plan in plans}), 4)
+            self.assertGreaterEqual(len({plan.skeleton for plan in plans}), 5)
+            self.assertGreaterEqual(
+                len({(plan.special_family, plan.skeleton,
+                      plan.district_circulation, plan.motifs)
+                     for plan in plans}), 16)
+
+    def test_floor_ten_is_a_source_aware_reward_expedition(self):
+        level = None
+        for attempt in range(10):
+            try:
+                level = generate_map(CampaignConfig(seed=71), 10, attempt,
+                                     secret_source=3)
+                break
+            except ValueError:
+                continue
+        self.assertIsNotNone(level)
+        self.assertEqual(level.secret_source, 3)
+        self.assertIn(level.premium_room, level.critical_route)
+        self.assertGreaterEqual(len(level.expedition_rooms), 3)
+        self.assertEqual(sum(placement.reason == "floor-ten-premium"
+                             for placement in level.pickup_placements), 1)
+        self.assertGreaterEqual(sum(placement.reason == "floor-ten-expedition"
+                                    for placement in level.pickup_placements), 2)
+        arrival = level.room_roles.index("arrival")
+        room = level.rooms[arrival]
+        self.assertFalse(any(_at(level.things, x, y) in generator.ENEMY_CODES
+                             for y in range(room.y, room.y + room.h)
+                             for x in range(room.x, room.x + room.w)))
 
     def test_wall_theme_materials_are_internally_consistent(self):
         """Every WALL_THEMES entry must draw its base and accents from a
@@ -896,7 +1044,7 @@ class GeneratorTests(unittest.TestCase):
         identity = generator.RoomIdentity("circulation", "hall", "spine", 0,
                                           "grand-halls", "corridor", "corridor")
         _place_decorations(
-            [room], tiles, things, set(), (room.x - 2, travel_y), random.Random(4),
+            [room], tiles, things, set(), (room.x - 2, travel_y), random.Random(6),
             identities=[identity], traversal_pair_chance=1.0)
         lamps = {(index % GRID, index // GRID)
                  for index, item in enumerate(things) if item == 26}
@@ -1227,6 +1375,7 @@ class GeneratorTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             package = generate_campaign(config, Path(directory) / "campaign.pk3")
             manifest = generator.read_manifest(package)
+        self.assertEqual(manifest["seed_source"], "LittleEntropyMachine")
         self.assertEqual([floor["variant"] for floor in manifest["floors"]], expected)
         self.assertEqual([floor["circulation_skeleton"]
                           for floor in manifest["floors"]], expected_skeletons)

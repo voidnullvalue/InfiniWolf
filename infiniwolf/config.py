@@ -28,6 +28,34 @@ class ThemeBias(str, Enum):
 
 
 @dataclass(frozen=True, slots=True)
+class LittleEntropyMachine:
+    """Named deterministic source for every independent generator stream.
+
+    Payload formats are intentionally frozen: giving the seed source a real
+    identity must not perturb established campaign seeds or retry behavior.
+    """
+    seed: int
+
+    @staticmethod
+    def _digest(payload: str) -> int:
+        return int.from_bytes(
+            hashlib.blake2b(payload.encode("ascii"), digest_size=8).digest(),
+            "little")
+
+    def floor(self, floor: int, attempt: int = 0) -> int:
+        return self._digest(f"infiniwolf:v1:{self.seed}:{floor}:{attempt}")
+
+    def variant(self, floor: int) -> int:
+        return self._digest(f"infiniwolf:variant:v1:{self.seed}:{floor}")
+
+    def locks(self) -> int:
+        return self._digest(f"infiniwolf:locks:v1:{self.seed}")
+
+    def circulation(self, floor: int) -> int:
+        return self._digest(f"infiniwolf:circulation:v1:{self.seed}:{floor}")
+
+
+@dataclass(frozen=True, slots=True)
 class CampaignConfig:
     seed: int
     guard_density: Intensity = Intensity.NORMAL
@@ -51,8 +79,7 @@ class CampaignConfig:
     def floor_seed(self, floor: int, attempt: int = 0) -> int:
         if not 1 <= floor <= 10:
             raise ValueError("floor must be between 1 and 10")
-        payload = f"infiniwolf:v1:{self.seed}:{floor}:{attempt}".encode("ascii")
-        return int.from_bytes(hashlib.blake2b(payload, digest_size=8).digest(), "little")
+        return LittleEntropyMachine(self.seed).floor(floor, attempt)
 
     def variant_seed(self, floor: int) -> int:
         """Seed for a floor's base-variant pick, separate from floor_seed.
@@ -63,20 +90,17 @@ class CampaignConfig:
         frozen by the determinism contract."""
         if not 1 <= floor <= 10:
             raise ValueError("floor must be between 1 and 10")
-        payload = f"infiniwolf:variant:v1:{self.seed}:{floor}".encode("ascii")
-        return int.from_bytes(hashlib.blake2b(payload, digest_size=8).digest(), "little")
+        return LittleEntropyMachine(self.seed).variant(floor)
 
     def lock_seed(self) -> int:
         """Campaign-wide stream for the authored lock/key schedule."""
-        payload = f"infiniwolf:locks:v1:{self.seed}".encode("ascii")
-        return int.from_bytes(hashlib.blake2b(payload, digest_size=8).digest(), "little")
+        return LittleEntropyMachine(self.seed).locks()
 
     def circulation_seed(self, floor: int) -> int:
         """Independent stream for a floor's building-circulation skeleton."""
         if not 1 <= floor <= 10:
             raise ValueError("floor must be between 1 and 10")
-        payload = f"infiniwolf:circulation:v1:{self.seed}:{floor}".encode("ascii")
-        return int.from_bytes(hashlib.blake2b(payload, digest_size=8).digest(), "little")
+        return LittleEntropyMachine(self.seed).circulation(floor)
 
     def to_json(self) -> str:
         values = asdict(self)

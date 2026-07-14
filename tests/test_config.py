@@ -1,6 +1,7 @@
 import unittest
 
-from infiniwolf.config import CampaignConfig, Intensity, ThemeBias, resolve_seed
+from infiniwolf.config import (CampaignConfig, Intensity, LittleEntropyMachine,
+                               ThemeBias, resolve_seed)
 
 
 class ConfigTests(unittest.TestCase):
@@ -15,6 +16,14 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(config.floor_seed(2), config.floor_seed(2))
         self.assertNotEqual(config.floor_seed(2), config.floor_seed(3))
         self.assertNotEqual(config.floor_seed(2), config.floor_seed(2, 1))
+
+    def test_little_entropy_machine_is_the_named_seed_source(self):
+        config = CampaignConfig(seed=123)
+        source = LittleEntropyMachine(config.seed)
+        self.assertEqual(config.floor_seed(2), source.floor(2))
+        self.assertEqual(config.variant_seed(2), source.variant(2))
+        self.assertEqual(config.lock_seed(), source.locks())
+        self.assertEqual(config.circulation_seed(2), source.circulation(2))
 
     def test_variant_seeds_are_stable_distinct_and_separate_from_floor_seeds(self):
         config = CampaignConfig(seed=123)

@@ -187,7 +187,6 @@ STATIC_BLOCKING = (
     60,  # EmptyWell
     62,  # Flag
     68,  # Stove
-    69,  # Spears
 )
 STATIC_OPEN = (
     23,  # Puddle
@@ -201,8 +200,17 @@ STATIC_OPEN = (
     61,  # Blood
     64, 65, 66,  # Bones2-4
     67,  # Pots
-    70,  # Vines
 )
+
+LIGHTING_ITEMS = frozenset({26, 27, 37})
+LIGHTING_FAMILY_ITEMS = {
+    "floor-lamp": frozenset({26}),
+    "chandelier": frozenset({27}),
+    "ceiling-lamp": frozenset({37}),
+    "none": frozenset(),
+}
+SPEAR_CONCEPTS = frozenset({"armory", "training-room", "guardpost", "workshop"})
+VINE_SCREEN_CONCEPTS = frozenset({"courtyard", "crypt", "burial-chamber"})
 
 # Decoration themes keyed by room role+tier, derived from community-map
 # placement patterns: guard rooms get lamps and vases, storage closets get
@@ -241,7 +249,7 @@ _DECOR_OPEN: dict[str, tuple[int, ...]] = {
     "grand":     (27, 37),   # Chandelier dominant
     "war-room":  (37,),      # CeilingLight
     "trophy-hall": (27, 37), # Chandelier, CeilingLight
-    "courtyard": (37, 70),   # CeilingLight, Vines
+    "courtyard": (37,),      # CeilingLight; vines use complete screens only
     "barracks":  (46, 61),   # Basket, Blood (battle-worn)
     "ready-room": (46,),     # Basket
     "training-room": (37, 46),
@@ -542,6 +550,38 @@ class SpritePlacement:
     cells: tuple[tuple[int, int, int], ...]
 
 
+@dataclass(frozen=True, slots=True)
+class VineScreen:
+    """One complete, auditable vine pseudowall composition."""
+    kind: str
+    room_index: int
+    cells: tuple[tuple[int, int], ...]
+
+
+@dataclass(frozen=True, slots=True)
+class KeyObjective:
+    """A physical key staged as a measured exploration objective."""
+    color: str
+    cell: tuple[int, int]
+    host_room: int
+    stage: int
+    detour: int
+    treatment: str
+
+
+@dataclass(frozen=True, slots=True)
+class SecretDetail:
+    """Host and progression metadata for one bespoke secret pocket."""
+    shape: str
+    reward_count: int
+    host_room: int
+    depth_ratio: float
+    pushwall: tuple[int, int]
+    secret_exit: bool = False
+    hint_treatment: str = "single-landmark"
+    return_floor: int = 0
+
+
 @dataclass(slots=True)
 class FloorPlan:
     specs: list[RoomSpec]
@@ -553,6 +593,7 @@ class FloorPlan:
     size_groups: tuple[tuple[int, ...], ...] = ()
     skeleton: str = "bent-spine"
     district_circulation: tuple[str, ...] = ()
+    special_family: str = "standard"
 
 
 @dataclass(slots=True)
@@ -596,6 +637,17 @@ class GeneratedMap:
     district_circulation: tuple[str, ...] = ()
     layout_signature: tuple[str, ...] = ()
     pickup_placements: tuple[SpritePlacement, ...] = ()
+    room_shapes: tuple[str, ...] = ()
+    lighting_families: tuple[str, ...] = ()
+    vine_screens: tuple[VineScreen, ...] = ()
+    key_objectives: tuple[KeyObjective, ...] = ()
+    secret_details: tuple[SecretDetail, ...] = ()
+    special_family: str = "standard"
+    boss_arena_room: int = -1
+    preboss_room: int = -1
+    premium_room: int = -1
+    expedition_rooms: tuple[int, ...] = ()
+    secret_source: int = 0
 
 
 def _room_identities(rooms: list[Room], specs: list[RoomSpec], districts: list[int],
@@ -603,7 +655,9 @@ def _room_identities(rooms: list[Room], specs: list[RoomSpec], districts: list[i
                      jail_rooms: frozenset[int],
                      component_of: dict[tuple[int, int], int],
                      group_theme: dict[int, tuple[int, tuple[int, ...]]],
-                     exit_room: Room, boss_room: Room | None = None
+                     exit_room: Room, boss_room: Room | None = None,
+                     special_family: str = "standard",
+                     key_objectives: tuple[KeyObjective, ...] = ()
                      ) -> list[RoomIdentity]:
     """Resolve grammar forward into compatible room concepts.
 
@@ -618,6 +672,8 @@ def _room_identities(rooms: list[Room], specs: list[RoomSpec], districts: list[i
             theme = overrides.get(theme, theme)
         special = ("start" if index == 0 else "exit" if room == exit_room else
                    "boss" if boss_room is not None and room == boss_room else
+                   spec.role if spec.role in
+                   ("arrival", "staging", "victory", "premium-vault", "recovery") else
                    "jail" if index in jail_rooms else "")
         wall_base = group_theme[component_of[room.center]][0]
         resolved.append((theme, special, wall_base))
@@ -658,10 +714,52 @@ def _room_identities(rooms: list[Room], specs: list[RoomSpec], districts: list[i
         neighbors[second].add(first)
     concepts: list[str] = []
     counts: Counter[str] = Counter()
+    boss_arena_concepts = {
+        "throne-stronghold": "trophy-hall",
+        "command-bunker": "war-room",
+        "laboratory-gauntlet": "workshop",
+        "columned-fortress": "courtyard",
+        "central-duel": "war-room",
+    }
+    vault_palettes = {
+        "central-vault": ("supply-cache", "gallery", "armory"),
+        "museum-circuit": ("gallery", "trophy-hall", "war-room"),
+        "nested-reliquary": ("burial-chamber", "ossuary", "gallery"),
+        "abandoned-armory": ("armory", "supply-cache", "training-room"),
+        "treasure-palace": ("trophy-hall", "dining-hall", "gallery"),
+    }
+    physical_key_hosts = {objective.host_room for objective in key_objectives
+                          if objective.treatment != "boss-drop"}
     for index, ((theme, special, _), spec, district) in enumerate(
             zip(resolved, specs, districts)):
         if index == kitchen_index:
             concept = "mess-kitchen"
+        elif index in physical_key_hosts:
+            concept = ({"storage": "supply-cache", "grand": "war-room",
+                        "lounge": "officers-quarters",
+                        "barracks": "armory"}.get(theme, "checkpoint"))
+        elif spec.role == "boss-arena":
+            concept = boss_arena_concepts.get(special_family, "war-room")
+        elif spec.role == "staging":
+            concept = "ready-room"
+        elif spec.role == "victory":
+            concept = "trophy-hall"
+        elif spec.role == "arrival":
+            concept = "gallery"
+        elif spec.role == "premium-vault":
+            concept = vault_palettes.get(special_family,
+                                         ("gallery",))[0]
+        elif spec.role == "recovery":
+            concept = "lounge"
+        elif (special_family in vault_palettes and spec.role not in
+              ("start", "exit", "circulation") and spec.tier != "corridor"):
+            palette = vault_palettes[special_family]
+            ordered = palette[(index + district) % len(palette):] + palette[:
+                (index + district) % len(palette)]
+            concept = min(ordered, key=lambda candidate: (
+                sum(concepts[neighbor] == candidate
+                    for neighbor in neighbors[index] if neighbor < len(concepts)),
+                counts[candidate], ordered.index(candidate)))
         elif theme == "grand" and spec.role == "hub":
             concept = "courtyard"
         else:
@@ -715,6 +813,15 @@ def _plan_floor(rng: random.Random, complexity: int, number: int,
     skeleton = skeleton or rng.choice(CIRCULATION_SKELETONS)
     if skeleton not in CIRCULATION_SKELETONS:
         raise ValueError("unknown circulation skeleton")
+    special_family = "standard"
+    if number == 9:
+        special_family = rng.choice((
+            "throne-stronghold", "command-bunker", "laboratory-gauntlet",
+            "columned-fortress", "central-duel"))
+    elif number == 10:
+        special_family = rng.choice((
+            "central-vault", "museum-circuit", "nested-reliquary",
+            "abandoned-armory", "treasure-palace"))
     target = min(20, 14 + 2 * complexity)
     # Roughly 55% of authored rooms belong to the mandatory progression
     # spine. Optional motifs and side rooms still provide exploration, but
@@ -728,6 +835,15 @@ def _plan_floor(rng: random.Random, complexity: int, number: int,
                             for _ in range(beat_count)]
     tiers += ["anchor", rng.choice(("closet", "standard")), "standard"]
     roles = ["start"] + ["beat"] * beat_count + ["climax", "relief", "exit"]
+    if number == 9:
+        # The final four beats are an explicit dramatic sequence. The arena
+        # remains the unique anchor; the room before it is a readable pause,
+        # and the room after it is a victory transition to the elevator.
+        roles[-4:] = ["staging", "boss-arena", "victory", "exit"]
+        tiers[-4] = "standard"
+    elif number == 10:
+        roles[0] = "arrival"
+        roles[-3:] = ["premium-vault", "recovery", "exit"]
 
     # Convert selected spine beats into real narrow circulation spaces. The
     # floor skeleton controls their rhythm while later district modes decide
@@ -805,9 +921,27 @@ def _plan_floor(rng: random.Random, complexity: int, number: int,
     critical = set(range(spine_count))
     groups: list[tuple[int, ...]] = []
     budget = min(3, 1 + (complexity >= 3) + (rng.random() < variant.extra_motif_chance))
+    if number == 10:
+        budget = max(2, budget)
     motifs = ["ring"]
     remaining = ["hub", "wings", "gallery"]
     rng.shuffle(remaining)
+    family_preferences = {
+        "throne-stronghold": ("hub", "wings"),
+        "command-bunker": ("wings", "hub"),
+        "laboratory-gauntlet": ("gallery", "wings"),
+        "columned-fortress": ("hub", "gallery"),
+        "central-duel": ("wings", "gallery"),
+        "central-vault": ("hub", "wings"),
+        "museum-circuit": ("gallery", "hub"),
+        "nested-reliquary": ("gallery", "wings"),
+        "abandoned-armory": ("wings", "gallery"),
+        "treasure-palace": ("hub", "gallery"),
+    }.get(special_family, ())
+    for preferred in reversed(family_preferences):
+        if preferred in remaining:
+            remaining.remove(preferred)
+            remaining.insert(0, preferred)
     for preferred in reversed(variant.motif_pref):
         if preferred in remaining:
             remaining.remove(preferred)
@@ -832,11 +966,18 @@ def _plan_floor(rng: random.Random, complexity: int, number: int,
 
     middle_beats = list(range(1, 1 + beat_count))
     if "hub" in motifs:
-        hub = rng.choice([index for index in middle_beats
-                          if specs[index].tier != "corridor"])
-        specs[hub] = RoomSpec("hub", "anchor", districts[hub], "hub")
-        climax = roles.index("climax")
-        specs[climax] = RoomSpec("climax", "standard", districts[climax])
+        if number in (9, 10):
+            # Special floors own a fixed dramatic anchor on the mandatory
+            # route. A hub family grows optional wings from that anchor
+            # without moving the boss arena or premium vault earlier.
+            hub = next(index for index, spec in enumerate(specs)
+                       if spec.tier == "anchor")
+        else:
+            hub = rng.choice([index for index in middle_beats
+                              if specs[index].tier != "corridor"])
+            specs[hub] = RoomSpec("hub", "anchor", districts[hub], "hub")
+            climax = roles.index("climax")
+            specs[climax] = RoomSpec("climax", "standard", districts[climax])
         for role in ["branch", "branch"] + ["closet"] * rng.randrange(1, 3):
             node = len(specs)
             specs.append(RoomSpec(role, "closet" if role == "closet" else "standard",
@@ -887,7 +1028,7 @@ def _plan_floor(rng: random.Random, complexity: int, number: int,
     if sum(spec.tier == "anchor" for spec in specs) != 1:
         raise ValueError("floor plan must have exactly one anchor")
     return FloorPlan(specs, edges, loops, tuple(motifs), frozenset(critical), tuple(groups),
-                     skeleton, tuple(district_circulation))
+                     skeleton, tuple(district_circulation), special_family)
 
 
 def _room_size(rng: random.Random, tier: str, number: int = 0) -> tuple[int, int]:
@@ -1078,11 +1219,13 @@ def _place_planned_rooms(rng: random.Random, plan: FloorPlan, number: int = 0) -
 
 
 def _carve_notches(tiles: list[int], rooms: list[Room], rng: random.Random,
-                   chance: float = 0.22
+                   chance: float = 0.22, max_rooms: int | None = None
                    ) -> dict[int, tuple[tuple[int, int], ...]]:
     """Carve only mirrored corner compositions and return decor anchors."""
     anchors: dict[int, tuple[tuple[int, int], ...]] = {}
     for room_index, room in enumerate(rooms):
+        if max_rooms is not None and len(anchors) >= max_rooms:
+            break
         if room.w < 6 or room.h < 6 or rng.random() >= chance:
             continue
         corners = [(False, False), (True, False), (False, True), (True, True)]
@@ -1114,6 +1257,94 @@ def _carve_notches(tiles: list[int], rooms: list[Room], rng: random.Random,
                                 else (edge_x, side_y))
         anchors[room_index] = tuple(room_anchors)
     return anchors
+
+
+def _carve_symmetric_profiles(
+        tiles: list[int], rooms: list[Room], rng: random.Random,
+        chance: float = 0.24, max_rooms: int = 0,
+        excluded: frozenset[int] = frozenset()
+        ) -> tuple[dict[int, tuple[tuple[int, int], ...]], dict[int, str]]:
+    """Carve a restrained set of non-rectangular, reflection-symmetric rooms.
+
+    These are interior subtractions from an already legal bounding rectangle,
+    so they cannot collide with another planned room. Connections are carved
+    later and may reopen a shoulder where a doorway genuinely needs it.
+    """
+    anchors: dict[int, tuple[tuple[int, int], ...]] = {}
+    shapes: dict[int, str] = {}
+    family_counts: Counter[str] = Counter()
+    family_cap = max(1, math.ceil(max_rooms / 2)) if max_rooms else 0
+
+    for room_index, room in enumerate(rooms):
+        if len(shapes) >= max_rooms:
+            break
+        if (room_index in excluded or room.w < 8 or room.h < 8
+                or rng.random() >= chance):
+            continue
+        cx, cy = room.center
+        candidates: list[tuple[str, set[tuple[int, int]], tuple[tuple[int, int], ...]]] = []
+
+        # Four stepped corners form a broad cruciform/chamfered chamber.
+        corner_cells: set[tuple[int, int]] = set()
+        corner_anchors: list[tuple[int, int]] = []
+        for right, bottom in ((False, False), (True, False),
+                              (False, True), (True, True)):
+            ox = room.x + room.w - 1 if right else room.x
+            oy = room.y + room.h - 1 if bottom else room.y
+            sx = -1 if right else 1
+            sy = -1 if bottom else 1
+            corner_cells.update({(ox, oy), (ox + sx, oy), (ox, oy + sy)})
+            corner_anchors.append((ox + 2 * sx, oy + 2 * sy))
+        candidates.append(("stepped-cross", corner_cells, tuple(corner_anchors)))
+
+        # Matching mid-wall shoulders create an hourglass/paired-bay plan.
+        if room.w >= 10:
+            band = (range(cy - 1, cy + 2) if room.h % 2 else
+                    range(room.y + room.h // 2 - 1,
+                          room.y + room.h // 2 + 1))
+            band = tuple(band)
+            cells = ({(room.x + depth, y) for depth in (0, 1) for y in band}
+                     | {(room.x + room.w - 1 - depth, y)
+                        for depth in (0, 1) for y in band})
+            candidates.append(("paired-side-bays", cells,
+                               tuple((x, y) for y in band
+                                     for x in (room.x + 2,
+                                               room.x + room.w - 3))))
+        if room.h >= 10:
+            band = (range(cx - 1, cx + 2) if room.w % 2 else
+                    range(room.x + room.w // 2 - 1,
+                          room.x + room.w // 2 + 1))
+            band = tuple(band)
+            cells = ({(x, room.y + depth) for depth in (0, 1) for x in band}
+                     | {(x, room.y + room.h - 1 - depth)
+                        for depth in (0, 1) for x in band})
+            candidates.append(("paired-end-bays", cells,
+                               tuple((x, y) for x in band
+                                     for y in (room.y + 2,
+                                               room.y + room.h - 3))))
+
+        rng.shuffle(candidates)
+        for family, walls, room_anchors in candidates:
+            if family_counts[family] >= family_cap:
+                continue
+            if (not all(_is_floor(_at(tiles, *cell)) for cell in walls)
+                    or not all(_is_floor(_at(tiles, *cell))
+                               and cell not in walls for cell in room_anchors)):
+                continue
+            # Keep a broad central cross open; profiles are silhouettes, not
+            # accidental one-tile choke generators.
+            central = ({(x, cy) for x in range(room.x + 2, room.x + room.w - 2)}
+                       | {(cx, y) for y in range(room.y + 2,
+                                                room.y + room.h - 2)})
+            if walls & central:
+                continue
+            for cell in walls:
+                _set(tiles, *cell, WALL)
+            anchors[room_index] = room_anchors
+            shapes[room_index] = family
+            family_counts[family] += 1
+            break
+    return anchors, shapes
 
 
 def _add_pillars(tiles: list[int], room: Room, rng: random.Random,
@@ -1573,29 +1804,82 @@ def _key_spot_in_region(tiles: list[int], things: list[int], rooms: list[Room],
                         excluded: set[tuple[int, int]], start: tuple[int, int],
                         lock_cells: set[tuple[int, int]],
                         occupied: set[tuple[int, int]] = frozenset()
-                        ) -> tuple[int, int] | None:
-    """Choose a deliberate key location inside one progression stage."""
+                        ) -> tuple[tuple[int, int], int, int, str] | None:
+    """Choose an off-route key objective inside one progression stage.
+
+    The returned detour is the extra walk over the shortest start-to-lock
+    approach. A zero-detour cell lies directly on progression and is never an
+    acceptable key objective.
+    """
     lock_sides = {(x + dx, y + dy) for x, y in lock_cells
                   for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1))}
-    candidates: list[tuple[tuple[int, int], str]] = []
-    for room, role in zip(rooms, roles):
-        cells = [room.center]
-        cells += [(x, y) for y in range(room.y + 1, room.y + room.h - 1)
-                  for x in range(room.x + 1, room.x + room.w - 1)]
-        spot = next((cell for cell in cells
-                     if cell in allowed and cell not in excluded
-                     and cell not in occupied and cell != start
-                     and _at(things, *cell) == 0), None)
-        if spot is None:
+
+    def distances(sources: set[tuple[int, int]]) -> dict[tuple[int, int], int]:
+        result = {source: 0 for source in sources if source in allowed}
+        queue = deque(result)
+        while queue:
+            x, y = queue.popleft()
+            for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                cell = x + dx, y + dy
+                if cell in allowed and cell not in result:
+                    result[cell] = result[(x, y)] + 1
+                    queue.append(cell)
+        return result
+
+    targets = lock_sides & allowed
+    from_start = distances({start})
+    to_lock = distances(targets)
+    direct = min((from_start[cell] for cell in targets if cell in from_start),
+                 default=0)
+    minimum_detour = max(2, min(8, direct // 6))
+    ranked: list[tuple[tuple[int, int, int, int, int, int],
+                       tuple[int, int], int, int, str]] = []
+    exploratory_roles = {"branch", "ring", "relief", "closet", "staging",
+                         "recovery"}
+
+    for room_index, (room, role) in enumerate(zip(rooms, roles)):
+        # Evaluate the experienced door-bounded room once, not for every cell.
+        probe = next((cell for y in range(room.y, room.y + room.h)
+                      for x in range(room.x, room.x + room.w)
+                      for cell in ((x, y),) if cell in allowed), None)
+        if probe is None or lock_sides & _door_zone(tiles, probe):
             continue
-        if lock_sides & _door_zone(tiles, spot):
-            continue
-        candidates.append((spot, role))
-    candidates.sort(key=lambda item: (
-        item[1] in ("branch", "relief"),
-        abs(item[0][0] - start[0]) + abs(item[0][1] - start[1])),
-        reverse=True)
-    return candidates[0][0] if candidates else None
+        anchors = _room_anchors(room, tiles)
+        entries = [cell for cell, _ in anchors.door_entries]
+        cells = [(x, y) for y in range(room.y, room.y + room.h)
+                 for x in range(room.x, room.x + room.w)
+                 if (x, y) in allowed and (x, y) not in excluded
+                 and (x, y) not in occupied and (x, y) != start
+                 and _at(things, x, y) == 0]
+        for cell in cells:
+            if cell not in from_start or cell not in to_lock:
+                continue
+            detour = from_start[cell] + to_lock[cell] - direct
+            if detour < minimum_detour:
+                continue
+            x, y = cell
+            perimeter = (x in (room.x, room.x + room.w - 1)
+                         or y in (room.y, room.y + room.h - 1))
+            doorway_depth = min((abs(x - ex) + abs(y - ey)
+                                 for ex, ey in entries), default=4)
+            # A straight unobstructed row/column from a doorway makes the key
+            # immediately visible. This remains a preference, not concealment
+            # behind solid clutter.
+            visible = any((ex == x and all(_is_floor(_at(tiles, x, scan))
+                                           for scan in range(min(ey, y), max(ey, y) + 1)))
+                          or (ey == y and all(_is_floor(_at(tiles, scan, y))
+                                             for scan in range(min(ex, x), max(ex, x) + 1)))
+                          for ex, ey in entries)
+            treatment = ("back-wall-display" if perimeter and doorway_depth >= 3
+                         else "side-display" if perimeter else "room-cache")
+            score = (role in exploratory_roles, detour, doorway_depth,
+                     perimeter, not visible,
+                     abs(x - room.center[0]) + abs(y - room.center[1]))
+            ranked.append((score, cell, room_index, detour, treatment))
+    if not ranked:
+        return None
+    _, cell, room_index, detour, treatment = max(ranked, key=lambda item: item[0])
+    return cell, room_index, detour, treatment
 
 
 def _place_doors(tiles: list[int], things: list[int], rooms: list[Room],
@@ -1603,7 +1887,8 @@ def _place_doors(tiles: list[int], things: list[int], rooms: list[Room],
                  rng: random.Random, start: tuple[int, int],
                  gate_target: tuple[int, int], roles: list[str],
                  reserved: set[tuple[int, int]], gate_plan: GatePlan,
-                 critical_route: list[int]) -> tuple[int, tuple[str, ...]]:
+                 critical_route: list[int]
+                 ) -> tuple[int, tuple[str, ...], tuple[KeyObjective, ...]]:
     records = [(edge, candidate) for edge, path in zip(edges, paths)
                if (candidate := _door_candidate(tiles, rooms, path))
                and candidate[:2] not in reserved]
@@ -1621,7 +1906,7 @@ def _place_doors(tiles: list[int], things: list[int], rooms: list[Room],
     for x, y, code in placed:
         _set(tiles, x, y, code)
     if not gate_plan.colors:
-        return 0, ()
+        return 0, (), ()
 
     # Secrets are carved before doors, so gating must also hold with every
     # pushwall already pushed: otherwise a secret pocket can quietly open a
@@ -1636,7 +1921,7 @@ def _place_doors(tiles: list[int], things: list[int], rooms: list[Room],
         if endpoints in route_edges:
             route_records.append((route_edges.index(endpoints) + 1, candidate))
     if not route_records:
-        return 0, ()
+        return 0, (), ()
 
     def reachable(open_colors: set[str]) -> set[tuple[int, int]]:
         return _reachable(tiles, start, locked_open=False,
@@ -1648,12 +1933,17 @@ def _place_doors(tiles: list[int], things: list[int], rooms: list[Room],
             _set(tiles, x, y, normal)
 
     def commit(trial: list[tuple[int, tuple[int, int, int], str]],
-               key_spots: list[tuple[int, int]]) -> tuple[int, tuple[str, ...]]:
+               key_spots: list[tuple[tuple[int, int], int, int, str]]
+               ) -> tuple[int, tuple[str, ...], tuple[KeyObjective, ...]]:
         colors = tuple(color for _, _, color in trial)
-        for color, spot in zip(colors, key_spots):
+        objectives = []
+        for stage, (color, key) in enumerate(zip(colors, key_spots), 1):
+            spot, host_room, detour, treatment = key
             _set(things, *spot, GOLD_KEY if color == "gold" else SILVER_KEY)
             reserved.add(spot)
-        return len(trial), colors
+            objectives.append(KeyObjective(color, spot, host_room, stage,
+                                           detour, treatment))
+        return len(trial), colors, tuple(objectives)
 
     if len(gate_plan.colors) >= 2:
         first_color, second_color = gate_plan.colors[:2]
@@ -1671,12 +1961,13 @@ def _place_doors(tiles: list[int], things: list[int], rooms: list[Room],
             only_first = reachable({first_color})
             only_second = reachable({second_color})
             both = reachable({first_color, second_color})
-            lock_cells = {(candidate[0], candidate[1]) for _, candidate, _ in trial}
             first_key = _key_spot_in_region(
-                tiles, things, rooms, roles, closed, set(), start, lock_cells)
+                tiles, things, rooms, roles, closed, set(), start,
+                {(first[1][0], first[1][1])})
             second_key = (_key_spot_in_region(
-                tiles, things, rooms, roles, only_first, closed, start, lock_cells,
-                {first_key} if first_key else frozenset()) if first_key else None)
+                tiles, things, rooms, roles, only_first, closed, start,
+                {(second[1][0], second[1][1])},
+                {first_key[0]} if first_key else frozenset()) if first_key else None)
             if (first_key and second_key and gate_target not in closed
                     and gate_target not in only_first and gate_target not in only_second
                     and gate_target in both):
@@ -1698,7 +1989,7 @@ def _place_doors(tiles: list[int], things: list[int], rooms: list[Room],
             if key and gate_target not in closed and gate_target in opened:
                 return commit([(progress, candidate, color)], [key])
             _set(tiles, x, y, normal)
-    return 0, ()
+    return 0, (), ()
 
 
 def _door_zone(tiles: list[int], cell: tuple[int, int]) -> set[tuple[int, int]]:
@@ -2376,13 +2667,16 @@ def _apply_wall_theme(tiles: list[int], things: list[int], rooms: list[Room],
 def _hint_secrets(tiles: list[int], things: list[int],
                   component_of: dict[tuple[int, int], int],
                   group_theme: dict[int, tuple[int, tuple[int, ...]]],
-                  rng: random.Random) -> None:
+                  rng: random.Random,
+                  special_pushwall: tuple[int, int] | None = None
+                  ) -> dict[tuple[int, int], str]:
     """Hang a landmark decor tile (banner, portrait, insignia) on every
     pushwall, the way the original episodes telegraph most of theirs. Runs
     after _apply_wall_theme so the theme can't repaint the hint, and prefers
     the floor theme's own decor accents so the hint matches the material.
     Falls back to a same-base sibling theme's accents rather than a hardcoded
     cross-family constant, so a hint tile can never mix material families."""
+    treatments: dict[tuple[int, int], str] = {}
     for index, thing in enumerate(things):
         if thing != PUSHWALL:
             continue
@@ -2399,7 +2693,21 @@ def _hint_secrets(tiles: list[int], things: list[int],
                           if other_base == base
                           for accent in other_accents if accent in DECOR_WALLS)
         if hints:
-            tiles[index] = rng.choice(hints)
+            hint = rng.choice(hints)
+            tiles[index] = hint
+            treatments[(x, y)] = "single-landmark"
+            if (x, y) == special_pushwall:
+                # A matching pair around the center hint gives the route to
+                # floor 10 a coherent landmark without borrowing another
+                # material family or spelling out "secret elevator".
+                for offset in (1, 2):
+                    pair = ((x, y - offset), (x, y + offset))
+                    if all(_at(tiles, *cell) == base for cell in pair):
+                        for cell in pair:
+                            _set(tiles, *cell, hint)
+                        treatments[(x, y)] = "symmetric-landmark"
+                        break
+    return treatments
 
 
 def _rooms_by_distance(rooms: list[Room], edges: list[tuple[int, int]]) -> list[int]:
@@ -2601,20 +2909,34 @@ def _carve_secret_pocket(tiles: list[int], things: list[int], px: int, py: int,
 
     inner_wall = {(px + 4, py - 1), (px + 4, py), (px + 4, py + 1)} if variant == "nested" else set()
     entry = (px, py)
+    east = max(x for x, _ in cells)
+    elevator_rows = sorted(
+        (y for x, y in cells if x == east
+         and (east - 1, y) in cells and (east - 2, y) in cells),
+        key=lambda y: (abs(y - py), y))
+    if secret_exit and not elevator_rows:
+        return None
+    elevator_y = elevator_rows[0] if elevator_rows else py
     shell = {neighbor for x, y in cells
              for neighbor in ((x + 1, y), (x - 1, y), (x, y + 1), (x, y - 1))
              if neighbor not in cells}
     shell.discard(entry)
     shell |= inner_wall
-    footprint = cells | shell | {entry}
+    # A secret elevator is a real enclosed car, not a switch texture pasted
+    # onto the pocket's back wall. Reserve the same five-deep, five-wide rock
+    # envelope as a normal elevator before carving anything: door at depth 0,
+    # two floor cells, tile-21 side rails/back wall, and untouched outer rock.
+    elevator_door = (east + 1, elevator_y)
+    elevator_footprint = (
+        {(elevator_door[0] + depth, elevator_y + side)
+         for depth in range(5) for side in (-2, -1, 0, 1, 2)}
+        if secret_exit else set())
+    footprint = cells | shell | {entry} | elevator_footprint
     if any(not (1 <= x < GRID - 1 and 1 <= y < GRID - 1)
            or _at(tiles, x, y) != WALL or _at(things, x, y) != 0
            for x, y in footprint):
         return None
 
-    east = max(x for x, _ in cells)
-    if secret_exit and any(_at(tiles, east + 1, py + dy) != WALL for dy in (-1, 0, 1)):
-        return None
     for cell in cells:
         _set(tiles, *cell, FLOOR)
     if variant == "nested":
@@ -2627,7 +2949,11 @@ def _carve_secret_pocket(tiles: list[int], things: list[int], px: int, py: int,
                          and (variant != "nested" or cell[0] != px + 4)),
                         key=lambda cell: (-cell[0], abs(cell[1] - py), cell[1]))
     if secret_exit:
-        candidates = [cell for cell in candidates if cell != (east, py)]
+        # Preserve a clear, legible approach from the reward chamber to the
+        # elevator door instead of piling loot in front of it.
+        candidates = [cell for cell in candidates
+                      if cell not in {(east, elevator_y),
+                                      (east - 1, elevator_y)}]
     reward_count = 7 if number == 9 else 3
     if len(candidates) < reward_count:
         return None
@@ -2644,6 +2970,18 @@ def _carve_secret_pocket(tiles: list[int], things: list[int], px: int, py: int,
                    else _secret_reward(rng, depth, premium=True,
                                        quality=reward_quality, allow_one_up=False))
         rewards = [AMMO, AMMO, AMMO, AMMO, weapon, FIRST_AID, premium]
+    elif secret_exit:
+        # The special elevator pocket is a discovery sequence: a premium
+        # focal reward at the deepest readable point, useful recovery near
+        # it, and one high-value treasure accent. It is not an ordinary
+        # cupboard whose switch happened to fit.
+        rewards = [
+            _secret_reward(rng, max(0.7, depth), premium=True,
+                           quality=reward_quality,
+                           allow_one_up=ONE_UP not in things),
+            FIRST_AID if reward_quality >= 3 else AMMO,
+            rng.choice(TREASURE[2:]),
+        ]
     else:
         treasure_weights = (max(0.2, 2.5 - depth * reward_quality),
                             1.5, 0.5 + depth * reward_quality,
@@ -2660,16 +2998,19 @@ def _carve_secret_pocket(tiles: list[int], things: list[int], px: int, py: int,
         _set(things, *cell, item)
 
     if secret_exit:
-        _set(tiles, east + 1, py - 1, ELEVATOR_TILE)
-        _set(tiles, east + 1, py, ELEVATOR_TILE)
-        _set(tiles, east + 1, py + 1, ELEVATOR_TILE)
-        _set(tiles, east, py, SECRET_EXIT_ZONE)
+        wx, wy = elevator_door
+        for depth in (1, 2):
+            _set(tiles, wx + depth, wy, FLOOR)
+        for depth in (1, 2, 3):
+            for side in (-1, 1):
+                _set(tiles, wx + depth, wy + side, ELEVATOR_TILE)
+        _set(tiles, wx + 3, wy, ELEVATOR_TILE)
+        _set(tiles, wx, wy, DOOR_ELEVATOR)
+        _set(tiles, wx + 2, wy, SECRET_EXIT_ZONE)
     _set(things, *entry, PUSHWALL)
     if protected is not None:
         protected.update(footprint)
         protected.update(reward_cells)
-        if secret_exit:
-            protected.update({(east + 1, py + dy) for dy in (-1, 0, 1)})
     return reward_cells[0]
 
 
@@ -2867,9 +3208,13 @@ def _place_population(config: CampaignConfig, number: int, rooms: list[Room],
                       rng: random.Random, start: tuple[int, int],
                       exit_room: Room, *, patrol_chance: float = 0.35,
                       placements: list[SpritePlacement] | None = None,
-                      actor_clearance: set[tuple[int, int]] | None = None
+                      actor_clearance: set[tuple[int, int]] | None = None,
+                      progression_number: int | None = None,
+                      calm_rooms: frozenset[int] = frozenset(),
+                      boss_room: Room | None = None,
+                      optional_rooms: frozenset[int] = frozenset()
                       ) -> tuple[int, int, int]:
-    progression = (number - 1) / 8
+    progression = min(1.0, ((progression_number or number) - 1) / 8)
     per_room = max(1, round(config.guard_density * .7 + progression * 2))
     toughness = int(config.enemy_toughness)
     unlocked = ENEMY_FAMILIES[:max(1, min(len(ENEMY_FAMILIES), toughness))]
@@ -3027,6 +3372,12 @@ def _place_population(config: CampaignConfig, number: int, rooms: list[Room],
     for ridx, room in enumerate(rooms[1:], 1):
         depth = depth_of(room)
         budget = max(0, round(per_room * (0.4 if room == exit_room else pacing(depth))))
+        if ridx in calm_rooms:
+            budget = 0
+        elif room == boss_room:
+            # Arena support is a deliberate seeded choice: many fights are
+            # pure duels; the remainder receive at most two ordinary guards.
+            budget = 0 if rng.random() < 0.55 else min(2, budget)
         patrol = patrol_loop(room)
         patrol_count = 0
         if (budget and patrol is not None and rng.random() < patrol_chance):
@@ -3067,7 +3418,10 @@ def _place_population(config: CampaignConfig, number: int, rooms: list[Room],
             cursor += extra
     novelty = FAKE_HITLER if number == 9 else rng.choice(GHOSTS) if number == 10 else None
     if novelty is not None and rng.random() < 0.1:
-        candidates = [(x, y) for room in rooms for y in range(room.y + 1, room.y + room.h - 1)
+        novelty_rooms = ([rooms[index] for index in sorted(optional_rooms)]
+                         if optional_rooms else rooms)
+        candidates = [(x, y) for room in novelty_rooms
+                      for y in range(room.y + 1, room.y + room.h - 1)
                       for x in range(room.x + 1, room.x + room.w - 1)
                       if (x, y) not in reserved and _at(things, x, y) == 0
                       and _is_floor(_at(tiles, x, y))
@@ -3432,7 +3786,10 @@ def _place_authored_pickups(config: CampaignConfig, number: int, rooms: list[Roo
                             start: tuple[int, int], identities: list[RoomIdentity],
                             critical_route: list[int], edges: list[tuple[int, int]],
                             placements: list[SpritePlacement],
-                            preboss_index: int | None = None) -> None:
+                            preboss_index: int | None = None,
+                            premium_index: int | None = None,
+                            expedition_candidates: tuple[int, ...] = (),
+                            expedition_rooms_out: list[int] | None = None) -> None:
     """Allocate gameplay needs, then realize each as an authored vignette."""
     grammar = _PlacementGrammar(rooms, tiles, things, reserved, identities, rng,
                                 placements)
@@ -3485,6 +3842,57 @@ def _place_authored_pickups(config: CampaignConfig, number: int, rooms: list[Roo
         if not place_group(tuple(loot), "preboss-stockup", [preboss_index],
                            ("wall-cache", "corner-cache", "center-dais")):
             raise ValueError("pre-boss room cannot fit an authored stock-up cache")
+
+    if number == 10 and premium_index is not None:
+        premium_pool = [CHAINGUN, TREASURE[3]]
+        if ONE_UP not in things:
+            premium_pool.append(ONE_UP)
+        premium = rng.choice(premium_pool)
+        if not place_group((premium,), "floor-ten-premium", [premium_index],
+                           ("center-dais", "treasure-display")):
+            raise ValueError("floor 10 premium chamber cannot stage its focal reward")
+        if expedition_rooms_out is not None:
+            expedition_rooms_out.append(placements[-1].room_index)
+
+        # Two to four open expeditions each tell a different supply story.
+        # The family and identities select the rooms; the pickup grammar owns
+        # exact geometry, preserving variation without free scatter.
+        ordered_candidates = list(dict.fromkeys(expedition_candidates))
+        rng.shuffle(ordered_candidates)
+        ordered_candidates.sort(key=lambda index: (
+            vignette_counts[index], identities[index].concept,
+            -depths[index], index))
+        selected: list[int] = []
+        seen_concepts: set[str] = set()
+        for index in ordered_candidates:
+            concept = identities[index].concept
+            if concept in seen_concepts and len(ordered_candidates) > 2:
+                continue
+            selected.append(index)
+            seen_concepts.add(concept)
+            if len(selected) == min(4, max(2, len(ordered_candidates) // 2)):
+                break
+        realized = 0
+        for index in selected:
+            concept = identities[index].concept
+            if concept in ("armory", "training-room", "workshop"):
+                items = (MACHINE_GUN, AMMO)
+                templates = ("wall-cache", "corner-cache")
+            elif concept in ("lounge", "dining-hall", "officers-quarters"):
+                items = (FIRST_AID, FOOD)
+                templates = ("recovery-station", "wall-cache")
+            elif concept in ("supply-cache", "storage"):
+                items = (AMMO, AMMO)
+                templates = ("corner-cache", "wall-cache")
+            else:
+                items = (rng.choice(TREASURE[1:]), rng.choice(TREASURE[2:]))
+                templates = ("treasure-display", "center-dais")
+            if place_group(items, "floor-ten-expedition", [index], templates):
+                realized += 1
+                if expedition_rooms_out is not None:
+                    expedition_rooms_out.append(placements[-1].room_index)
+        if realized < 2:
+            raise ValueError("floor 10 lacks two realized reward expeditions")
 
     # Guarantee one early recovery beat through the same grammar. Existing
     # secret health does not count because closed pushwalls are not in this
@@ -3613,7 +4021,7 @@ def _place_zoned(room: Room,
     cluster_budgets = ((blocking_budget + 1) // 2, blocking_budget // 2)
 
     for (blocking, _), corners, budget in zip(zones, corner_zones, cluster_budgets):
-        if not budget:
+        if not budget or not blocking:
             continue
         item = rng.choice(blocking)
         rng.shuffle(corners)
@@ -3655,6 +4063,46 @@ def _place_zoned(room: Room,
                 free.discard(cell)
 
 
+_LIGHTING_OPTIONS: dict[str, tuple[tuple[str, float], ...]] = {
+    "war-room": (("chandelier", 3.0), ("ceiling-lamp", 2.0), ("none", 0.5)),
+    "trophy-hall": (("chandelier", 4.0), ("ceiling-lamp", 1.0), ("none", 0.5)),
+    "gallery": (("chandelier", 3.0), ("ceiling-lamp", 1.0), ("none", 0.5)),
+    "dining-hall": (("chandelier", 5.0), ("none", 0.5)),
+    "officers-quarters": (("chandelier", 2.0), ("floor-lamp", 2.0), ("none", 0.5)),
+    "lounge": (("chandelier", 2.0), ("floor-lamp", 3.0), ("none", 0.5)),
+    "guardpost": (("floor-lamp", 3.0), ("ceiling-lamp", 2.0), ("none", 0.5)),
+    "checkpoint": (("ceiling-lamp", 4.0), ("floor-lamp", 1.0), ("none", 0.5)),
+    "armory": (("ceiling-lamp", 4.0), ("none", 1.0)),
+    "training-room": (("ceiling-lamp", 4.0), ("none", 1.0)),
+    "ready-room": (("ceiling-lamp", 2.0), ("floor-lamp", 1.0), ("none", 1.0)),
+    "workshop": (("ceiling-lamp", 4.0), ("none", 1.0)),
+    "mess-kitchen": (("ceiling-lamp", 5.0), ("none", 0.5)),
+    "corridor": (("ceiling-lamp", 4.0), ("floor-lamp", 1.0), ("none", 1.0)),
+    "interrogation-room": (("floor-lamp", 3.0), ("ceiling-lamp", 1.0), ("none", 1.0)),
+    "courtyard": (("ceiling-lamp", 2.0), ("none", 2.0)),
+    "grand": (("chandelier", 3.0), ("ceiling-lamp", 1.0), ("none", 0.5)),
+}
+
+
+def _lighting_family(concept: str, room: Room, rng: random.Random,
+                     counts: Counter[str]) -> str:
+    """Resolve one coherent fixture language for an authored room."""
+    options = list(_LIGHTING_OPTIONS.get(concept, (("none", 1.0),)))
+    if room.w < 6 or room.h < 6:
+        options = [(family, weight) for family, weight in options
+                   if family not in ("chandelier", "floor-lamp")]
+        if not options:
+            return "none"
+    families = [family for family, _ in options]
+    # Repetition is legal when the identity calls for it, but a floor-wide
+    # monoculture receives a soft penalty rather than a deterministic cycle.
+    weights = [weight / (1.0 + 0.35 * counts[family])
+               for family, weight in options]
+    chosen = rng.choices(families, weights=weights, k=1)[0]
+    counts[chosen] += 1
+    return chosen
+
+
 def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
                        reserved: set[tuple[int, int]], start: tuple[int, int],
                        rng: random.Random,
@@ -3670,7 +4118,7 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
                        landmark_frame_chance: float = 0.15,
                        notch_anchors: dict[int, tuple[tuple[int, int], ...]] | None = None,
                        traversal_pair_chance: float | None = None
-                       ) -> None:
+                       ) -> tuple[tuple[str, ...], tuple[VineScreen, ...]]:
     """Place purposeful, themed furniture in rooms following community-map patterns.
 
     Blocking statics go in deliberate arrangements (landmark-wall frames,
@@ -3694,6 +4142,9 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
     # headroom remains instead of racing the 400 hard limit.
     static_headroom = 320 - sum(1 for thing in things if 23 <= thing <= 74)
     doorway_frames_placed = 0
+    lighting_counts: Counter[str] = Counter()
+    lighting_families = ["none"] * len(rooms)
+    vine_screens: list[VineScreen] = []
 
     for ridx, room in enumerate(rooms):
         role = _roles[ridx] if ridx < len(_roles) else "beat"
@@ -3710,6 +4161,9 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
             theme = overrides.get(theme, theme)
             concept = theme
 
+        lighting = _lighting_family(concept, room, rng, lighting_counts)
+        lighting_families[ridx] = lighting
+
         if room.w < 5 or room.h < 5:
             continue
 
@@ -3717,6 +4171,17 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
                                        _DECOR_BLOCKING.get(theme, STATIC_BLOCKING))
         open_items = _DECOR_OPEN.get(concept,
                                      _DECOR_OPEN.get(theme, STATIC_OPEN))
+        allowed_lights = LIGHTING_FAMILY_ITEMS[lighting]
+        blocking = tuple(item for item in blocking
+                         if item not in LIGHTING_ITEMS or item in allowed_lights)
+        open_items = tuple(item for item in open_items
+                           if item not in LIGHTING_ITEMS or item in allowed_lights)
+        if lighting == "floor-lamp" and 26 not in blocking:
+            blocking += (26,)
+        elif lighting == "chandelier" and 27 not in open_items:
+            open_items += (27,)
+        elif lighting == "ceiling-lamp" and 37 not in open_items:
+            open_items += (37,)
         if atmosphere <= 1:
             blocking = tuple(item for item in blocking if item not in (28, 41))
             open_items = tuple(item for item in open_items
@@ -3780,8 +4245,12 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
             if not all((c in free or c in edge_free) and c not in keep_clear
                        for c in cells):
                 return False
-            # SuitOfArmor is a wall display, never freestanding furniture.
-            if any(item == 39 and not _wall_backed(cell)
+            if any(item in LIGHTING_ITEMS and item not in allowed_lights
+                   for _, item in pieces):
+                return False
+            # Suits of armor and spear racks are wall displays, never
+            # freestanding furniture.
+            if any(item in (39, 69) and not _wall_backed(cell)
                    for cell, item in pieces):
                 return False
             candidate = blocked_cells | set(cells)
@@ -3803,6 +4272,8 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
         def _place_open(cell: tuple[int, int], item: int) -> bool:
             """Commit one non-solid item; only occupancy and headroom apply."""
             nonlocal static_headroom
+            if item in LIGHTING_ITEMS and item not in allowed_lights:
+                return False
             if static_headroom <= 0 or _at(things, *cell) != 0:
                 return False
             _set(things, *cell, item)
@@ -3811,6 +4282,40 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
             edge_free.discard(cell)
             static_headroom -= 1
             return True
+
+        # Vines are complete architectural screens, never loose foliage. A
+        # room screen spans from one bounding wall to the opposite wall and
+        # crosses the dominant travel axis. Placement is atomic.
+        if (concept in VINE_SCREEN_CONCEPTS and room.w >= 9 and room.h >= 8
+                and rng.random() < 0.24):
+            if traversal.axis[0]:
+                offsets = (room.x + room.w // 3,
+                           room.x + (2 * room.w) // 3)
+                screen_candidates = [tuple((x, y)
+                                           for y in range(room.y, room.y + room.h))
+                                     for x in offsets]
+            else:
+                offsets = (room.y + room.h // 3,
+                           room.y + (2 * room.h) // 3)
+                screen_candidates = [tuple((x, y)
+                                           for x in range(room.x, room.x + room.w))
+                                     for y in offsets]
+            rng.shuffle(screen_candidates)
+            for cells in screen_candidates:
+                if (static_headroom < len(cells)
+                        or any(not _is_floor(_at(tiles, *cell))
+                               or _at(things, *cell) != 0
+                               or cell in reserved or cell in keep_clear
+                               for cell in cells)):
+                    continue
+                for cell in cells:
+                    _set(things, *cell, 70)
+                    reserved.add(cell)
+                    free.discard(cell)
+                    edge_free.discard(cell)
+                static_headroom -= len(cells)
+                vine_screens.append(VineScreen("room-divider", ridx, cells))
+                break
 
         # Mirrored notches are architectural display bays, never empty bites.
         # Every anchor in a room receives the same compact, theme-compatible
@@ -3841,8 +4346,13 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
             "trophy-hall": (39, 62), "gallery": (34, 39, 62),
             "dining-hall": (35,), "officers-quarters": (34, 35),
         }
-        frame_pool = concept_frames.get(
-            concept, tuple(item for item in blocking if item in _FRAMEABLE)) or (26,)
+        frame_pool = tuple(
+            item for item in concept_frames.get(
+                concept, tuple(item for item in blocking if item in _FRAMEABLE))
+            if item not in LIGHTING_ITEMS or item in allowed_lights)
+        if not frame_pool:
+            frame_pool = tuple(item for item in blocking
+                               if item not in LIGHTING_ITEMS) or (35,)
 
         # The primary matched composition follows the route through the room,
         # not an arbitrary room half. In a two-door hall this places one prop
@@ -3931,10 +4441,10 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
                               ((room.x + room.w - 2, room.y + room.h - 2), 45)],
                 "ready-room": [((room.x + 1, room.y + 1), 45),
                                ((room.x + room.w - 2, room.y + 1), 36)],
-                "training-room": [((room.x + 1, cy), 69),
+                "training-room": [((room.x, cy), 69),
                                   ((room.x + room.w - 2, cy), 36)],
-                "armory": [((room.x + 1, cy), 69),
-                            ((room.x + room.w - 2, cy), 69)],
+                "armory": [((room.x, cy), 69),
+                            ((room.x + room.w - 1, cy), 69)],
                 "guardpost": [((room.x + 1, room.y + 1), 26),
                                ((room.x + room.w - 2, room.y + 1), 26)],
                 "checkpoint": [((room.x + 1, room.y + 1), 62)],
@@ -3948,7 +4458,7 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
                 "supply-cache": [((room.x + 1, room.y + 1), 24),
                                   ((room.x + 2, room.y + 1), 58)],
                 "workshop": [((room.x + 1, cy), 36),
-                             ((room.x + room.w - 2, cy), 69)],
+                             ((room.x + room.w - 1, cy), 69)],
                 "lounge": [((cx, cy), 25)],
                 "gallery": [((room.x, cy), 39)],
                 "dining-hall": [((cx, cy), 25)],
@@ -4005,6 +4515,10 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
             else:
                 signature = signatures.get(concept)
                 if signature:
+                    if any(item in LIGHTING_ITEMS and item not in allowed_lights
+                           for _, item in signature):
+                        signature = None
+                if signature:
                     matched_item = (signature[0][1] if len(signature) == 2
                                     and signature[0][1] == signature[1][1]
                                     else None)
@@ -4012,10 +4526,14 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
                         # A matched signature is still a matched composition:
                         # it may move to the traversal frame, but may not fall
                         # back to two pieces stranded on one side of the aisle.
+                        placed_signature = False
                         for pair in travel_pairs:
                             if _try_place(list(pair), matched_item):
                                 pairs_placed += 1
+                                placed_signature = True
                                 break
+                        if not placed_signature and _try_place_items(signature):
+                            pairs_placed += 1
                     elif _try_place_items(signature):
                         pairs_placed += 1
 
@@ -4059,7 +4577,7 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
         # --- Pattern: corner stash cluster (storage always; battle-worn
         # barracks and bare jail cells occasionally) with a spill of loose
         # pots or blood beside it so the pile reads lived-in, not staged ---
-        if pairs_placed < pair_budget and (
+        if blocking and pairs_placed < pair_budget and (
                 theme == "storage"
                 or (theme in ("barracks", "jail") and rng.random() < 0.35)):
             item = rng.choice(blocking)
@@ -4114,6 +4632,14 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
                 pairs_placed += 1
 
         zones = _DECOR_ZONES.get(concept) if concept == theme else None
+        if zones:
+            zones = tuple((tuple(item for item in solid
+                                 if item not in LIGHTING_ITEMS
+                                 or item in allowed_lights),
+                           tuple(item for item in open_
+                                 if item not in LIGHTING_ITEMS
+                                 or item in allowed_lights))
+                          for solid, open_ in zones)
         if zones and atmosphere <= 2:
             forbidden = ({32, 42, 57, 61, 64, 65, 66} if atmosphere == 1 else {57})
             zones = tuple((solid, tuple(item for item in open_ if item not in forbidden))
@@ -4135,7 +4661,7 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
             # Candidates come only from the wall-hugging band: a mirrored
             # pair mid-room reads as random clutter, the same pair against
             # opposite walls reads as furnishing.
-            if pairs_placed < pair_budget:
+            if pairs_placed < pair_budget and blocking:
                 band = [cell for cell in free if _near_wall(*cell)]
                 x_pairs = [((x, y), (2 * cx - x, y)) for x, y in band
                            if x < cx and (2 * cx - x, y) in free]
@@ -4203,6 +4729,7 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
     # --- Corridor rhythm: ceiling lights pace long straight halls ---
     # Open fixtures only, so nothing here can affect reachability, patrol
     # routes (in-room only), or actor facing.
+    hallway_vine_placed = False
     for path in paths or ():
         segments: list[list[tuple[int, int]]] = [[]]
         previous: tuple[int, int] | None = None
@@ -4224,6 +4751,36 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
         for segment in segments:
             if len(segment) < 5:
                 continue
+            # Extremely rarely, a one-cell-wide straight hallway receives a
+            # complete cross-section sight screen. Because the corridor is
+            # exactly one tile wide, one vine fills it; doors, bends, actors,
+            # and objectives receive generous clearance.
+            if (not hallway_vine_placed and len(segment) >= 9
+                    and static_headroom > 0 and rng.random() < 0.035):
+                horizontal = segment[0][1] == segment[-1][1]
+                candidates = list(segment[3:-3])
+                candidates.sort(key=lambda cell: (
+                    abs(segment.index(cell) - len(segment) // 2), cell))
+                for cell in candidates:
+                    x, y = cell
+                    sides = ((x, y - 1), (x, y + 1)) if horizontal else (
+                        (x - 1, y), (x + 1, y))
+                    if (cell in reserved or _at(things, *cell) != 0
+                            or any(_is_floor(_at(tiles, *side))
+                                   or _at(tiles, *side) in DOORS for side in sides)
+                            or any(_at(tiles, x + dx, y + dy) in DOORS
+                                   for dx in range(-3, 4) for dy in range(-3, 4)
+                                   if abs(dx) + abs(dy) <= 3)
+                            or any(_at(things, x + dx, y + dy) != 0
+                                   for dx in range(-2, 3) for dy in range(-2, 3)
+                                   if abs(dx) + abs(dy) <= 2)):
+                        continue
+                    _set(things, *cell, 70)
+                    reserved.add(cell)
+                    static_headroom -= 1
+                    vine_screens.append(VineScreen("hallway-screen", -1, (cell,)))
+                    hallway_vine_placed = True
+                    break
             for cell in segment[2:-1:4]:
                 if static_headroom <= 0:
                     break
@@ -4282,17 +4839,56 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
             reserved.add(deep)
             static_headroom -= 1
 
+    return tuple(lighting_families), tuple(vine_screens)
+
+
+def _prepare_boss_arena(tiles: list[int], things: list[int], room: Room,
+                        reserved: set[tuple[int, int]], rng: random.Random,
+                        family: str) -> int:
+    """Add sparse symmetric cover while preserving a broad combat loop."""
+    cx, cy = room.center
+    dx = max(3, min(5, room.w // 3))
+    dy = max(3, min(5, room.h // 3))
+    patterns = {
+        "throne-stronghold": [((cx - dx, cy - dy), (cx + dx, cy - dy)),
+                               ((cx - dx, cy + dy), (cx + dx, cy + dy))],
+        "command-bunker": [((cx - dx, cy), (cx + dx, cy))],
+        "laboratory-gauntlet": [((cx - dx, cy - 2), (cx + dx, cy + 2)),
+                                 ((cx - dx, cy + 2), (cx + dx, cy - 2))],
+        "columned-fortress": [((cx - dx, cy - dy), (cx + dx, cy - dy)),
+                               ((cx - dx, cy + dy), (cx + dx, cy + dy))],
+        "central-duel": [((cx, cy - dy), (cx, cy + dy))],
+    }.get(family, [((cx - dx, cy), (cx + dx, cy))])
+    rng.shuffle(patterns)
+    placed = 0
+    for pair in patterns:
+        if not all(_is_floor(_at(tiles, *cell)) and _at(things, *cell) == 0
+                   and cell not in reserved
+                   and all(_is_floor(_at(tiles, cell[0] + sx, cell[1] + sy))
+                           for sx, sy in ((1, 0), (-1, 0), (0, 1), (0, -1)))
+                   for cell in pair):
+            continue
+        for cell in pair:
+            _set(tiles, *cell, WALL)
+            reserved.add(cell)
+        placed += len(pair)
+    return placed
+
 
 def _place_boss(tiles: list[int], things: list[int], room: Room,
                 reserved: set[tuple[int, int]], rng: random.Random,
                 *, room_index: int = -1,
-                placements: list[SpritePlacement] | None = None) -> int:
+                placements: list[SpritePlacement] | None = None,
+                boss: int | None = None) -> int:
     cx, cy = room.center
     positions = [(cx, cy), (cx + 1, cy), (cx - 1, cy), (cx, cy + 1), (cx, cy - 1)]
     bx, by = next(((x, y) for x, y in positions
                    if (x, y) not in reserved and _at(things, x, y) == 0
                    and _is_floor(_at(tiles, x, y))), (cx, cy))
-    boss = rng.choice(BOSSES)
+    # A boss-gated elevator is only genuine when the kill itself provides the
+    # gold key. WL6 exposes reliable native drops for Hans and Gretel; using a
+    # loose physical key for other bosses lets the player leave them alive.
+    boss = boss or rng.choice(tuple(sorted(KEY_DROP_BOSSES)))
     _set(things, bx, by, boss)
     reserved.add((bx, by))
     supplies = ((cx - 2, cy - 2, FIRST_AID), (cx + 2, cy - 2, FIRST_AID),
@@ -4311,7 +4907,8 @@ def _place_boss(tiles: list[int], things: list[int], room: Room,
 
 
 def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
-                 secret_exit: bool = False) -> GeneratedMap:
+                 secret_exit: bool = False, secret_source: int | None = None
+                 ) -> GeneratedMap:
     seed = config.floor_seed(number, attempt)
     rng = random.Random(seed)
     tiles = [WALL] * (GRID * GRID)
@@ -4333,9 +4930,24 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
             for x in range(room.x, room.x + room.w):
                 _set(tiles, x, y, FLOOR)
     shape_scale = SHAPE_MULTIPLIERS[int(config.room_shape_variation)]
+    # Rectangles remain the architectural baseline. Mirrored notches and the
+    # broader shaped-room grammar share one floor-level budget capped at a
+    # quarter of all rooms, so neither mechanism can quietly dominate.
+    shape_budget = max(1, math.floor(len(rooms) * 0.25))
+    notch_budget = max(1, shape_budget // 2)
     notch_anchors = _carve_notches(
         tiles, rooms, rng,
-        chance=min(1.0, floor_variant.notch_chance * shape_scale))
+        chance=min(1.0, floor_variant.notch_chance * shape_scale),
+        max_rooms=notch_budget)
+    profile_anchors, profile_shapes = _carve_symmetric_profiles(
+        tiles, rooms, rng,
+        chance=min(0.45, 0.24 * shape_scale),
+        max_rooms=max(0, shape_budget - len(notch_anchors)),
+        excluded=frozenset(notch_anchors))
+    notch_anchors.update(profile_anchors)
+    realized_shapes = ["rectangle"] * len(rooms)
+    for room_index in notch_anchors:
+        realized_shapes[room_index] = profile_shapes.get(room_index, "mirrored-notch")
     overrides = dict(floor_variant.decor_overrides)
     for room, spec in zip(rooms, specs):
         predicted = overrides.get(_decor_theme(spec.role, spec.tier),
@@ -4364,12 +4976,16 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
                         for index, room in enumerate(rooms)}
     deepest_center = max(center_distances.values(), default=1) or 1
     minimum_route_rooms = max(6, math.ceil(len(rooms) * 0.55))
+    required_post_anchor = next((index for index, role in enumerate(roles)
+                                 if role in ("victory", "recovery")), None)
     exit_candidates = []
     for room_index in range(1, len(rooms)):
         route = _room_graph_path(len(rooms), edges, room_index)
         if (anchor_index not in route[:-1] or room_index == anchor_index
                 or len(route) < minimum_route_rooms
                 or center_distances[room_index] / deepest_center < 0.75):
+            continue
+        if required_post_anchor is not None and required_post_anchor not in route[:-1]:
             continue
         exit_candidates.append((room_index, route))
     exit_candidates.sort(key=lambda item: (
@@ -4401,17 +5017,71 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
     reserved = {start, exit_stand, *notch_cells}
     rewards: list[tuple[int, int]] = []
     secret_variants: list[str] = []
+    secret_details: list[SecretDetail] = []
     shortcut_pushwalls: list[tuple[int, int]] = []
     secret_protected: set[tuple[int, int]] = set()
     floor_distances = _floor_distances(tiles, start)
     room_distances = {room: floor_distances.get(room.center, 0) for room in rooms}
     max_room_distance = max(room_distances.values(), default=1) or 1
-    # Report's secret budget is 2-6 per standard floor; scale directly with
-    # the intensity dial instead of undershooting to 1 at the low end.
-    target_secrets = max(2, int(config.secrets) + (1 if number == 10 else 0))
+    # The secret elevator is planned in addition to the ordinary secret
+    # budget. Discovering the route to floor 10 must not silently consume one
+    # of the floor's normal reward pockets.
+    ordinary_secret_target = max(2, int(config.secrets)
+                                 + (1 if number == 10 else 0))
+    target_secrets = ordinary_secret_target + (1 if secret_exit else 0)
     # A secret pocket must never reuse or seal the terminal room's elevator
     # wall after the elevator has been carved.
     candidates = [room for room in rooms[1:] if room != exit_room]
+    room_index_by_room = {room: index for index, room in enumerate(rooms)}
+    if number == 9:
+        arena_depth = room_distances[rooms[anchor_index]]
+        candidates = [room for room in candidates
+                      if roles[room_index_by_room[room]] not in
+                      ("boss-arena", "victory", "exit")
+                      and room_distances[room] <= arena_depth]
+
+    if secret_exit:
+        # Build and rank the entire host roster before carving. Deep optional
+        # rooms, distance from the normal lift, and generous room proportions
+        # win; a small square is intentionally not a fallback for this route.
+        ranked_hosts = sorted(candidates, key=lambda room: (
+            room_distances[room] / max_room_distance >= 0.45,
+            room_index_by_room[room] not in critical_route,
+            roles[room_index_by_room[room]] in ("branch", "ring", "relief", "closet"),
+            room_distances[room] / max_room_distance,
+            abs(room.center[0] - exit_room.center[0])
+            + abs(room.center[1] - exit_room.center[1]),
+            room.w * room.h), reverse=True)
+        ranked_hosts = [room for room in ranked_hosts
+                        if room_distances[room] / max_room_distance >= 0.45]
+        variant_order = list(("vault", "reliquary", "gallery", "nested"))
+        rng.shuffle(variant_order)
+        placed_exit = None
+        exit_host = None
+        for variant in variant_order:
+            for room in ranked_hosts:
+                placed_exit = _place_secret(
+                    tiles, things, room, rng, variant,
+                    room_distances[room] / max_room_distance, True,
+                    reward_quality=int(config.secret_reward_quality),
+                    number=number, protected=secret_protected)
+                if placed_exit:
+                    exit_host = room
+                    break
+            if placed_exit:
+                break
+        if placed_exit is None or exit_host is None:
+            raise ValueError("no substantial deep host fits the secret elevator")
+        reward, realized_variant, push_cell = placed_exit
+        depth_ratio = room_distances[exit_host] / max_room_distance
+        rewards.append(reward)
+        secret_variants.append(realized_variant)
+        secret_details.append(SecretDetail(
+            realized_variant, 3, room_index_by_room[exit_host], depth_ratio,
+            push_cell, True, "symmetric-landmark", number + 1))
+        reserved.add(reward)
+        candidates.remove(exit_host)
+
     rng.shuffle(candidates)
     while len(rewards) < target_secrets and candidates:
         variant = _pick_secret_variant(rng, secret_variants)
@@ -4420,7 +5090,7 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
         for room in candidates:
             placed_secret = _place_secret(tiles, things, room, rng, variant,
                                           room_distances[room] / max_room_distance,
-                                          secret_exit and not rewards,
+                                          False,
                                           reward_quality=int(config.secret_reward_quality),
                                           number=number,
                                           protected=secret_protected)
@@ -4433,7 +5103,7 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
             for room in candidates:
                 placed_secret = _place_secret(tiles, things, room, rng, "square",
                                               room_distances[room] / max_room_distance,
-                                              secret_exit and not rewards,
+                                              False,
                                               reward_quality=int(config.secret_reward_quality),
                                               number=number,
                                               protected=secret_protected)
@@ -4443,6 +5113,10 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
         if placed_secret:
             reward, realized_variant, push_cell = placed_secret
             rewards.append(reward); secret_variants.append(realized_variant)
+            secret_details.append(SecretDetail(
+                realized_variant, 7 if number == 9 else 3,
+                room_index_by_room[host],
+                room_distances[host] / max_room_distance, push_cell, False))
             reserved.add(reward)
             candidates.remove(host)
         else:
@@ -4451,35 +5125,49 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
     # threshold is a safe last host with the same push direction and margin.
     reachable_walls = _reachable(tiles, start, locked_open=True)
     fallback_walls = [(x, y) for y in range(3, GRID - 3) for x in range(3, GRID - 4)
-                      if _at(tiles, x, y) == WALL and (x - 1, y) in reachable_walls]
+                      if _at(tiles, x, y) == WALL and (x - 1, y) in reachable_walls
+                      and (number != 9
+                           or floor_distances.get((x - 1, y), max_room_distance + 1)
+                           <= room_distances[rooms[anchor_index]])]
     rng.shuffle(fallback_walls)
     while len(rewards) < target_secrets:
         variant = _pick_secret_variant(rng, secret_variants)
         reward = None
+        fallback_push: tuple[int, int] | None = None
+        fallback_depth = 0.0
         for px, py in fallback_walls:
             approach_distance = floor_distances.get((px - 1, py), 0)
             reward = _carve_secret_pocket(
-                tiles, things, px, py, rng, secret_exit and not rewards, variant,
+                tiles, things, px, py, rng, False, variant,
                 min(1.0, approach_distance / max_room_distance),
                 reward_quality=int(config.secret_reward_quality),
                 number=number,
                 protected=secret_protected)
             if reward:
+                fallback_push = (px, py)
+                fallback_depth = min(1.0, approach_distance / max_room_distance)
                 break
         if reward is None and variant != "square":
             variant = "square"
             for px, py in fallback_walls:
                 approach_distance = floor_distances.get((px - 1, py), 0)
                 reward = _carve_secret_pocket(
-                    tiles, things, px, py, rng, secret_exit and not rewards, variant,
+                    tiles, things, px, py, rng, False, variant,
                     min(1.0, approach_distance / max_room_distance),
                     reward_quality=int(config.secret_reward_quality),
                     number=number,
                     protected=secret_protected)
                 if reward:
+                    fallback_push = (px, py)
+                    fallback_depth = min(1.0, approach_distance / max_room_distance)
                     break
         if reward:
             rewards.append(reward); secret_variants.append(variant); reserved.add(reward)
+            if fallback_push is None:
+                raise ValueError("fallback secret lost its pushwall metadata")
+            secret_details.append(SecretDetail(
+                variant, 7 if number == 9 else 3, -1, fallback_depth,
+                fallback_push, False))
         else:
             break
     reserved.update(secret_protected)
@@ -4498,9 +5186,22 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
         door_gate_plan = scheduled_gate
         door_route = critical_route
         door_target = exit_stand
-    locks, key_order = _place_doors(
+    locks, key_order, key_objectives = _place_doors(
         tiles, things, rooms, edges, paths, rng, start, door_target, roles,
         reserved, door_gate_plan, door_route)
+    for objective in key_objectives:
+        room = rooms[objective.host_room]
+        inward = sorted(
+            ((objective.cell[0] + dx, objective.cell[1] + dy)
+             for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1))
+             if room.x <= objective.cell[0] + dx < room.x + room.w
+             and room.y <= objective.cell[1] + dy < room.y + room.h
+             and _is_floor(_at(tiles, objective.cell[0] + dx,
+                               objective.cell[1] + dy))),
+            key=lambda cell: (abs(cell[0] - room.center[0])
+                              + abs(cell[1] - room.center[1]), cell))
+        if inward:
+            reserved.add(inward[0])
     _break_long_sightlines(tiles, things, rooms, reserved, rng, start)
     _split_oversized_zones(tiles, rooms, rng, reserved)
     if _remove_redundant_plain_doors(tiles):
@@ -4518,41 +5219,39 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
     preboss_index = None
     pickup_placements: list[SpritePlacement] = []
     if is_boss:
-        boss_index = max((index for index in range(1, len(rooms)) if rooms[index] != exit_room),
-                         key=lambda index: rooms[index].w * rooms[index].h)
+        boss_index = anchor_index
         boss_room = rooms[boss_index]
+        boss_choice = rng.choice(tuple(sorted(KEY_DROP_BOSSES)))
+        _prepare_boss_arena(tiles, things, boss_room, reserved, rng,
+                            plan.special_family)
         boss = _place_boss(tiles, things, boss_room, reserved, rng,
-                           room_index=boss_index, placements=pickup_placements)
-        preboss_index = _room_predecessor(len(rooms), edges, boss_index)
+                           room_index=boss_index, placements=pickup_placements,
+                           boss=boss_choice)
+        preboss_index = next((index for index, role in enumerate(roles)
+                              if role == "staging"),
+                             _room_predecessor(len(rooms), edges, boss_index))
         if preboss_index is not None and rooms[preboss_index] == exit_room:
             preboss_index = None
-        if boss not in KEY_DROP_BOSSES:
-            locked = tuple((index % GRID, index // GRID, tile)
-                           for index, tile in enumerate(tiles) if tile == DOOR_GOLD_EW)
-            if "silver" in key_order:
-                closed = _reachable(tiles, start, locked_open=False)
-                after_silver = _reachable(
-                    tiles, start, locked_open=False,
-                    open_lock_codes=SILVER_DOORS)
-                lock_cells = {(index % GRID, index // GRID)
-                              for index, tile in enumerate(tiles)
-                              if tile in LOCKED_DOORS}
-                key = _key_spot_in_region(
-                    tiles, things, rooms, roles, after_silver, closed, start,
-                    lock_cells)
-            else:
-                key = _key_spot(tiles, things, rooms, roles, locked, start)
-            if key is None:
-                raise ValueError("boss elevator has no free gold-key location")
-            _set(things, *key, GOLD_KEY)
-            reserved.add(key)
+        boss_cell = next((index % GRID, index // GRID)
+                         for index, thing in enumerate(things) if thing == boss)
+        key_objectives = key_objectives + (
+            KeyObjective("gold", boss_cell, boss_index, len(key_order) + 1,
+                         0, "boss-drop"),)
         locks += 1
         key_order = key_order + ("gold",)
     actor_clearance: set[tuple[int, int]] = set()
+    calm_rooms = frozenset(index for index, role in enumerate(roles)
+                           if role in ("arrival", "victory"))
+    optional_rooms = frozenset(index for index in range(len(rooms))
+                               if index not in critical_route
+                               and rooms[index] != exit_room)
     enemy_tiers = _place_population(
         config, number, rooms, tiles, things, reserved, rng, start, exit_room,
         patrol_chance=PATROL_CHANCES[int(config.patrol_activity)],
-        placements=pickup_placements, actor_clearance=actor_clearance)
+        placements=pickup_placements, actor_clearance=actor_clearance,
+        progression_number=(secret_source if number == 10 and secret_source else number),
+        calm_rooms=calm_rooms, boss_room=boss_room,
+        optional_rooms=optional_rooms)
     _assign_sound_zones(tiles)
     component_of, group_theme = _assign_area_themes(tiles, rooms, districts, rng, number,
                                                     theme_pool=floor_variant.theme_pool)
@@ -4560,24 +5259,38 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
                                     jail_probability=floor_variant.jail_probability)
     landmarks = _apply_wall_theme(tiles, things, rooms, districts, component_of, group_theme,
                                   rng, jail_rooms)
-    _hint_secrets(tiles, things, component_of, group_theme, rng)
+    exit_pushwall = next((detail.pushwall for detail in secret_details
+                          if detail.secret_exit), None)
+    secret_hints = _hint_secrets(tiles, things, component_of, group_theme, rng,
+                                 special_pushwall=exit_pushwall)
+    if exit_pushwall is not None and secret_hints.get(exit_pushwall) != "symmetric-landmark":
+        raise ValueError("secret elevator host cannot support its landmark hint")
     identities = _room_identities(rooms, specs, districts, edges, floor_variant, jail_rooms,
-                                  component_of, group_theme, exit_room, boss_room)
+                                  component_of, group_theme, exit_room, boss_room,
+                                  plan.special_family, key_objectives)
+    premium_index = (next((index for index, role in enumerate(roles)
+                           if role == "premium-vault"), None)
+                     if number == 10 else None)
+    expedition_rooms: list[int] = []
     _place_authored_pickups(
         config, number, rooms, tiles, things, reserved, rng, start, identities,
-        critical_route, edges, pickup_placements, preboss_index=preboss_index)
+        critical_route, edges, pickup_placements, preboss_index=preboss_index,
+        premium_index=premium_index,
+        expedition_candidates=tuple(optional_rooms),
+        expedition_rooms_out=expedition_rooms)
     reserved.difference_update(notch_cells)
     # A notch anchor can also be the open tile directly in front of an actor.
     # Releasing the architectural reservation must not erase that later,
     # independent reason to keep the cell clear.
     reserved.update(actor_clearance)
-    _place_decorations(rooms, tiles, things, reserved, start, rng, roles=roles, specs=specs,
-                       jail_rooms=jail_rooms,
-                       density=(floor_variant.decor_density
-                                * DECORATION_MULTIPLIERS[int(config.decoration_amount)]),
-                       theme_overrides=floor_variant.decor_overrides, landmarks=landmarks,
-                       paths=paths, identities=identities, atmosphere=int(config.atmosphere),
-                       notch_anchors=notch_anchors)
+    lighting_families, vine_screens = _place_decorations(
+        rooms, tiles, things, reserved, start, rng, roles=roles, specs=specs,
+        jail_rooms=jail_rooms,
+        density=(floor_variant.decor_density
+                 * DECORATION_MULTIPLIERS[int(config.decoration_amount)]),
+        theme_overrides=floor_variant.decor_overrides, landmarks=landmarks,
+        paths=paths, identities=identities, atmosphere=int(config.atmosphere),
+        notch_anchors=notch_anchors)
     final_distances = _floor_distances(tiles, start)
     deepest_room_distance = max((final_distances.get(room.center, 0) for room in rooms),
                                 default=1) or 1
@@ -4586,9 +5299,10 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
                          for first, second in edges)
     mediated_ratio = corridor_edges / max(1, len(edges))
     layout_signature = (
-        plan.skeleton, *plan.district_circulation,
+        plan.special_family, plan.skeleton, *plan.district_circulation,
         f"corridors-{sum(spec.tier == 'corridor' for spec in specs)}",
         f"mediated-{round(mediated_ratio, 1):.1f}",
+        f"shapes-{','.join(sorted(Counter(realized_shapes).elements()))}",
     )
     result = GeneratedMap(number=number, tiles=tiles, things=things, start=start,
                           exit_stand=exit_stand, secret_rewards=rewards, seed=seed,
@@ -4604,12 +5318,23 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
                           critical_route=tuple(critical_route),
                           room_districts=tuple(districts),
                           exit_depth_ratio=exit_depth_ratio,
-                          room_roles=tuple(spec.role for spec in specs),
+                          room_roles=tuple(roles),
                           room_tiers=tuple(spec.tier for spec in specs),
                           circulation_skeleton=plan.skeleton,
                           district_circulation=plan.district_circulation,
                           layout_signature=layout_signature,
-                          pickup_placements=tuple(pickup_placements))
+                          pickup_placements=tuple(pickup_placements),
+                          room_shapes=tuple(realized_shapes),
+                          lighting_families=lighting_families,
+                          vine_screens=vine_screens,
+                          key_objectives=key_objectives,
+                          secret_details=tuple(secret_details),
+                          special_family=plan.special_family,
+                          boss_arena_room=anchor_index if is_boss else -1,
+                          preboss_room=preboss_index if preboss_index is not None else -1,
+                          premium_room=premium_index if premium_index is not None else -1,
+                          expedition_rooms=tuple(dict.fromkeys(expedition_rooms)),
+                          secret_source=secret_source or 0)
     validate_map(result)
     result.critique = _critique(result)
     return result
@@ -4642,6 +5367,95 @@ def validate_map(level: GeneratedMap) -> None:
                        for first, second in level.edges) / max(1, len(level.edges))
         if not 0.25 <= mediated <= 0.70:
             raise ValueError("corridor-mediated connection ratio is outside its quality band")
+
+    if level.room_shapes:
+        if len(level.room_shapes) != len(level.rooms):
+            raise ValueError("room-shape metadata is incomplete")
+        allowed_shapes = {"rectangle", "mirrored-notch", "stepped-cross",
+                          "paired-side-bays", "paired-end-bays"}
+        if any(shape not in allowed_shapes for shape in level.room_shapes):
+            raise ValueError("unknown shaped-room family")
+        shaped = sum(shape != "rectangle" for shape in level.room_shapes)
+        if shaped > math.floor(len(level.rooms) * 0.25):
+            raise ValueError("non-rectangular rooms dominate the floor")
+        if shaped >= len(level.rooms) - shaped:
+            raise ValueError("rectangular rooms are not the clear majority")
+
+    if level.lighting_families:
+        if len(level.lighting_families) != len(level.rooms):
+            raise ValueError("room-lighting metadata is incomplete")
+        for room, family in zip(level.rooms, level.lighting_families):
+            if family not in LIGHTING_FAMILY_ITEMS:
+                raise ValueError("unknown room lighting family")
+            fixtures = {_at(level.things, x, y)
+                        for y in range(room.y, room.y + room.h)
+                        for x in range(room.x, room.x + room.w)
+                        if _at(level.things, x, y) in LIGHTING_ITEMS}
+            if not fixtures <= LIGHTING_FAMILY_ITEMS[family]:
+                raise ValueError("room mixes incompatible lighting families")
+
+    spear_positions = [(index % GRID, index // GRID)
+                       for index, thing in enumerate(level.things) if thing == 69]
+    for cell in spear_positions:
+        owners = [index for index, room in enumerate(level.rooms)
+                  if room.x <= cell[0] < room.x + room.w
+                  and room.y <= cell[1] < room.y + room.h]
+        if not owners:
+            raise ValueError("spear display has no owning room")
+        owner = owners[0]
+        room = level.rooms[owner]
+        if level.room_concepts and level.room_concepts[owner] not in SPEAR_CONCEPTS:
+            raise ValueError("spear display does not fit its room identity")
+        x, y = cell
+        outside = []
+        if x == room.x:
+            outside.append((x - 1, y))
+        if x == room.x + room.w - 1:
+            outside.append((x + 1, y))
+        if y == room.y:
+            outside.append((x, y - 1))
+        if y == room.y + room.h - 1:
+            outside.append((x, y + 1))
+        if not any(not _is_floor(_at(level.tiles, *neighbor))
+                   and _at(level.tiles, *neighbor) not in DOORS
+                   for neighbor in outside):
+            raise ValueError("spear display is not purposefully wall backed")
+
+    vine_positions = {(index % GRID, index // GRID)
+                      for index, thing in enumerate(level.things) if thing == 70}
+    documented_vines = {cell for screen in level.vine_screens for cell in screen.cells}
+    if vine_positions != documented_vines:
+        raise ValueError("vine exists outside a complete screen composition")
+    for screen in level.vine_screens:
+        if not screen.cells or any(_at(level.things, *cell) != 70
+                                   for cell in screen.cells):
+            raise ValueError("vine screen metadata disagrees with the things plane")
+        if screen.kind == "room-divider":
+            if not 0 <= screen.room_index < len(level.rooms):
+                raise ValueError("vine divider has no host room")
+            room = level.rooms[screen.room_index]
+            xs = {x for x, _ in screen.cells}
+            ys = {y for _, y in screen.cells}
+            vertical = (len(xs) == 1 and ys == set(range(room.y, room.y + room.h)))
+            horizontal = (len(ys) == 1
+                          and xs == set(range(room.x, room.x + room.w)))
+            if not (vertical or horizontal):
+                raise ValueError("vine divider does not span the complete room")
+        elif screen.kind == "hallway-screen":
+            if len(screen.cells) != 1 or screen.room_index != -1:
+                raise ValueError("hallway vine screen has invalid extent")
+            x, y = screen.cells[0]
+            horizontal_sides = ((_at(level.tiles, x, y - 1),
+                                 _at(level.tiles, x, y + 1)))
+            vertical_sides = ((_at(level.tiles, x - 1, y),
+                               _at(level.tiles, x + 1, y)))
+            if not (all(not _is_floor(tile) and tile not in DOORS
+                        for tile in horizontal_sides)
+                    or all(not _is_floor(tile) and tile not in DOORS
+                           for tile in vertical_sides)):
+                raise ValueError("hallway vine does not fill a one-tile cross-section")
+        else:
+            raise ValueError("unknown vine-screen composition")
 
     if level.pickup_placements:
         tracked: dict[tuple[int, int], int] = {}
@@ -4709,6 +5523,33 @@ def validate_map(level: GeneratedMap) -> None:
             raise ValueError("elevator route is too visually direct")
     if not level.secret_rewards:
         raise ValueError("map has no rewarded secret")
+    if (len(level.secret_details) != len(level.secret_rewards)
+            or tuple(detail.shape for detail in level.secret_details)
+            != level.secret_variants):
+        raise ValueError("secret planning metadata is incomplete")
+    exit_details = [detail for detail in level.secret_details if detail.secret_exit]
+    if level.has_secret_exit:
+        if len(exit_details) != 1:
+            raise ValueError("secret elevator is not a separately planned pocket")
+        detail = exit_details[0]
+        if (detail.shape == "square" or detail.host_room < 0
+                or detail.depth_ratio < 0.45
+                or detail.hint_treatment != "symmetric-landmark"
+                or detail.return_floor != level.number + 1):
+            raise ValueError("secret elevator lacks a substantial deep host")
+        px, py = detail.pushwall
+        if (_at(level.tiles, px, py) not in DECOR_WALLS
+                or not any(_at(level.tiles, px, py - offset)
+                           == _at(level.tiles, px, py)
+                           == _at(level.tiles, px, py + offset)
+                           for offset in (1, 2))):
+            raise ValueError("secret elevator lacks its symmetric landmark hint")
+    elif exit_details:
+        raise ValueError("ordinary floor reports a secret-elevator host")
+    for detail in level.secret_details:
+        if (_at(level.things, *detail.pushwall) != PUSHWALL
+                or detail.reward_count != (7 if level.number == 9 else 3)):
+            raise ValueError("secret detail disagrees with its realized pocket")
     pushwalls = [(i % GRID, i // GRID) for i, thing in enumerate(level.things)
                  if thing == PUSHWALL]
     if len(pushwalls) < len(level.secret_rewards):
@@ -4769,8 +5610,22 @@ def validate_map(level: GeneratedMap) -> None:
             raise ValueError("designated secret-route map needs exactly one secret exit")
         index = level.tiles.index(SECRET_EXIT_ZONE)
         zx, zy = index % GRID, index // GRID
-        if _at(level.tiles, zx + 1, zy) != ELEVATOR_TILE:
-            raise ValueError("secret exit zone has no elevator switch east of it")
+        if (_at(level.tiles, zx + 1, zy) != ELEVATOR_TILE
+                or not _is_floor(_at(level.tiles, zx - 1, zy))
+                or _at(level.tiles, zx - 2, zy) != DOOR_ELEVATOR):
+            raise ValueError("secret exit is not inside a real elevator car")
+        if any(_at(level.tiles, x, zy + side) != ELEVATOR_TILE
+               for x in range(zx - 1, zx + 2) for side in (-1, 1)):
+            raise ValueError("secret elevator is missing its side rails")
+        outer_shell = ({(zx + 2, zy + side) for side in range(-2, 3)}
+                       | {(x, zy + side) for x in range(zx - 2, zx + 3)
+                          for side in (-2, 2)})
+        if any(_is_floor(_at(level.tiles, *cell))
+               or _at(level.tiles, *cell) in DOORS for cell in outer_shell):
+            raise ValueError("secret elevator is not rock bounded")
+        closed_secret = _reachable(level.tiles, level.start, locked_open=True)
+        if (zx, zy) in closed_secret:
+            raise ValueError("secret elevator is reachable without its pushwall")
         if (zx, zy) not in opened:
             raise ValueError("secret elevator is unusable after opening its pushwall")
     elif zone_count:
@@ -4783,6 +5638,38 @@ def validate_map(level: GeneratedMap) -> None:
     if bool(actual_locks) != bool(level.key_order):
         raise ValueError("locked doors and key order disagree")
     if actual_locks:
+        if (len(level.key_objectives) != len(level.key_order)
+                or tuple(objective.color for objective in level.key_objectives)
+                != level.key_order):
+            raise ValueError("key-objective metadata disagrees with progression order")
+        physical_hosts = []
+        for objective in level.key_objectives:
+            if not 0 <= objective.host_room < len(level.rooms):
+                raise ValueError("key objective has no host room")
+            if objective.treatment == "boss-drop":
+                if (_at(level.things, *objective.cell) not in KEY_DROP_BOSSES
+                        or objective.color != "gold" or not level.boss):
+                    raise ValueError("boss key objective is not backed by a native drop")
+                continue
+            expected_key = GOLD_KEY if objective.color == "gold" else SILVER_KEY
+            if _at(level.things, *objective.cell) != expected_key:
+                raise ValueError("physical key objective disagrees with things plane")
+            if objective.detour < 2:
+                raise ValueError("physical key lies directly on its lock route")
+            if objective.cell == level.rooms[objective.host_room].center:
+                raise ValueError("physical key defaults to the room center")
+            clear_neighbors = sum(
+                _is_floor(_at(level.tiles, objective.cell[0] + dx,
+                              objective.cell[1] + dy))
+                and _at(level.things, objective.cell[0] + dx,
+                        objective.cell[1] + dy) == 0
+                for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)))
+            if clear_neighbors < 1:
+                raise ValueError("physical key has no clear pickup approach")
+            physical_hosts.append(objective.host_room)
+        if len(physical_hosts) != len(set(physical_hosts)):
+            raise ValueError("dual physical keys repeat the same host room")
+
         providers: dict[str, tuple[int, int]] = {}
         for color, thing in (("gold", GOLD_KEY), ("silver", SILVER_KEY)):
             positions = [(index % GRID, index // GRID)
@@ -4846,6 +5733,91 @@ def validate_map(level: GeneratedMap) -> None:
                 level.tiles, level.start, locked_open=False,
                 open_lock_codes=_codes_for_colors(prior_colors)):
             raise ValueError("boss is unreachable before the boss elevator lock")
+
+    boss_families = {"throne-stronghold", "command-bunker",
+                     "laboratory-gauntlet", "columned-fortress", "central-duel"}
+    vault_families = {"central-vault", "museum-circuit", "nested-reliquary",
+                      "abandoned-armory", "treasure-palace"}
+    if level.number == 9:
+        if level.special_family not in boss_families:
+            raise ValueError("floor 9 has no boss-stronghold family")
+        if (not 0 <= level.boss_arena_room < len(level.rooms)
+                or level.boss_arena_room not in level.critical_route
+                or level.room_roles[level.boss_arena_room] != "boss-arena"):
+            raise ValueError("floor 9 arena is not a mandatory planned destination")
+        arena = level.rooms[level.boss_arena_room]
+        if min(arena.w, arena.h) < 14:
+            raise ValueError("boss arena is too small for its encounter")
+        interior_cover = sum(
+            not _is_floor(_at(level.tiles, x, y))
+            for y in range(arena.y + 2, arena.y + arena.h - 2)
+            for x in range(arena.x + 2, arena.x + arena.w - 2))
+        if interior_cover < 2:
+            raise ValueError("boss arena has no symmetric sightline cover")
+        if (not 0 <= level.preboss_room < len(level.rooms)
+                or level.room_roles[level.preboss_room] != "staging"
+                or _room_predecessor(len(level.rooms), list(level.edges),
+                                     level.boss_arena_room) != level.preboss_room):
+            raise ValueError("floor 9 lacks an immediate pre-boss staging room")
+        if not any(placement.reason == "preboss-stockup"
+                   and placement.room_index == level.preboss_room
+                   for placement in level.pickup_placements):
+            raise ValueError("pre-boss staging room has no authored stock-up")
+        victory = next((index for index, role in enumerate(level.room_roles)
+                        if role == "victory"), None)
+        if (victory is None or victory not in level.critical_route
+                or level.critical_route.index(victory)
+                <= level.critical_route.index(level.boss_arena_room)):
+            raise ValueError("boss arena does not lead into a victory space")
+        victory_room = level.rooms[victory]
+        if any(_at(level.things, x, y) in ENEMY_CODES
+               for y in range(victory_room.y, victory_room.y + victory_room.h)
+               for x in range(victory_room.x, victory_room.x + victory_room.w)):
+            raise ValueError("floor 9 victory room is not a calm transition")
+        if _at(level.things, *next(objective.cell for objective in level.key_objectives
+                                   if objective.color == "gold")) not in KEY_DROP_BOSSES:
+            raise ValueError("floor 9 completion is not boss gated")
+    elif level.number == 10:
+        if level.special_family not in vault_families:
+            raise ValueError("floor 10 has no reward-expedition family")
+        if level.secret_source and not 1 <= level.secret_source <= 6:
+            raise ValueError("floor 10 has an invalid secret-exit source floor")
+        if (level.locked_doors or level.key_order
+                or not 0 <= level.premium_room < len(level.rooms)
+                or level.premium_room not in level.critical_route
+                or level.room_roles[level.premium_room] != "premium-vault"):
+            raise ValueError("floor 10 premium chamber is not on its open route")
+        premium = [placement for placement in level.pickup_placements
+                   if placement.reason == "floor-ten-premium"
+                   and placement.room_index == level.premium_room]
+        expeditions = [placement for placement in level.pickup_placements
+                       if placement.reason == "floor-ten-expedition"]
+        if (len(premium) != 1 or not any(item in (ONE_UP, CHAINGUN, TREASURE[3])
+                                        for _, _, item in premium[0].cells)
+                or len({placement.room_index for placement in expeditions}) < 2):
+            raise ValueError("floor 10 lacks its premium and expedition rewards")
+        expedition_concepts = {level.room_concepts[placement.room_index]
+                               for placement in expeditions}
+        if len(expedition_concepts) < 2:
+            raise ValueError("floor 10 reward expeditions repeat one concept")
+        arrival = next((index for index, role in enumerate(level.room_roles)
+                        if role == "arrival"), None)
+        if arrival is None:
+            raise ValueError("floor 10 lacks a calm arrival room")
+        arrival_room = level.rooms[arrival]
+        if any(_at(level.things, x, y) in ENEMY_CODES
+               for y in range(arrival_room.y, arrival_room.y + arrival_room.h)
+               for x in range(arrival_room.x, arrival_room.x + arrival_room.w)):
+            raise ValueError("floor 10 arrival reveal is not calm")
+        for index, thing in enumerate(level.things):
+            if thing not in GHOSTS:
+                continue
+            x, y = index % GRID, index // GRID
+            owner = next((room_index for room_index, room in enumerate(level.rooms)
+                          if room.x <= x < room.x + room.w
+                          and room.y <= y < room.y + room.h), None)
+            if owner is None or owner in level.critical_route:
+                raise ValueError("floor 10 ghost controls the mandatory route")
     validate_objects(level)
     validate_patrols(level)
 
@@ -4975,7 +5947,8 @@ def generate_campaign(config: CampaignConfig, output: Path,
         candidates: list[GeneratedMap] = []
         for attempt in range(50):
             try:
-                candidate = generate_map(config, number, attempt, number == secret_from)
+                candidate = generate_map(config, number, attempt, number == secret_from,
+                                         secret_source=secret_from if number == 10 else None)
             except ValueError as error:
                 last_error = error
                 continue
@@ -4995,6 +5968,7 @@ def generate_campaign(config: CampaignConfig, output: Path,
             progress(number, 10)
     manifest = {
         "generator": "infiniwolf", "version": __version__, "seed": config.seed,
+        "seed_source": "LittleEntropyMachine",
         "settings": json.loads(config.to_json()), "secret_from": secret_from,
         "lock_schedule": [plan.colors for plan in _lock_schedule(config)],
         "floors": [{"number": level.number, "seed": level.seed,
@@ -5004,17 +5978,42 @@ def generate_campaign(config: CampaignConfig, output: Path,
                     "critical_route_rooms": len(level.critical_route),
                     "exit_depth_ratio": round(level.exit_depth_ratio, 4),
                     "boss": level.boss,
+                    "special_family": level.special_family,
+                    "secret_source": level.secret_source,
+                    "boss_arena_room": level.boss_arena_room,
+                    "preboss_room": level.preboss_room,
+                    "premium_room": level.premium_room,
+                    "expedition_rooms": level.expedition_rooms,
                     "enemy_tiers": level.enemy_tiers,
                     "variant": level.variant,
                     "circulation_skeleton": level.circulation_skeleton,
                     "district_circulation": level.district_circulation,
                     "layout_signature": level.layout_signature,
                     "room_concepts": level.room_concepts,
+                    "room_shapes": level.room_shapes,
+                    "lighting_families": level.lighting_families,
+                    "vine_screens": [
+                        {"kind": screen.kind, "room": screen.room_index,
+                         "cells": screen.cells}
+                        for screen in level.vine_screens],
                     "motifs": level.motifs,
                     "secret_variants": level.secret_variants,
-                    "secret_details": [{"shape": shape,
-                                        "reward_count": 7 if level.number == 9 else 3}
-                                       for shape in level.secret_variants],
+                    "secret_details": [
+                        {"shape": detail.shape,
+                         "reward_count": detail.reward_count,
+                         "host_room": detail.host_room,
+                         "depth_ratio": round(detail.depth_ratio, 4),
+                         "pushwall": detail.pushwall,
+                         "secret_exit": detail.secret_exit,
+                         "hint_treatment": detail.hint_treatment,
+                         "return_floor": detail.return_floor}
+                        for detail in level.secret_details],
+                    "key_objectives": [
+                        {"color": objective.color, "cell": objective.cell,
+                         "host_room": objective.host_room,
+                         "stage": objective.stage, "detour": objective.detour,
+                         "treatment": objective.treatment}
+                        for objective in level.key_objectives],
                     "pickup_compositions": [
                         {"reason": placement.reason,
                          "template": placement.template,

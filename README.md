@@ -6,7 +6,7 @@
 [![License](https://img.shields.io/github/license/voidnullvalue/InfiniWolf)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.11%2B-blue)](https://www.python.org/downloads/)
 
-InfiniWolf generates deterministic ten-map Wolfenstein 3D campaigns for ECWolf, with varied building layouts, coherent room themes, staged progression, and context-aware encounters and rewards. The goal is simple: make each seed fun to explore and enjoyable to replay. It uses the player's registered WL6 data at runtime and never copies Wolfenstein graphics, sounds, music, or data files into generated packages.
+InfiniWolf generates deterministic ten-map Wolfenstein 3D campaigns for ECWolf, with varied building layouts, coherent room themes, staged progression, and context-aware encounters and rewards. The goal is simple: make each seed fun to explore and enjoyable to replay, building toward a distinctive boss stronghold on floor 9 and a secret reward expedition on floor 10. It uses the player's registered WL6 data at runtime and never copies Wolfenstein graphics, sounds, music, or data files into generated packages.
 
 Curious how the generator actually works? Start with the human-readable
 [`GENERATION_FLOW.md`](GENERATION_FLOW.md) flowchart, then use
@@ -61,13 +61,14 @@ python3 -m infiniwolf --seed 42 --guard-density 4 --enemy-toughness 3 \
 The desktop interface groups the original gameplay controls separately from
 the style controls. Style settings deliberately influence bounded choices
 rather than disabling map validation: decoration amount controls prop budget,
-room-shape variation controls restrained mirrored notches, patrol activity controls
+room-shape variation controls a restrained mix of mirrored notches and symmetric
+profiles while keeping rectangles in the clear majority, patrol activity controls
 patrol frequency, atmosphere controls how clean or grim rooms look, and secret
 reward quality shifts the secret-room reward mix. Theme bias strongly favors a
 floor identity without forcing every floor to repeat it; `mixed` keeps the
 default rotating sequence.
 
-Using the same version, seed, and settings produces byte-identical output. A manifest inside the PK3 records the resolved seed, settings, floor seeds, enemy tiers, the seeded campaign lock schedule, realized gold/silver key order, exit-depth measurements, secrets, and boss floor.
+Using the same version, seed, and settings produces byte-identical output. The named `LittleEntropyMachine` seed source derives independent floor, variant, circulation, and lock streams without retry attempts perturbing campaign-scale choices. A manifest inside the PK3 records that seed source, the resolved seed and settings, special-floor family, room shapes, lighting families, key objectives, bounded secrets, pickup compositions, and validation results.
 
 ## Tests
 
