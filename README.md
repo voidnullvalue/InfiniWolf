@@ -1,11 +1,18 @@
-# InfiniWolf
+<div align="center">
 
-[![CI](https://github.com/voidnullvalue/InfiniWolf/actions/workflows/release.yml/badge.svg)](https://github.com/voidnullvalue/InfiniWolf/actions/workflows/release.yml)
-[![Latest release](https://img.shields.io/github/v/release/voidnullvalue/InfiniWolf?display_name=tag&sort=date)](https://github.com/voidnullvalue/InfiniWolf/releases/latest)
-[![Downloads](https://img.shields.io/github/downloads/voidnullvalue/InfiniWolf/total)](https://github.com/voidnullvalue/InfiniWolf/releases)
-[![License](https://img.shields.io/github/license/voidnullvalue/InfiniWolf)](LICENSE)
-[![Python](https://img.shields.io/badge/python-3.11%2B-blue)](https://www.python.org/downloads/)
+<h1>InfiniWolf</h1>
 
+<img src="assets/infiniwolf-logo.png" alt="InfiniWolf logo" width="520">
+
+<p>
+  <a href="https://github.com/voidnullvalue/InfiniWolf/actions/workflows/release.yml"><img src="https://github.com/voidnullvalue/InfiniWolf/actions/workflows/release.yml/badge.svg" alt="CI"></a>
+  <a href="https://github.com/voidnullvalue/InfiniWolf/releases/latest"><img src="https://img.shields.io/github/v/release/voidnullvalue/InfiniWolf?display_name=tag&sort=date" alt="Latest release"></a>
+  <a href="https://github.com/voidnullvalue/InfiniWolf/releases"><img src="https://img.shields.io/github/downloads/voidnullvalue/InfiniWolf/total" alt="Downloads"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/voidnullvalue/InfiniWolf" alt="License"></a>
+  <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.11%2B-blue" alt="Python 3.11+"></a>
+</p>
+
+</div>
 InfiniWolf generates deterministic ten-map Wolfenstein 3D campaigns for ECWolf, with varied building layouts, coherent room themes, staged progression, and context-aware encounters and rewards. Independent progression grammars, circulation skeletons, district patterns, reconvergence motifs, and asymmetric room profiles prevent one repeated generator silhouette from owning the campaign. Every floor begins at one of four believable, rock-bounded inactive elevator arrivals; every full arrival car has a real working door. District-aware stone, brick, wood, metal, marble, plaster, and damaged wall families give rooms a stronger sense of place, with purple reserved for floors 6–10 as a late-campaign escalation. Room-owned sentries, flanks, ambushes, strongpoints, moving patrols, and rare firing galleries make combat spaces feel purposeful. The goal is simple: make each seed fun to explore and enjoyable to replay, building toward one of five geometry-rich boss strongholds on floor 9 and a secret reward expedition on floor 10. It uses the player's registered WL6 data at runtime and never copies Wolfenstein graphics, sounds, music, or data files into generated packages.
 
 Curious how the generator actually works? Start with the human-readable
