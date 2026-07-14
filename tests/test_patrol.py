@@ -8,6 +8,19 @@ from infiniwolf.generator import (DOORS, PATROL_GUARDS, PATROL_OFFICERS,
                                    generate_map, validate_patrols)
 
 
+def _generate_with_retries(config: CampaignConfig, floor: int, attempts: int = 50):
+    """Mirror campaign generation: an individual candidate may be rejected
+    before patrol validation for an unrelated topology or progression rule."""
+    last_error = None
+    for attempt in range(attempts):
+        try:
+            return generate_map(config, floor, attempt)
+        except ValueError as error:
+            last_error = error
+    raise AssertionError(
+        f"floor {floor} never validated in {attempts} attempts: {last_error}")
+
+
 class PatrolTests(unittest.TestCase):
     def test_patrol_tuples_keep_ecwolfs_cardinal_old_num_order(self):
         """The family tuples are N/E/S/W, while old-number offsets are E/N/W/S."""
@@ -22,7 +35,7 @@ class PatrolTests(unittest.TestCase):
         markers = 0
         for seed in ("alpha", "bravo"):
             for floor in (2, 8):
-                level = generate_map(CampaignConfig(seed=seed), floor)
+                level = _generate_with_retries(CampaignConfig(seed=seed), floor)
                 validate_patrols(level)
                 for index, thing in enumerate(level.things):
                     x, y = index % 64, index // 64

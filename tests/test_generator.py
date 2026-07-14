@@ -737,13 +737,20 @@ class GeneratorTests(unittest.TestCase):
         original = generator._apply_wall_theme
 
         def capture(*args, **kwargs):
-            captured.append((args[4], args[5]))
+            # Keep the tile plane identity so captures from legitimately
+            # rejected retry candidates cannot be paired with the eventual
+            # successful level for this seed.
+            captured.append((args[0], args[4], args[5]))
             return original(*args, **kwargs)
 
         with mock.patch.object(generator, "_apply_wall_theme", side_effect=capture):
             levels = [_generate_with_retries(CampaignConfig(seed=seed), 2)
                       for seed in range(12)]
-        for level, (component_of, group_theme) in zip(levels, captured):
+        for level in levels:
+            component_of, group_theme = next(
+                (component_of, group_theme)
+                for tiles, component_of, group_theme in captured
+                if tiles is level.tiles)
             blue_rooms = sum(group_theme[component_of[room.center]][0] == 8
                              for room in level.rooms)
             if blue_rooms > 1:
