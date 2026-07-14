@@ -796,15 +796,16 @@ class GeneratorTests(unittest.TestCase):
                 tiles[y * GRID + x] = FLOOR
         things = [0] * len(tiles)
         _place_decorations([room], tiles, things, set(), room.center, ThemedRandom(0),
-                           roles=["start"])
+                           roles=["start"], traversal_pair_chance=0.0)
         cx, _ = room.center
         zone_a = {26, 35, 37}
         zone_b = {31, 27}
         placed = [(index % GRID, index // GRID, thing)
                   for index, thing in enumerate(things) if thing]
         self.assertTrue(placed)
-        signature_cells = {(room.x + 1, room.y + 1),
-                           (room.x + room.w - 2, room.y + 1)}
+        traversal = generator._room_traversal_frame(room, tiles)
+        signature_cells = set(generator._traversal_pair_candidates(
+            room, tiles, traversal)[0])
         for x, y, thing in placed:
             if (x, y) in signature_cells:
                 continue
