@@ -765,6 +765,7 @@ class SecretDetail:
     secret_exit: bool = False
     hint_treatment: str = "single-landmark"
     return_floor: int = 0
+    push_direction: int = 1
 
 
 @dataclass(frozen=True, slots=True)
@@ -3709,10 +3710,13 @@ def _place_secret(tiles: list[int], things: list[int], room: Room,
                   rng: random.Random, variant: str, depth: float,
                   secret_exit: bool = False, *, reward_quality: int = 3,
                   number: int = 0,
-                  protected: set[tuple[int, int]] | None = None
+                  protected: set[tuple[int, int]] | None = None,
+                  direction: int = 1,
                   ) -> tuple[tuple[int, int], str, tuple[int, int]] | None:
-    px = room.x + room.w
-    if px + 4 >= GRID - 1:
+    if direction not in (-1, 1):
+        raise ValueError("secret push direction must be horizontal")
+    px = room.x + room.w if direction == 1 else room.x - 1
+    if not 1 <= px < GRID - 1:
         return None
     # Sweep rows outward from the wall's midline so one crossing corridor
     # doesn't doom the whole room's secret.
@@ -3722,7 +3726,8 @@ def _place_secret(tiles: list[int], things: list[int], room: Room,
         reward = _carve_secret_pocket(tiles, things, px, py, rng, secret_exit,
                                       variant, depth, reward_quality=reward_quality,
                                       number=number,
-                                      protected=protected)
+                                      protected=protected,
+                                      direction=direction)
         if reward:
             return reward, variant, (px, py)
     return None
@@ -3733,36 +3738,44 @@ def _carve_secret_pocket(tiles: list[int], things: list[int], px: int, py: int,
                          variant: str = "square", depth: float = 0.5,
                          *, reward_quality: int = 3,
                          number: int = 0,
-                         protected: set[tuple[int, int]] | None = None
+                         protected: set[tuple[int, int]] | None = None,
+                         direction: int = 1,
                          ) -> tuple[int, int] | None:
-    """Carve one purpose-built, rock-shelled secret east of its pushwall."""
-    if _at(tiles, px, py) != WALL or not _is_floor(_at(tiles, px - 1, py)):
+    """Carve one purpose-built, rock-shelled horizontal secret pocket."""
+    if direction not in (-1, 1):
+        raise ValueError("secret push direction must be horizontal")
+    point = lambda dx, dy=0: (px + direction * dx, py + dy)
+    if (_at(tiles, px, py) != WALL
+            or not _is_floor(_at(tiles, px - direction, py))):
         return None
 
     if variant == "square":
-        cells = {(px + dx, py + dy) for dx in range(1, 4) for dy in range(-1, 2)}
+        cells = {point(dx, dy) for dx in range(1, 4) for dy in range(-1, 2)}
     elif variant == "vault":
-        cells = {(px + dx, py + dy) for dx in range(1, 7) for dy in range(-1, 2)}
+        cells = {point(dx, dy) for dx in range(1, 7) for dy in range(-1, 2)}
     elif variant == "reliquary":
         side = rng.choice((-1, 1))
-        cells = ({(px + dx, py + dy) for dx in range(1, 4) for dy in range(-1, 2)}
-                 | {(px + dx, py + side * dy) for dx in range(3, 6)
+        cells = ({point(dx, dy) for dx in range(1, 4) for dy in range(-1, 2)}
+                 | {point(dx, side * dy) for dx in range(3, 6)
                     for dy in range(1, 4)})
     elif variant == "gallery":
-        cells = ({(px + dx, py + dy) for dx in range(1, 4) for dy in range(-1, 2)}
-                 | {(px + dx, py + dy) for dx in range(3, 6) for dy in range(-2, 3)})
+        cells = ({point(dx, dy) for dx in range(1, 4) for dy in range(-1, 2)}
+                 | {point(dx, dy) for dx in range(3, 6) for dy in range(-2, 3)})
     elif variant == "nested":
-        cells = {(px + dx, py + dy) for dx in range(1, 8) for dy in range(-1, 2)}
-        cells -= {(px + 4, py - 1), (px + 4, py), (px + 4, py + 1)}
+        cells = {point(dx, dy) for dx in range(1, 8) for dy in range(-1, 2)}
+        cells -= {point(4, dy) for dy in (-1, 0, 1)}
     else:
         return None
 
-    inner_wall = {(px + 4, py - 1), (px + 4, py), (px + 4, py + 1)} if variant == "nested" else set()
+    inner_wall = ({point(4, dy) for dy in (-1, 0, 1)}
+                  if variant == "nested" else set())
     entry = (px, py)
-    east = max(x for x, _ in cells)
+    back = (max(x for x, _ in cells) if direction == 1
+            else min(x for x, _ in cells))
     elevator_rows = sorted(
-        (y for x, y in cells if x == east
-         and (east - 1, y) in cells and (east - 2, y) in cells),
+        (y for x, y in cells if x == back
+         and (back - direction, y) in cells
+         and (back - 2 * direction, y) in cells),
         key=lambda y: (abs(y - py), y))
     if secret_exit and not elevator_rows:
         return None
@@ -3776,9 +3789,9 @@ def _carve_secret_pocket(tiles: list[int], things: list[int], px: int, py: int,
     # onto the pocket's back wall. Reserve the same five-deep, five-wide rock
     # envelope as a normal elevator before carving anything: door at depth 0,
     # two floor cells, tile-21 side rails/back wall, and untouched outer rock.
-    elevator_door = (east + 1, elevator_y)
+    elevator_door = (back + direction, elevator_y)
     elevator_footprint = (
-        {(elevator_door[0] + depth, elevator_y + side)
+        {(elevator_door[0] + direction * depth, elevator_y + side)
          for depth in range(5) for side in (-2, -1, 0, 1, 2)}
         if secret_exit else set())
     footprint = cells | shell | {entry} | elevator_footprint
@@ -3790,20 +3803,22 @@ def _carve_secret_pocket(tiles: list[int], things: list[int], px: int, py: int,
     for cell in cells:
         _set(tiles, *cell, FLOOR)
     if variant == "nested":
-        _set(things, px + 4, py, PUSHWALL)
+        _set(things, px + 4 * direction, py, PUSHWALL)
 
-    rests = {(px + 2, py)}
+    rests = {point(2)}
     if variant == "nested":
-        rests.add((px + 6, py))
+        rests.add(point(6))
     candidates = sorted((cell for cell in cells if cell not in rests
-                         and (variant != "nested" or cell[0] != px + 4)),
-                        key=lambda cell: (-cell[0], abs(cell[1] - py), cell[1]))
+                         and (variant != "nested"
+                              or cell[0] != px + 4 * direction)),
+                        key=lambda point: (-direction * point[0],
+                                           abs(point[1] - py), point[1]))
     if secret_exit:
         # Preserve a clear, legible approach from the reward chamber to the
         # elevator door instead of piling loot in front of it.
-        candidates = [cell for cell in candidates
-                      if cell not in {(east, elevator_y),
-                                      (east - 1, elevator_y)}]
+        candidates = [point for point in candidates
+                      if point not in {(back, elevator_y),
+                                       (back - direction, elevator_y)}]
     reward_count = 7 if number == 9 else 3
     if len(candidates) < reward_count:
         return None
@@ -3850,13 +3865,13 @@ def _carve_secret_pocket(tiles: list[int], things: list[int], px: int, py: int,
     if secret_exit:
         wx, wy = elevator_door
         for depth in (1, 2):
-            _set(tiles, wx + depth, wy, FLOOR)
+            _set(tiles, wx + direction * depth, wy, FLOOR)
         for depth in (1, 2, 3):
             for side in (-1, 1):
-                _set(tiles, wx + depth, wy + side, ELEVATOR_TILE)
-        _set(tiles, wx + 3, wy, ELEVATOR_TILE)
+                _set(tiles, wx + direction * depth, wy + side, ELEVATOR_TILE)
+        _set(tiles, wx + direction * 3, wy, ELEVATOR_TILE)
         _set(tiles, wx, wy, DOOR_ELEVATOR)
-        _set(tiles, wx + 2, wy, SECRET_EXIT_ZONE)
+        _set(tiles, wx + direction * 2, wy, SECRET_EXIT_ZONE)
     _set(things, *entry, PUSHWALL)
     if protected is not None:
         protected.update(footprint)
@@ -6344,41 +6359,54 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
         # Build and rank the entire host roster before carving. Deep optional
         # rooms, distance from the normal lift, and generous room proportions
         # win; a small square is intentionally not a fallback for this route.
+        # Measure that depth within the eligible host roster. The terminal
+        # elevator room cannot host this pocket, and using its often-extreme
+        # distance as the denominator can incorrectly disqualify every
+        # optional room even when one is deep within the explorable floor.
+        host_depth_scale = (max((room_distances[room] for room in candidates),
+                                default=max_room_distance) or 1)
         ranked_hosts = sorted(candidates, key=lambda room: (
-            room_distances[room] / max_room_distance >= 0.45,
+            room_distances[room] / host_depth_scale >= 0.45,
             room_index_by_room[room] not in critical_route,
             roles[room_index_by_room[room]] in ("branch", "ring", "relief", "closet"),
-            room_distances[room] / max_room_distance,
+            room_distances[room] / host_depth_scale,
             abs(room.center[0] - exit_room.center[0])
             + abs(room.center[1] - exit_room.center[1]),
             room.w * room.h), reverse=True)
         ranked_hosts = [room for room in ranked_hosts
-                        if room_distances[room] / max_room_distance >= 0.45]
+                        if room_distances[room] / host_depth_scale >= 0.45]
         variant_order = list(("vault", "reliquary", "gallery", "nested"))
         rng.shuffle(variant_order)
         placed_exit = None
         exit_host = None
+        exit_direction = 1
         for variant in variant_order:
             for room in ranked_hosts:
-                placed_exit = _place_secret(
-                    tiles, things, room, rng, variant,
-                    room_distances[room] / max_room_distance, True,
-                    reward_quality=int(config.secret_reward_quality),
-                    number=number, protected=secret_protected)
+                for direction in (1, -1):
+                    placed_exit = _place_secret(
+                        tiles, things, room, rng, variant,
+                        room_distances[room] / host_depth_scale, True,
+                        reward_quality=int(config.secret_reward_quality),
+                        number=number, protected=secret_protected,
+                        direction=direction)
+                    if placed_exit:
+                        exit_host = room
+                        exit_direction = direction
+                        break
                 if placed_exit:
-                    exit_host = room
                     break
             if placed_exit:
                 break
         if placed_exit is None or exit_host is None:
             raise ValueError("no substantial deep host fits the secret elevator")
         reward, realized_variant, push_cell = placed_exit
-        depth_ratio = room_distances[exit_host] / max_room_distance
+        depth_ratio = room_distances[exit_host] / host_depth_scale
         rewards.append(reward)
         secret_variants.append(realized_variant)
         secret_details.append(SecretDetail(
             realized_variant, 3, room_index_by_room[exit_host], depth_ratio,
-            push_cell, True, "symmetric-landmark", number + 1))
+            push_cell, True, "symmetric-landmark", number + 1,
+            exit_direction))
         reserved.add(reward)
         candidates.remove(exit_host)
 
@@ -6471,7 +6499,11 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
         else:
             break
     reserved.update(secret_protected)
-    reserved.update((index % GRID - 1, index // GRID)
+    known_push_directions = {detail.pushwall: detail.push_direction
+                             for detail in secret_details}
+    reserved.update((index % GRID
+                     - known_push_directions.get((index % GRID, index // GRID), 1),
+                     index // GRID)
                     for index, thing in enumerate(things) if thing == PUSHWALL)
     if is_boss and scheduled_gate.colors[:1] == ("silver",):
         anchor_route_end = critical_route.index(anchor_index) + 1
@@ -7217,15 +7249,25 @@ def validate_map(level: GeneratedMap) -> None:
                  if thing == PUSHWALL]
     if len(pushwalls) < len(level.secret_rewards):
         raise ValueError("secret reward has no pushwall")
-    # Each pushed wall slides two tiles east and permanently occupies its
-    # resting cell, so rewards are validated against the post-push layout.
-    rests = {(x + 2, y) for x, y in pushwalls}
+    # Most pockets open eastward, while a secret elevator may use either
+    # horizontal face of its host room. Track both its outer wall and the
+    # second wall of a nested pocket so reachability models the real push.
+    push_directions = {detail.pushwall: detail.push_direction
+                       for detail in level.secret_details}
+    for detail in level.secret_details:
+        if detail.shape == "nested":
+            x, y = detail.pushwall
+            push_directions[(x + 4 * detail.push_direction, y)] = detail.push_direction
+    rests = {(x + 2 * push_directions.get((x, y), 1), y)
+             for x, y in pushwalls}
     for x, y in pushwalls:
+        direction = push_directions.get((x, y), 1)
         if _is_floor(_at(level.tiles, x, y)):
             raise ValueError("pushwall trigger is not on a solid wall")
-        if not _is_floor(_at(level.tiles, x - 1, y)):
+        if not _is_floor(_at(level.tiles, x - direction, y)):
             raise ValueError("pushwall has no movement clearance")
-        if not all(_is_floor(_at(level.tiles, x + step, y)) for step in (1, 2)):
+        if not all(_is_floor(_at(level.tiles, x + direction * step, y))
+                   for step in (1, 2)):
             raise ValueError("pushwall has no two-tile backstop")
         if _at(level.tiles, x, y) not in SECRET_HINT_WALLS:
             raise ValueError("pushwall is not hinted by a decor wall tile")
@@ -7237,9 +7279,11 @@ def validate_map(level: GeneratedMap) -> None:
     while pending:
         opened = _reachable(level.tiles, level.start, locked_open=True,
                             extra_passable=pushed,
-                            blocked={(x + 2, y) for x, y in pushed})
+                            blocked={(x + 2 * push_directions.get((x, y), 1), y)
+                                     for x, y in pushed})
         ready = sorted((wall for wall in pending
-                        if (wall[0] - 1, wall[1]) in opened),
+                        if (wall[0] - push_directions.get(wall, 1), wall[1])
+                        in opened),
                        key=lambda cell: (cell[1], cell[0]))
         if not ready:
             raise ValueError("pushwall cannot be approached")
@@ -7255,8 +7299,10 @@ def validate_map(level: GeneratedMap) -> None:
         others = pushed - {wall}
         bypass = _reachable(level.tiles, level.start, locked_open=True,
                             extra_passable=others,
-                            blocked={(x + 2, y) for x, y in others})
-        if (wall[0] + 1, wall[1]) in bypass:
+                            blocked={(x + 2 * push_directions.get((x, y), 1), y)
+                                     for x, y in others})
+        direction = push_directions.get(wall, 1)
+        if (wall[0] + direction, wall[1]) in bypass:
             raise ValueError("pushwall is bypassable without being pushed")
     opened = _reachable(level.tiles, level.start, locked_open=True,
                         extra_passable=pushed, blocked=rests)
@@ -7273,14 +7319,16 @@ def validate_map(level: GeneratedMap) -> None:
             raise ValueError("designated secret-route map needs exactly one secret exit")
         index = level.tiles.index(SECRET_EXIT_ZONE)
         zx, zy = index % GRID, index // GRID
-        if (_at(level.tiles, zx + 1, zy) != ELEVATOR_TILE
-                or not _is_floor(_at(level.tiles, zx - 1, zy))
-                or _at(level.tiles, zx - 2, zy) != DOOR_ELEVATOR):
+        direction = exit_details[0].push_direction
+        if (_at(level.tiles, zx + direction, zy) != ELEVATOR_TILE
+                or not _is_floor(_at(level.tiles, zx - direction, zy))
+                or _at(level.tiles, zx - 2 * direction, zy) != DOOR_ELEVATOR):
             raise ValueError("secret exit is not inside a real elevator car")
         if any(_at(level.tiles, x, zy + side) != ELEVATOR_TILE
                for x in range(zx - 1, zx + 2) for side in (-1, 1)):
             raise ValueError("secret elevator is missing its side rails")
-        outer_shell = ({(zx + 2, zy + side) for side in range(-2, 3)}
+        outer_shell = ({(zx + 2 * direction, zy + side)
+                        for side in range(-2, 3)}
                        | {(x, zy + side) for x in range(zx - 2, zx + 3)
                           for side in (-2, 2)})
         if any(_is_floor(_at(level.tiles, *cell))
@@ -7929,7 +7977,8 @@ def generate_campaign(config: CampaignConfig, output: Path,
                          "pushwall": detail.pushwall,
                          "secret_exit": detail.secret_exit,
                          "hint_treatment": detail.hint_treatment,
-                         "return_floor": detail.return_floor}
+                         "return_floor": detail.return_floor,
+                         "push_direction": detail.push_direction}
                         for detail in level.secret_details],
                     "key_objectives": [
                         {"color": objective.color, "cell": objective.cell,

@@ -308,7 +308,7 @@ class GeneratorTests(unittest.TestCase):
                                 and _at(tiles, *cell) not in generator.DOORS
                                 for cell in outside))
 
-    def test_symmetric_room_profiles_are_varied_but_never_dominate(self):
+    def test_room_profiles_have_authored_symmetry_but_never_dominate(self):
         rooms = [Room(3 + (index % 4) * 14, 3 + (index // 4) * 16, 10, 10)
                  for index in range(8)]
         tiles = [WALL] * (GRID * GRID)
@@ -321,6 +321,14 @@ class GeneratorTests(unittest.TestCase):
         self.assertEqual(len(shapes), 2)
         self.assertEqual(set(anchors), set(shapes))
         self.assertLessEqual(len(shapes), len(rooms) // 4)
+        horizontal_families = {
+            "stepped-cross", "shallow-t", "paired-side-bays",
+            "paired-end-bays",
+        }
+        vertical_families = {
+            "stepped-cross", "paired-side-bays", "offset-side-bay",
+            "paired-end-bays",
+        }
         for room_index in shapes:
             room = rooms[room_index]
             carved = {(x, y) for y in range(room.y, room.y + room.h)
@@ -328,8 +336,10 @@ class GeneratorTests(unittest.TestCase):
                       if _at(tiles, x, y) == WALL}
             self.assertTrue(carved)
             for x, y in carved:
-                self.assertIn((2 * room.x + room.w - 1 - x, y), carved)
-                self.assertIn((x, 2 * room.y + room.h - 1 - y), carved)
+                if shapes[room_index] in horizontal_families:
+                    self.assertIn((2 * room.x + room.w - 1 - x, y), carved)
+                if shapes[room_index] in vertical_families:
+                    self.assertIn((x, 2 * room.y + room.h - 1 - y), carved)
 
     def test_spears_are_wall_backed_armory_displays(self):
         room = Room(10, 10, 12, 10)
@@ -821,25 +831,28 @@ class GeneratorTests(unittest.TestCase):
         level = generate_map(CampaignConfig(seed=44), 3, secret_exit=True)
         self.assertEqual(level.tiles.count(SECRET_EXIT_ZONE), 1)
         index = level.tiles.index(SECRET_EXIT_ZONE)
+        detail = next(detail for detail in level.secret_details if detail.secret_exit)
+        direction = detail.push_direction
         # The modzone floor cell must face a real elevator switch: that pair
         # is what ECWolf rewrites into an Exit_Secret trigger.
-        self.assertEqual(_at(level.tiles, index % 64 + 1, index // 64), ELEVATOR_TILE)
+        self.assertEqual(_at(level.tiles, index % 64 + direction, index // 64),
+                         ELEVATOR_TILE)
         self.assertTrue(level.secret_rewards)
         zx, zy = index % GRID, index // GRID
-        self.assertEqual(_at(level.tiles, zx - 2, zy), generator.DOOR_ELEVATOR)
+        self.assertEqual(_at(level.tiles, zx - 2 * direction, zy),
+                         generator.DOOR_ELEVATOR)
         self.assertTrue(all(_at(level.tiles, x, zy + side) == ELEVATOR_TILE
                             for x in range(zx - 1, zx + 2)
                             for side in (-1, 1)))
         self.assertTrue(all(not _is_floor(_at(level.tiles, *cell))
                             and _at(level.tiles, *cell) not in generator.DOORS
-                            for cell in ({(zx + 2, zy + side)
+                            for cell in ({(zx + 2 * direction, zy + side)
                                          for side in range(-2, 3)}
                                          | {(x, zy + side)
                                             for x in range(zx - 2, zx + 3)
                                             for side in (-2, 2)})))
         closed = _reachable(level.tiles, level.start, locked_open=True)
         self.assertNotIn((zx, zy), closed)
-        detail = next(detail for detail in level.secret_details if detail.secret_exit)
         self.assertNotEqual(detail.shape, "square")
         self.assertGreaterEqual(detail.depth_ratio, 0.45)
 
