@@ -2866,7 +2866,8 @@ def _place_population(config: CampaignConfig, number: int, rooms: list[Room],
                       tiles: list[int], things: list[int], reserved: set[tuple[int, int]],
                       rng: random.Random, start: tuple[int, int],
                       exit_room: Room, *, patrol_chance: float = 0.35,
-                      placements: list[SpritePlacement] | None = None
+                      placements: list[SpritePlacement] | None = None,
+                      actor_clearance: set[tuple[int, int]] | None = None
                       ) -> tuple[int, int, int]:
     progression = (number - 1) / 8
     per_room = max(1, round(config.guard_density * .7 + progression * 2))
@@ -2920,7 +2921,10 @@ def _place_population(config: CampaignConfig, number: int, rooms: list[Room],
         # so a later pillar/barrel/table can't get dropped in a stationary
         # actor's face.
         dx, dy = facings[facing]
-        reserved.add((x + dx, y + dy))
+        facing_cell = (x + dx, y + dy)
+        reserved.add(facing_cell)
+        if actor_clearance is not None:
+            actor_clearance.add(facing_cell)
 
     distances = _floor_distances(tiles, start)
     room_distances = {room: distances.get(room.center, 0) for room in rooms}
@@ -4539,10 +4543,11 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
             reserved.add(key)
         locks += 1
         key_order = key_order + ("gold",)
+    actor_clearance: set[tuple[int, int]] = set()
     enemy_tiers = _place_population(
         config, number, rooms, tiles, things, reserved, rng, start, exit_room,
         patrol_chance=PATROL_CHANCES[int(config.patrol_activity)],
-        placements=pickup_placements)
+        placements=pickup_placements, actor_clearance=actor_clearance)
     _assign_sound_zones(tiles)
     component_of, group_theme = _assign_area_themes(tiles, rooms, districts, rng, number,
                                                     theme_pool=floor_variant.theme_pool)
@@ -4557,6 +4562,10 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
         config, number, rooms, tiles, things, reserved, rng, start, identities,
         critical_route, edges, pickup_placements, preboss_index=preboss_index)
     reserved.difference_update(notch_cells)
+    # A notch anchor can also be the open tile directly in front of an actor.
+    # Releasing the architectural reservation must not erase that later,
+    # independent reason to keep the cell clear.
+    reserved.update(actor_clearance)
     _place_decorations(rooms, tiles, things, reserved, start, rng, roles=roles, specs=specs,
                        jail_rooms=jail_rooms,
                        density=(floor_variant.decor_density
