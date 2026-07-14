@@ -1342,6 +1342,37 @@ class GeneratorTests(unittest.TestCase):
         self.assertTrue(all((x, 2 * travel_y - y) in lamps for x, y in lamps),
                         "matched lamps must occupy opposite sides of the travel line")
 
+    def test_blocking_decor_stays_off_door_to_door_traversal(self):
+        """Tables and barrels may frame a hall, but never occupy its path."""
+        room = Room(10, 10, 12, 8)
+        base_tiles = [WALL] * (GRID * GRID)
+        for y in range(room.y, room.y + room.h):
+            for x in range(room.x, room.x + room.w):
+                base_tiles[y * GRID + x] = FLOOR
+        travel_y = 14
+        base_tiles[travel_y * GRID + room.x - 1] = generator.DOOR_EW
+        base_tiles[travel_y * GRID + room.x + room.w] = generator.DOOR_EW
+        base_tiles[travel_y * GRID + room.x - 2] = FLOOR
+        base_tiles[travel_y * GRID + room.x + room.w + 1] = FLOOR
+        identity = generator.RoomIdentity(
+            "beat", "standard", "spine", 0, "garrison", "barracks", "barracks")
+        saw_table_or_barrel = False
+        for seed in range(30):
+            tiles = list(base_tiles)
+            things = [0] * len(tiles)
+            _place_decorations(
+                [room], tiles, things, set(), (room.x - 2, travel_y),
+                random.Random(seed), identities=[identity])
+            frame = generator._room_traversal_frame(room, tiles)
+            self.assertTrue(frame.path)
+            self.assertTrue(all(_at(things, *cell) not in generator.STATIC_BLOCKING
+                                for cell in frame.path),
+                            f"seed {seed} blocks the authored door-to-door lane")
+            saw_table_or_barrel |= any(item in (24, 25, 36, 58)
+                                       for item in things)
+        self.assertTrue(saw_table_or_barrel,
+                        "test never exercised table/barrel decoration")
+
     def test_bent_traversal_frame_uses_local_path_directions(self):
         room = Room(10, 10, 8, 8)
         tiles = [WALL] * (GRID * GRID)

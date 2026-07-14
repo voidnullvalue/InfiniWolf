@@ -4613,6 +4613,7 @@ class TraversalFrame:
     axis: tuple[int, int]
     stations: tuple[tuple[int, int], ...]
     station_axes: tuple[tuple[int, int], ...]
+    path: tuple[tuple[int, int], ...]
 
 
 def _room_anchors(room: Room, tiles: list[int]) -> RoomAnchors:
@@ -4721,7 +4722,8 @@ def _room_traversal_frame(room: Room, tiles: list[int],
             local_axis = (((1 if dx >= 0 else -1), 0) if abs(dx) >= abs(dy) and dx
                           else (0, (1 if dy >= 0 else -1)) if dy else axis)
             station_axes.append(local_axis)
-    return TraversalFrame(entries, axis, tuple(stations), tuple(station_axes))
+    return TraversalFrame(entries, axis, tuple(stations), tuple(station_axes),
+                          tuple(path))
 
 
 def _traversal_pair_candidates(room: Room, tiles: list[int], frame: TraversalFrame
@@ -5348,6 +5350,12 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
         traversal = _room_traversal_frame(room, tiles, anchors)
         travel_pairs = _traversal_pair_candidates(room, tiles, traversal)
         keep_clear = set(anchors.keep_clear)
+        # Reachability alone still permits a table/barrel composition to
+        # occupy the obvious route between two doors when a cramped detour
+        # remains around it. Preserve the complete authored traversal lane;
+        # blocking decor belongs beside that path, never on top of it.
+        if traversal.entries:
+            keep_clear.update(traversal.path)
         # The outermost floor ring is excluded from `interior` (and thus from
         # every legacy pattern), but wall-flush anchors -- door flanks and
         # landmark frames -- live exactly there, so track it separately.
