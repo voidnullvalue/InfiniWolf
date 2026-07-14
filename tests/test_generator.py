@@ -24,14 +24,15 @@ from infiniwolf.generator import (BOSSES, DECOR_WALLS, DOGS, ELEVATOR_TILE, FAKE
 from infiniwolf.generator import FLOOR, FLOOR_TEN_STONE_THEME, ZONE_MAX
 
 
-def _generate_with_retries(config: CampaignConfig, floor: int, attempts: int = 50):
+def _generate_with_retries(config: CampaignConfig, floor: int, attempts: int = 50,
+                           **kwargs):
     """Mirror generate_campaign's own retry loop: a single (seed, floor,
     attempt) combination may legitimately fail validate_map (same helper as
     the topology suite), so seed sweeps must not assume attempt 0 succeeds."""
     last_error = None
     for attempt in range(attempts):
         try:
-            return generate_map(config, floor, attempt)
+            return generate_map(config, floor, attempt, **kwargs)
         except ValueError as error:
             last_error = error
     raise AssertionError(f"floor {floor} never validated in {attempts} attempts: {last_error}")
@@ -675,6 +676,43 @@ class GeneratorTests(unittest.TestCase):
             observed_modes.update(plan.district_circulation)
         self.assertGreaterEqual(len(observed_modes), 4)
 
+    def test_layout_complexity_controls_planned_room_count_without_larger_rooms(self):
+        expected_targets = {
+            Intensity.VERY_LOW: 16,
+            Intensity.LOW: 18,
+            Intensity.NORMAL: 20,
+            Intensity.HIGH: 22,
+            Intensity.VERY_HIGH: 24,
+        }
+        for intensity, target in expected_targets.items():
+            rng = random.Random(700 + int(intensity))
+            plan = _plan_floor(rng, int(intensity), 5)
+            self.assertEqual(len(plan.specs), target)
+
+        for seed in range(64):
+            width, height = generator._room_size(random.Random(seed), "standard", 5)
+            self.assertIn(width, range(6, 10))
+            self.assertIn(height, range(6, 10))
+
+    def test_normal_layouts_recover_local_fillers_instead_of_staying_sparse(self):
+        realized_counts = []
+        realization_ratios = []
+        for seed in range(12):
+            config = CampaignConfig(seed=seed)
+            for floor in (1, 3, 5, 7):
+                rng = random.Random(config.floor_seed(floor, 0))
+                plan = _plan_floor(rng, int(config.layout_complexity), floor)
+                placed = _place_planned_rooms(rng, plan, floor)
+                realized_counts.append(len(placed.rooms))
+                realization_ratios.append(len(placed.rooms) / len(plan.specs))
+                self.assertTrue(all(
+                    0 <= first < len(placed.rooms) and 0 <= second < len(placed.rooms)
+                    for first, second in placed.edges))
+
+        self.assertGreaterEqual(sum(realized_counts) / len(realized_counts), 17.5)
+        self.assertGreaterEqual(
+            sum(realization_ratios) / len(realization_ratios), 0.875)
+
     def test_mirrored_notches_produce_symmetric_bites(self):
         room = Room(20, 20, 10, 10)
         tiles = [WALL] * (GRID * GRID)
@@ -847,7 +885,8 @@ class GeneratorTests(unittest.TestCase):
             self.assertEqual(progress, [1])
 
     def test_designated_floor_has_rewarded_secret_elevator(self):
-        level = generate_map(CampaignConfig(seed=44), 3, secret_exit=True)
+        level = _generate_with_retries(
+            CampaignConfig(seed=44), 3, secret_exit=True)
         self.assertEqual(level.tiles.count(SECRET_EXIT_ZONE), 1)
         index = level.tiles.index(SECRET_EXIT_ZONE)
         detail = next(detail for detail in level.secret_details if detail.secret_exit)
@@ -879,8 +918,10 @@ class GeneratorTests(unittest.TestCase):
         # Seed 122, not 121: lock placement can legitimately come up empty on
         # a rare layout, and 121 rerolled into that case when floor variants
         # shifted the rng stream (a 1-in-20 outcome in the surrounding seeds).
-        low = generate_map(CampaignConfig(seed=122, locked_doors=Intensity.VERY_LOW), 4)
-        high = generate_map(CampaignConfig(seed=122, locked_doors=Intensity.VERY_HIGH), 4)
+        low = _generate_with_retries(
+            CampaignConfig(seed=122, locked_doors=Intensity.VERY_LOW), 4)
+        high = _generate_with_retries(
+            CampaignConfig(seed=122, locked_doors=Intensity.VERY_HIGH), 4)
         self.assertEqual(low.locked_doors, 0)
         self.assertGreater(high.locked_doors, 0)
         self.assertIn(GOLD_KEY, high.things)

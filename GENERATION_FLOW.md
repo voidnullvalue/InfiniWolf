@@ -45,7 +45,7 @@ flowchart TD
         E4 --> F[_place_planned_rooms]
         F --> F1[Draw tier-aware sizes<br/>corridors stay narrow and elongated]
         F1 --> F2[Place critical spine first<br/>apply skeleton turn rhythm]
-        F2 --> F3[Attach suites/bays/branches to compatible circulation]
+        F2 --> F3[Attach suites/bays/branches to compatible circulation<br/>rehome saturated filler locally by minimum bbox growth]
         F3 --> F4[Drop optional rooms that cannot remain local<br/>remap surviving rooms and graph edges]
 
         F4 --> G[Paint room floors into 64×64 tiles plane]

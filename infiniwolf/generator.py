@@ -1093,7 +1093,10 @@ def _plan_floor(rng: random.Random, complexity: int, number: int,
         special_family = rng.choice((
             "central-vault", "museum-circuit", "nested-reliquary",
             "abandoned-armory", "treasure-palace"))
-    target = min(20, 14 + 2 * complexity)
+    # Density comes from additional destinations, not inflated room boxes.
+    # The two highest settings now reach beyond Normal's twenty-room plan;
+    # local filler recovery below raises realized density at every setting.
+    target = min(24, 14 + 2 * complexity)
     # Roughly 55% of authored rooms belong to the mandatory progression
     # spine. Optional motifs and side rooms still provide exploration, but
     # the elevator can no longer sit only five rooms away in a twenty-room
@@ -1376,6 +1379,8 @@ def _place_planned_rooms(rng: random.Random, plan: FloorPlan, number: int = 0) -
         parents[child] = next(other for a, b in plan.edges
                               for other in ((b,) if a == child else (a,) if b == child else ())
                               if other < child)
+    planned_parents = dict(parents)
+    reparented: dict[int, int] = {}
     rooms: list[Room] = []
     kept: list[int] = []
     room_by_spec: dict[int, Room] = {}
@@ -1438,8 +1443,33 @@ def _place_planned_rooms(rng: random.Random, plan: FloorPlan, number: int = 0) -
                     "nested-circuit": (2.0, 4.0, 4.0),
                     "bounded-perimeter": (1.5, 4.25, 4.25),
                 }
-                weights = grammar_weights.get(plan.progression_grammar,
-                                              (7.0, 1.5, 1.5))
+                grammar_bias = grammar_weights.get(plan.progression_grammar,
+                                                   (7.0, 1.5, 1.5))
+                # Skeletons own the large-scale turning rhythm while the
+                # progression grammar owns dramatic pacing and loop type.
+                # Multiplying their bounded biases composes both choices
+                # instead of leaving the recorded skeleton as inert metadata.
+                branch_beats = {
+                    max(1, spine_count // 3),
+                    max(2, (2 * spine_count) // 3),
+                }
+                skeleton_bias = {
+                    "bent-spine": ((2.0, 4.0, 4.0) if turning_node
+                                   else (7.0, 1.5, 1.5)),
+                    "parallel-cross": ((1.5, 5.0, 5.0) if turning_node
+                                       else (5.0, 2.5, 2.5)),
+                    "central-wings": ((2.0, 4.5, 4.5)
+                                      if abs(index - spine_count // 2) <= 1
+                                      else (8.0, 1.0, 1.0)),
+                    "forked": ((1.5, 5.0, 5.0) if index in branch_beats
+                               else (6.0, 2.0, 2.0)),
+                    "perimeter-loop": (1.5, 4.25, 4.25),
+                    "staggered-grid": ((2.5, 6.0, 1.0) if index % 2
+                                       else (2.5, 1.0, 6.0)),
+                }[plan.skeleton]
+                weights = tuple(grammar * skeleton
+                                for grammar, skeleton
+                                in zip(grammar_bias, skeleton_bias))
                 side = rng.choices(sides, weights=weights, k=1)[0]
                 gap = (rng.randrange(1, 3) if plan.progression_grammar == "clustered-chain"
                        else rng.randrange(1, 4))
@@ -1482,6 +1512,66 @@ def _place_planned_rooms(rng: random.Random, plan: FloorPlan, number: int = 0) -
                     break
             if room is not None:
                 break
+        if room is None:
+            # A filler room is not semantically tied to its first host. Before
+            # dropping it, try other already-realized rooms in the same
+            # district. Every retry remains a short (two-to-three tile) local
+            # connection, so this fills genuine building space without
+            # creating a long hallway to nowhere.
+            if (index >= spine_count and plan.specs[index].motif == "filler"):
+                alternatives = [
+                    candidate for candidate in kept
+                    if candidate != parent_index
+                    and plan.specs[candidate].district == plan.specs[index].district
+                    and plan.specs[candidate].role not in {
+                        "start", "arrival", "exit", "victory", "recovery",
+                        "boss-arena", "premium-vault",
+                    }
+                ]
+                rng.shuffle(alternatives)
+                district_mode = (plan.district_circulation[
+                    plan.specs[index].district]
+                    if plan.district_circulation else "suite")
+                prefer_corridor = district_mode not in ("suite", "tunnel-cluster")
+                alternatives.sort(key=lambda candidate: (
+                    0 if (prefer_corridor
+                          and plan.specs[candidate].tier == "corridor") else 1,
+                    sum(candidate in edge for edge in plan.edges)))
+                min_x = min(room.x for room in rooms)
+                min_y = min(room.y for room in rooms)
+                max_x = max(room.x + room.w for room in rooms)
+                max_y = max(room.y + room.h for room in rooms)
+                current_bbox_area = (max_x - min_x) * (max_y - min_y)
+                candidates = []
+                for alternative_rank, alternative in enumerate(alternatives):
+                    alternative_room = room_by_spec[alternative]
+                    counts = used_sides.setdefault(alternative, {})
+                    sides = [(1, 0), (-1, 0), (0, 1), (0, -1)]
+                    rng.shuffle(sides)
+                    sides.sort(key=lambda side: counts.get(side, 0))
+                    for side_rank, side in enumerate(sides):
+                        for gap in (2, 3):
+                            for jitter_rank, jitter in enumerate(_snap_offsets(
+                                    alternative_room, *sizes[index], side, rng)):
+                                candidate = adjacent(
+                                    alternative_room, sizes[index], side, gap, jitter)
+                                if legal(candidate):
+                                    expanded_area = (
+                                        max(max_x, candidate.x + candidate.w)
+                                        - min(min_x, candidate.x)) * (
+                                        max(max_y, candidate.y + candidate.h)
+                                        - min(min_y, candidate.y))
+                                    candidates.append((
+                                        expanded_area - current_bbox_area,
+                                        gap, alternative_rank, side_rank,
+                                        jitter_rank, candidate, alternative, side))
+                if candidates:
+                    _, _, _, _, _, room, parent_index, side = min(
+                        candidates, key=lambda candidate: candidate[:5])
+                    parents[index] = parent_index
+                    reparented[index] = parent_index
+                    counts = used_sides.setdefault(parent_index, {})
+                    counts[side] = counts.get(side, 0) + 1
         if room is None:
             # Optional filler is valuable only while it remains a local side
             # room. Scattering it across the map creates a long corridor that
@@ -1528,6 +1618,10 @@ def _place_planned_rooms(rng: random.Random, plan: FloorPlan, number: int = 0) -
 
     edges = []
     for a, b in plan.edges:
+        if b in reparented and a == planned_parents[b]:
+            a = reparented[b]
+        elif a in reparented and b == planned_parents[a]:
+            b = reparented[a]
         if ((a in dropped or b in dropped)
                 and (plan.specs[a].motif in {"ring", "courtyard", "service", "ladder"}
                      or plan.specs[b].motif in {"ring", "courtyard", "service", "ladder"})):

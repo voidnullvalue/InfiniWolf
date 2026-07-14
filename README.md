@@ -78,7 +78,10 @@ how clean or grim rooms look, and secret
 reward quality shifts the secret-room reward mix. Theme bias strongly favors a
 floor identity without forcing every floor to repeat it; `mixed` keeps the
 default rotating sequence. Adjacent floors are guaranteed to use different
-base identities and different circulation skeletons.
+base identities and different circulation skeletons. Layout complexity now
+scales planned room count through 16/18/20/22/24 rooms; saturated optional
+fillers try another nearby host in the same district, increasing the number of
+distinct rooms without enlarging their dimensions or creating remote corridors.
 
 Using the same version, commit, seed, and settings produces byte-identical output. The named `LittleEntropyMachine` seed source derives independent floor, variant, circulation, progression-grammar, lock, vine-sector, rare-gallery, and rare-motif streams without retry attempts perturbing campaign-scale choices. A manifest inside the PK3 records that seed source, the resolved seed and settings, arrival elevator, wall and room identity, encounter compositions, patrol routes, the single-floor corridor-vine schedule, rare guard galleries, special-floor family, room shapes, lighting families, key objectives, bounded secrets, pickup compositions, and validation results. Every generated PK3 also includes `infiniwolf-settings.txt`: a plain-text record of the exact version, commit, resolved seed, every control value, and a copyable reproduction command.
 
@@ -123,7 +126,7 @@ Generated packages contain only WAD map data, MAPINFO, and reproducibility metad
 pip install pyinstaller .
 pyinstaller --onefile --windowed --name InfiniWolf run.py
 pyinstaller --onefile --name infiniwolf-cli infiniwolf_cli.py
-python3 packaging/make_release.py --platform linux --version 1.5.1   # or windows / macos
+python3 packaging/make_release.py --platform linux --version 1.6.0   # or windows / macos
 ```
 
 The script downloads ECWolf's official prebuilt binary for the target platform from `maniacsvault.net`, checks it against a pinned SHA-256, and packages it alongside the two executables. It never touches Wolfenstein 3D game data.

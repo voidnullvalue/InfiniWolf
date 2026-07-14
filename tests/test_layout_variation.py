@@ -13,6 +13,23 @@ class LayoutVariationTests(unittest.TestCase):
         self.assertGreaterEqual(len(set(sequence)), 4)
         self.assertFalse(any(a == b for a, b in zip(sequence, sequence[1:])))
 
+    def test_circulation_skeletons_change_spine_geometry_not_only_metadata(self):
+        signatures = set()
+        for skeleton in generator.CIRCULATION_SKELETONS:
+            rng = random.Random(100)
+            plan = generator._plan_floor(
+                rng, 3, 5, skeleton=skeleton,
+                progression_grammar="hub-relay")
+            placed = generator._place_planned_rooms(rng, plan, 5)
+            spine_count = next(
+                index for index, spec in enumerate(plan.specs)
+                if spec.role == "exit") + 1
+            signatures.add(tuple(
+                (room.x, room.y, room.w, room.h)
+                for room in placed.rooms[:spine_count]))
+
+        self.assertGreaterEqual(len(signatures), 4)
+
     def test_rare_motif_schedule_is_three_percent_and_late_only(self):
         schedules = [generator._rare_motif_schedule(CampaignConfig(seed=seed))
                      for seed in range(5000)]
@@ -57,8 +74,17 @@ class LayoutVariationTests(unittest.TestCase):
         self.assertEqual(len(profiles), len(families))
 
     def test_scheduled_rare_motif_remains_optional_and_keeps_keys_out(self):
-        level = generator.generate_map(
-            CampaignConfig(seed=42), 7, 1, rare_motif_enabled=True)
+        last_error = None
+        for attempt in range(50):
+            try:
+                level = generator.generate_map(
+                    CampaignConfig(seed=42), 7, attempt,
+                    rare_motif_enabled=True)
+                break
+            except ValueError as error:
+                last_error = error
+        else:
+            self.fail(f"scheduled rare motif never validated: {last_error}")
         self.assertIsNotNone(level.rare_motif)
         room_index = level.rare_motif.room_index
         self.assertNotIn(room_index, level.critical_route)
