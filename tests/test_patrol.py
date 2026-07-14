@@ -4,8 +4,7 @@ import unittest
 from infiniwolf.config import CampaignConfig
 from infiniwolf.generator import (DOORS, PATROL_GUARDS, PATROL_OFFICERS,
                                    PATROL_POINT_DIRECTIONS, PATROL_SS, PATROL_DOGS,
-                                   _at, _is_floor, _patrol_actor_direction,
-                                   generate_map, validate_patrols)
+                                   _at, _is_floor, generate_map, validate_patrols)
 
 
 def _generate_with_retries(config: CampaignConfig, floor: int, attempts: int = 50):
@@ -33,21 +32,31 @@ class PatrolTests(unittest.TestCase):
         """Exercise the exact TryWalk-only-current-direction oracle end to end."""
         patrols = 0
         markers = 0
+        expected_markers = 0
         for seed in ("alpha", "bravo"):
             for floor in (2, 8):
                 level = _generate_with_retries(CampaignConfig(seed=seed), floor)
                 validate_patrols(level)
+                routes = [encounter for encounter in level.encounters
+                          if encounter.patrol_kind]
+                patrols += len(routes)
+                for route in routes:
+                    self.assertEqual(len(route.cells), 1)
+                    turn_count = (2 if route.patrol_kind in
+                                  ("hall-shuttle", "doorway-shuttle") else 4)
+                    route_markers = [cell for cell in route.patrol_path
+                                     if _at(level.things, *cell)
+                                     in PATROL_POINT_DIRECTIONS]
+                    self.assertEqual(len(route_markers), turn_count)
+                    expected_markers += turn_count
                 for index, thing in enumerate(level.things):
                     x, y = index % 64, index // 64
-                    if _patrol_actor_direction(thing) is not None:
-                        patrols += 1
                     if thing in PATROL_POINT_DIRECTIONS:
                         markers += 1
                         self.assertTrue(_is_floor(_at(level.tiles, x, y)))
                         self.assertNotIn(_at(level.tiles, x, y), DOORS)
         self.assertGreater(patrols, 0)
-        # Each current route is a rectangle with its four corners as markers.
-        self.assertEqual(markers, patrols * 4)
+        self.assertEqual(markers, expected_markers)
 
 
 if __name__ == "__main__":

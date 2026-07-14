@@ -18,11 +18,15 @@ flowchart TD
     B --> B2[_circulation_sequence<br/>non-repeating building skeletons]
     B --> B3[_lock_schedule<br/>campaign gold/silver gate quota]
     B --> B4[Choose the one secret-elevator source floor]
+    B --> B5[Nominate one possible overgrown floor<br/>1–2 longitudinal hallway runs]
+    B --> B6[Rarely nominate one possible guard-gallery floor]
 
     B1 --> C{{For floors 1 through 10}}
     B2 --> C
     B3 --> C
     B4 --> C
+    B5 --> C
+    B6 --> C
 
     C --> D[Derive floor_seed number + attempt<br/>create isolated floor RNG]
 
@@ -46,7 +50,7 @@ flowchart TD
         G2 --> G3[_carve_connection for every graph edge<br/>safe portal route + protected seam fallback]
         G3 --> G4[_widen_corridors where geometry and traffic allow]
 
-        G4 --> H[_place_arrival_elevator<br/>sealed inert cab + door behind directional player start]
+        G4 --> H[_place_arrival_elevator<br/>weighted inactive façade/open-car/closed-car arrival<br/>with native bounded elevator geometry]
         H --> H1[Measure graph/tile depth from start]
         H1 --> H2[Select post-climax elevator candidate]
         H2 --> H3{Route contains ≥55% of rooms,<br/>crosses a district, and reaches ≥75% depth?}
@@ -77,17 +81,22 @@ flowchart TD
         K -- no --> M[Resolve finalized room identity]
         K3 --> M
         M --> M1[Assign sound zones and district wall-material groups]
-        M1 --> M2[Select jail rooms and apply wall landmarks]
+        M1 --> M2[Select jail rooms and apply explicit material families<br/>plain variants, gated damage, sparse landmarks]
         M2 --> M3[Combine role, tier, motif, district, variant,<br/>special family, material, and balanced room concept]
+        M3 --> M4[Compose rare sealed fake door, matched stained glass,<br/>or outside-most pillar-hidden sky vista]
+        M4 --> M5{Guard-gallery floor and safe optional formal room?}
+        M5 -- yes --> M6[Reserve inaccessible rear chamber<br/>seal its full visible face with matched pillars]
+        M5 -- no --> L
 
-        M3 --> L[_place_population from finalized room identity]
+        M6 --> L[_place_population from finalized room identity]
         L --> L1[Compute depth-based encounter budget per room<br/>floor 10 scales from its source floor]
         L1 --> L2[Choose one room squad and encounter template<br/>sentry, flank, ambush, strongpoint, objective guard]
         L2 --> L3[Reserve room loops, compact loops, and hall/door shuttles<br/>until the patrol target share is approached]
         L3 --> L4[Rank actor slots from entries, visibility, traversal,<br/>objectives, depth, and start safety]
         L4 --> L5[Record EncounterPlacement provenance<br/>place contextual dog food near actual dog packs]
+        L5 --> L6[If gallery exists, add exactly two mirrored guards<br/>facing and firing through its pillar screen]
 
-        L5 --> N[_place_authored_pickups]
+        L6 --> N[_place_authored_pickups]
         N --> N1[Translate encounter economy into intents<br/>early recovery, route ammo, post-combat health,<br/>exploration treasure, pre-boss stock-up]
         N1 --> N2[Rank compatible rooms by route position,<br/>threat, concept, branch value, and existing vignettes<br/>floor 10 requires premium + varied expeditions]
         N2 --> N3[_PlacementGrammar chooses a named composition<br/>wall-cache, entry-staging, recovery-station,<br/>treasure-display, corner-cache, or center-dais]
@@ -101,14 +110,15 @@ flowchart TD
         O2 --> O3[Choose one room lighting family<br/>compose traversal-balanced pairs and restrained frames]
         O3 --> O4[Place wall-backed appliances, armor, flags, and spears;<br/>complete cross-room vine screens only]
         O4 --> O5[Check doorway clearance, statics headroom,<br/>full-map reachability, spacing, and reservations]
-        O5 --> O6[Add corridor rhythm lights and valid niche accents]
+        O5 --> O6[On the nominated floor only, optionally fill<br/>1–2 safe hallway lengths with vines; prefer an existing ambush]
+        O6 --> O7[Add corridor rhythm lights and valid niche accents]
 
-        O6 --> P[Build GeneratedMap metadata<br/>arrival, encounters, patrols, guard recesses,<br/>special rooms, shapes, secrets, keys, and pickups]
+        O7 --> P[Build GeneratedMap metadata<br/>arrival, encounters, patrols, guard recesses/galleries,<br/>special rooms, walls, vines, shapes, secrets, keys, and pickups]
         P --> Q[validate_map]
         Q --> Q1[Arrival cab/player facing, connectivity, elevator,<br/>depth, bends, continuous multi-district critical route]
         Q1 --> Q2[Door axes, every gold/silver key state,<br/>physical-key detours and distinct hosts]
         Q2 --> Q3[Secret shell, push distance, no bypass;<br/>bounded car and symmetric hint for secret elevator]
-        Q3 --> Q4[Encounter provenance, ambush spacing, patrol target/routes,<br/>guard-recess symmetry and actor ownership]
+        Q3 --> Q4[Encounter provenance, ambush spacing, patrol target/routes,<br/>guard-recess/gallery symmetry, ownership, and no trapped pickups]
         Q4 --> Q5[Circulation hierarchy and corridor-mediated ratio]
         Q5 --> Q6[Every in-room pickup matches one exact provenance record]
         Q6 --> Q7[Enemy codes, object limits, sound zones,<br/>boss/reward-floor contracts, shapes and decor invariants]
@@ -132,7 +142,8 @@ flowchart TD
     U --> Y{All ten floors accepted?}
     W --> Y
     Y -- no --> C
-    Y -- yes --> AA[Write deterministic MAPINFO,<br/>manifest, and ten ECWolf map WADs<br/>to a temporary campaign file]
+    Y -- yes --> Y1[Validate adjacent floor types and skeletons differ;<br/>enforce one-floor vine and guard-gallery budgets]
+    Y1 --> AA[Write deterministic MAPINFO, manifest,<br/>plain-text reproduction settings, and ten ECWolf map WADs<br/>to a temporary campaign file]
     AA --> AB[validate_package<br/>reopen archive, verify entries, headers,<br/>dimensions, manifest, and asset-free contents]
     AB --> AC{Package valid and not cancelled?}
     AC -- no --> Z
@@ -157,11 +168,14 @@ flowchart TD
 | Output | Planner responsible | Required explanation |
 |---|---|---|
 | Building circulation | `_plan_floor` + `_place_planned_rooms` | Skeleton, district mode, corridor node, suite/branch role |
-| Floor arrival | `_place_arrival_elevator` | First-route direction, inert bounded cab, player position and facing |
+| Floor arrival | `_place_arrival_elevator` | First-route direction, inactive bounded archetype, contextual car item, player position and facing |
 | Elevator and keys | exit/gate planners | Mandatory route depth, explicit key states, meaningful physical-key detours |
 | Secret rooms/elevator | `_place_secret` / `_carve_secret_pocket` | Isolated shape, pushwall entrance, reward tier, bounded elevator car |
 | Enemies | `_place_population` | Room identity, encounter template, squad family, reveal slot, facing or patrol route |
 | Guard recesses | `_carve_guard_recesses` + encounter planner | Rare mirrored hallway pair and its owned blind-corner sentry |
+| Guard gallery | `_place_guard_gallery` + gallery encounter planner | Optional symmetric room, complete matched screen, inaccessible pickup-free rear chamber, owned firing pair |
+| Wall materials | `_assign_area_themes` + `_apply_wall_theme` | Compatible district family, room identity, coherent variant/damage/landmark, validated special composition |
+| Hallway vines | campaign schedule + `_place_decorations` | Single nominated floor, complete longitudinal run, same-path budget, optional existing ambush anchor |
 | Gameplay pickups | `_place_authored_pickups` + `_PlacementGrammar` | Economy intent, owning room, named composition, exact provenance |
 | Room decoration | `_place_decorations` | Room identity, one lighting family, architectural anchor, composition, reachability |
 | Symmetric room profiles | shape carvers + `_place_decorations` | Bounded mirrored structure and matching themed accents |

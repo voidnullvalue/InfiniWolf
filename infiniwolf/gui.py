@@ -7,6 +7,7 @@ from pathlib import Path
 import threading
 from tkinter import filedialog, messagebox, ttk
 
+from .build_info import build_label
 from .config import CampaignConfig, Intensity, ThemeBias
 from .generator import GenerationCancelled, generate_campaign, read_manifest
 from .runtime import AppSettings, launch_ecwolf, load_settings, save_settings, validate_settings
@@ -44,7 +45,7 @@ class App(ttk.Frame):
     def __init__(self, master: tk.Tk) -> None:
         super().__init__(master, padding=16)
         self.grid(sticky="nsew")
-        master.title("InfiniWolf Campaign Generator")
+        master.title(f"InfiniWolf {build_label()} — Campaign Generator")
         master.columnconfigure(0, weight=1)
         master.rowconfigure(0, weight=1)
         self.seed = tk.StringVar()
@@ -90,6 +91,8 @@ class App(ttk.Frame):
         self.play_button.grid(row=5, column=2, pady=(16, 0), sticky="e")
         self._sync_play_state()
         ttk.Label(self, textvariable=self.status, wraplength=520).grid(row=6, column=0, columnspan=3, sticky="w", pady=(12, 0))
+        ttk.Label(self, text=f"InfiniWolf {build_label()}").grid(
+            row=7, column=0, columnspan=3, sticky="e", pady=(8, 0))
         self.columnconfigure(1, weight=1)
 
     def _control_tab(self, frame: ttk.Frame,

@@ -6,12 +6,18 @@ import argparse
 from pathlib import Path
 from typing import Sequence
 
+from .build_info import build_label
 from .config import CampaignConfig, Intensity, ThemeBias
 from .generator import generate_campaign
 
 
 def parser() -> argparse.ArgumentParser:
-    result = argparse.ArgumentParser(prog="infiniwolf", description="Generate a WL6 campaign for ECWolf.")
+    result = argparse.ArgumentParser(
+        prog="infiniwolf",
+        description=f"InfiniWolf {build_label()} — generate a WL6 campaign for ECWolf.",
+    )
+    result.add_argument("--version", action="version",
+                        version=f"%(prog)s {build_label()}")
     result.add_argument("--seed", help="Integer, 0x-prefixed integer, or stable text seed; blank uses time")
     result.add_argument("--output", type=Path, default=Path.cwd() / "infiniwolf.pk3")
     for name in ("guard-density", "enemy-toughness", "supplies", "treasure",
@@ -27,6 +33,7 @@ def parser() -> argparse.ArgumentParser:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = parser().parse_args(argv)
+    print(f"InfiniWolf {build_label()}")
     config = CampaignConfig.with_seed(
         args.seed,
         guard_density=Intensity(args.guard_density),

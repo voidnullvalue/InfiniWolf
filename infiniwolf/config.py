@@ -54,6 +54,12 @@ class LittleEntropyMachine:
     def circulation(self, floor: int) -> int:
         return self._digest(f"infiniwolf:circulation:v1:{self.seed}:{floor}")
 
+    def vines(self) -> int:
+        return self._digest(f"infiniwolf:vines:v1:{self.seed}")
+
+    def guard_gallery(self) -> int:
+        return self._digest(f"infiniwolf:guard-gallery:v1:{self.seed}")
+
 
 @dataclass(frozen=True, slots=True)
 class CampaignConfig:
@@ -101,6 +107,14 @@ class CampaignConfig:
         if not 1 <= floor <= 10:
             raise ValueError("floor must be between 1 and 10")
         return LittleEntropyMachine(self.seed).circulation(floor)
+
+    def vine_seed(self) -> int:
+        """Campaign-wide stream for the single overgrown hallway sector."""
+        return LittleEntropyMachine(self.seed).vines()
+
+    def guard_gallery_seed(self) -> int:
+        """Campaign-wide stream for the rare inaccessible combat gallery."""
+        return LittleEntropyMachine(self.seed).guard_gallery()
 
     def to_json(self) -> str:
         values = asdict(self)

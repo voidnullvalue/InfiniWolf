@@ -1,11 +1,23 @@
+from contextlib import redirect_stdout
+import io
 from pathlib import Path
 import tempfile
 import unittest
 
+from infiniwolf import __version__
+from infiniwolf.build_info import build_label
 from infiniwolf.cli import main, parser
 
 
 class CliTests(unittest.TestCase):
+    def test_version_displays_release_and_commit(self):
+        output = io.StringIO()
+        with self.assertRaises(SystemExit) as raised, redirect_stdout(output):
+            parser().parse_args(["--version"])
+        self.assertEqual(raised.exception.code, 0)
+        self.assertIn(__version__, output.getvalue())
+        self.assertIn(build_label(), output.getvalue())
+
     def test_parser_accepts_all_controls(self):
         args = parser().parse_args(["--seed", "test", "--guard-density", "5",
                                     "--layout-complexity", "1", "--atmosphere", "2",

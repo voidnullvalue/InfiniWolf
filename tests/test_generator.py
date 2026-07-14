@@ -40,22 +40,51 @@ def _generate_with_retries(config: CampaignConfig, floor: int, attempts: int = 5
 class GeneratorTests(unittest.TestCase):
     def test_arrival_elevator_is_inert_rock_bounded_and_behind_player(self):
         room = Room(20, 20, 8, 8)
-        tiles = [WALL] * (GRID * GRID)
-        for y in range(room.y, room.y + room.h):
-            for x in range(room.x, room.x + room.w):
-                tiles[y * GRID + x] = FLOOR
-        arrival = generator._place_arrival_elevator(tiles, room, (40, 24))
-        self.assertEqual(_at(tiles, *arrival.door), generator.DOOR_ELEVATOR)
-        self.assertTrue(_is_floor(_at(tiles, *arrival.cab)))
-        self.assertNotIn(ELEVATOR_TILE,
-                         [_at(tiles, *cell) for cell in arrival.footprint])
-        dx, dy = ((0, -1), (1, 0), (0, 1), (-1, 0))[arrival.facing]
-        self.assertEqual(arrival.door,
-                         (arrival.player[0] - 2 * dx,
-                          arrival.player[1] - 2 * dy))
-        for cell in arrival.footprint:
-            if cell not in (arrival.door, arrival.cab):
-                self.assertFalse(_is_floor(_at(tiles, *cell)))
+        # ECWolf expands old-format player starts from thing 19 in its native
+        # East/North/West/South angle order. This table is intentionally
+        # independent of PLAYER_START_CODES so the test catches a rotated
+        # generator convention instead of agreeing with it.
+        engine_facing = {19: (1, 0), 20: (0, -1),
+                         21: (-1, 0), 22: (0, 1)}
+        kinds = ("flush-facade", "outside-empty", "outside-supply",
+                 "inside-open", "inside-closed")
+        for kind in kinds:
+            with self.subTest(kind=kind):
+                tiles = [WALL] * (GRID * GRID)
+                for y in range(room.y, room.y + room.h):
+                    for x in range(room.x, room.x + room.w):
+                        tiles[y * GRID + x] = FLOOR
+                arrival = generator._place_arrival_elevator(
+                    tiles, room, (40, 24), random.Random(1),
+                    forced_kind=kind)
+                self.assertNotIn(ELEVATOR_TILE,
+                                 [_at(tiles, *cell)
+                                  for cell in arrival.footprint])
+                dx, dy = ((0, -1), (1, 0), (0, 1), (-1, 0))[arrival.facing]
+                self.assertEqual(
+                    engine_facing[generator.PLAYER_START_CODES[arrival.facing]],
+                    (dx, dy))
+                if kind.startswith("inside-"):
+                    self.assertEqual(arrival.player,
+                                     (arrival.portal[0] - 2 * dx,
+                                      arrival.portal[1] - 2 * dy))
+                else:
+                    self.assertEqual(arrival.portal,
+                                     (arrival.player[0] - 2 * dx,
+                                      arrival.player[1] - 2 * dy))
+                if kind == "flush-facade":
+                    self.assertEqual(_at(tiles, *arrival.portal),
+                                     generator.DUMMY_ELEVATOR_TILE)
+                    self.assertFalse(arrival.car_cells)
+                else:
+                    self.assertTrue(all(_is_floor(_at(tiles, *cell))
+                                        for cell in arrival.car_cells))
+                    if kind == "inside-closed":
+                        self.assertIn(_at(tiles, *arrival.portal),
+                                      generator.DOORS)
+                    else:
+                        self.assertTrue(_is_floor(_at(tiles, *arrival.portal)))
+                self.assertEqual(bool(arrival.item), kind == "outside-supply")
 
     def test_generated_floors_record_purposeful_encounters_and_real_patrols(self):
         level = _generate_with_retries(CampaignConfig(seed=42), 4)
@@ -356,6 +385,55 @@ class GeneratorTests(unittest.TestCase):
         self.assertTrue((len(xs) == 1 and ys == set(range(room.y, room.y + room.h)))
                         or (len(ys) == 1
                             and xs == set(range(room.x, room.x + room.w))))
+
+    def test_hallway_vines_fill_a_longitudinal_run_not_one_cell(self):
+        tiles = [WALL] * (GRID * GRID)
+        things = [0] * len(tiles)
+        path = [(x, 20) for x in range(10, 25)]
+        for cell in path:
+            tiles[cell[1] * GRID + cell[0]] = FLOOR
+        _, screens = _place_decorations(
+            [], tiles, things, set(), path[0], random.Random(1), paths=[path],
+            hallway_vine_budget=1)
+        self.assertEqual(len(screens), 1)
+        self.assertEqual(screens[0].kind, "hallway-run")
+        self.assertEqual(screens[0].cells, tuple(path[1:-1]))
+        self.assertGreaterEqual(len(screens[0].cells), 3)
+
+    def test_guard_gallery_is_symmetric_inaccessible_and_pickup_free(self):
+        room = Room(10, 10, 8, 10)
+        tiles = [WALL] * (GRID * GRID)
+        things = [0] * len(tiles)
+        for y in range(room.y, room.y + room.h):
+            for x in range(room.x, room.x + room.w):
+                tiles[y * GRID + x] = FLOOR
+        for y in range(7, room.y + 1):
+            tiles[y * GRID + room.center[0]] = FLOOR
+        identity = generator.RoomIdentity(
+            "branch", "standard", "spine", 0, "garrison", "war-room", "grand")
+        start_identity = generator.RoomIdentity(
+            "start", "standard", "spine", 0, "garrison", "guardpost", "guardpost")
+        reserved = set()
+        galleries = generator._place_guard_gallery(
+            tiles, things, [Room(2, 2, 3, 3), room], [start_identity, identity],
+            ["rectangle", "rectangle"], reserved, random.Random(0),
+            (room.center[0], 7), frozenset({1}))
+        self.assertEqual(len(galleries), 1)
+        gallery = galleries[0]
+        self.assertEqual(len(gallery.screen), room.w)
+        self.assertTrue(all(_at(things, *cell) == 30 for cell in gallery.screen))
+        encounters = []
+        generator._populate_guard_galleries(
+            galleries, things, 5, random.Random(0), encounters)
+        self.assertEqual(encounters[0].template, "guard-gallery")
+        self.assertEqual({(x, y) for x, y, _ in encounters[0].cells},
+                         set(gallery.actor_cells))
+        reachable = generator._reachable(
+            tiles, (room.center[0], 7), locked_open=True,
+            blocked=set(gallery.screen))
+        self.assertFalse(set(gallery.rear_cells) & reachable)
+        self.assertFalse(any(_at(things, *cell) in generator.PICKUP_CODES
+                             for cell in gallery.rear_cells))
 
     def test_seed_3332_floor_one_balances_room_concepts_and_caps_kitchens(self):
         level = _generate_with_retries(CampaignConfig(seed=3332), 1, attempts=3)
@@ -662,7 +740,16 @@ class GeneratorTests(unittest.TestCase):
                 manifest = json.loads(package.read("infiniwolf-manifest.json"))
                 self.assertEqual(manifest["seed"], config.seed)
                 self.assertEqual(manifest["seed_source"], "LittleEntropyMachine")
+                self.assertIn("commit", manifest)
                 self.assertTrue(all(floor["validation"]["passed"] for floor in manifest["floors"]))
+                settings = package.read("infiniwolf-settings.txt").decode("utf-8")
+                self.assertIn(f"version = {manifest['version']}", settings)
+                self.assertIn(f"commit = {manifest['commit']}", settings)
+                self.assertIn(f"seed = {config.seed}", settings)
+                for name, value in manifest["settings"].items():
+                    if name != "seed":
+                        self.assertIn(f"{name} = {value}", settings)
+                self.assertIn("python3 -m infiniwolf --seed", settings)
                 mapinfo = package.read("mapinfo.txt").decode("utf-8")
                 self.assertIn("par =", mapinfo)
                 # Without an explicit floornumber ECWolf shows "Floor 1" on
@@ -916,13 +1003,20 @@ class GeneratorTests(unittest.TestCase):
         accent room) is now visible immediately instead of hiding behind
         whichever one floor number used to select that entry."""
         families = (
-            {1, 2, 3, 4},        # grey stone: GSTONEA1/B1, GSTFLAG1, GSTHTLR1
+            {1, 2, 3, 4, 6, 27, 28},  # grey stone and its signs/landmarks
+            {24, 26, 28},        # damp/slimy grey stone
             {8, 7, 41},          # blue stone: BSTONEA1, BSTCELB1, BSTSIGN1
             {40, 34, 36},        # blue wall: BLUWALL1, BLUSKUL1, BLUSWAS1
             {9},                 # rare floor-10 masonry: BSTONEB1
             {12, 10, 11, 23},    # wood: WOOD1, WODEAGL1, WODHTLR1, WODCROS1
             {15, 14},            # metal: METAL1, METLSGN1
-            {17, 18, 20},        # brick: BRICK1, BRIKWRT1, BRIKEGL1
+            {17, 18, 20, 38},    # brick: BRICK1, BRIKWRT1, BRIKEGL1, BRIKODD1
+            {19, 25},            # purple, clean/blooded
+            {29, 30, 31, 32},    # chipped cave stone, clean/blooded
+            {35, 37, 39, 43, 49},  # grey brick, vent/crack/map/portrait
+            {42, 46, 47},        # marble variants and banner
+            {44, 45},            # brown stone variants
+            {48},                # plaster
         )
         for base, accents in WALL_THEMES:
             materials = {base, *accents}
@@ -1017,7 +1111,7 @@ class GeneratorTests(unittest.TestCase):
             blue_rooms = sum(group_theme[component_of[room.center]][0] == 8
                              for room in level.rooms)
             if blue_rooms > 1:
-                self.assertLess(len(level.jail_rooms), blue_rooms)
+                self.assertLess(len(level.jail_rooms) * 2, blue_rooms)
 
     def test_jail_mortar_pillar_spacing(self):
         room = Room(10, 10, 6, 4)

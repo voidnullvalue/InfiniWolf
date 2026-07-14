@@ -16,6 +16,7 @@ from typing import Callable
 import zipfile
 
 from . import __version__
+from .build_info import COMMIT as BUILD_COMMIT
 from .config import CampaignConfig
 
 GRID = 64
@@ -33,15 +34,20 @@ GOLD_DOORS = frozenset({DOOR_GOLD_EW, DOOR_GOLD_NS})
 SILVER_DOORS = frozenset({DOOR_SILVER_EW, DOOR_SILVER_NS})
 LOCKED_DOORS = GOLD_DOORS | SILVER_DOORS
 DOORS = {DOOR_EW, DOOR_NS, *LOCKED_DOORS, DOOR_ELEVATOR, DOOR_ELEVATOR_NS}
-PLAYER_START = 19  # north-facing player start (things 19-22 are N/E/S/W)
-PLAYER_START_CODES = (19, 20, 21, 22)
+# ECWolf expands old thing 19 through four angles in engine order
+# East/North/West/South. Keep the public planner convention N/E/S/W by
+# explicitly reordering those codes, just as the actor families below do.
+PLAYER_START_CODES = (20, 19, 22, 21)
+PLAYER_START = PLAYER_START_CODES[0]
 PUSHWALL = 98
 # Tile 21 is the real elevator: its north/south faces render as plain
 # elevator paneling and its east/west faces are the exit switch. ECWolf's
 # wolf3d translator disables activation from north/south, so a usable
-# switch must be approached along the east/west axis. Tile 22 (the "fake
-# elevator", a decoy switch that does nothing) is deliberately never used.
+# switch must be approached along the east/west axis. Tile 85 renders the
+# exact same ELEV1 faces but is an ordinary inert wall, which makes it the
+# authentic non-functional arrival façade without introducing an exit trigger.
 ELEVATOR_TILE = 21
+DUMMY_ELEVATOR_TILE = 85
 # Floor code 107 is not a wall: the translator's "modzone 107" converts an
 # adjacent tile-21 Exit_Normal trigger into Exit_Secret. Placing it on the
 # floor cell in front of a hidden elevator switch is how native maps route
@@ -120,33 +126,49 @@ FAMILY_BY_CODE = {code + 36 * tier: family
                   for code in variant for tier in range(3)}
 AMMO_COST = {family: cost for _, family, _, cost in ENEMY_FAMILIES}
 
-# Native WL6 wall tiles only. Each tuple is (base, room accents), and every
-# tile in an entry is verified (by prefix in wolf3d.txt's xlat table, e.g.
-# GSTONE*/BSTONE*/WOD*/METAL*/BRICK*) to belong to the SAME texture family as
-# that entry's base. Mixing families within one theme (e.g. a blue stone base
-# with metal or grey accents) used to be silently possible here -- floor
-# number picked a fixed theme index, so only one entry's mismatch was ever on
-# screen at a time and it went unnoticed. Once theme selection was randomized
-# per floor (any floor can land on any entry), every entry needs to be
-# internally coherent on its own, not just "looks fine on floor N".
-# Accent 13 (FAKEDOR, a sealed door/lift-shutter graphic) and 16 (SKY1, an
-# outdoor-only texture) are deliberately excluded: neither reads as a normal
-# room wall, so they're replaced with plain material variants below.
-# Tile 7 (BSTCELB1, the skeleton-in-a-cage prison-cell wall) reads as a specific set
-# piece, not a generic wall -- it must never be the base fill for an entire
-# floor. It's demoted to a room accent here so only the districts that land
-# on it get a cellblock-styled room; the base stays the plain blue stone (8).
-# BLUSKUL (34) and BLUSWAS (36) are likewise DECOR_WALLS landmarks, kept in
-# their own blue-panel theme rather than mixed into the plain BLUWALL material.
-WALL_THEMES = (
-    (1, (2, 3, 4)),        # grey stone: GSTONEA/B + flag/portrait decor
-    (8, (7, 41)),          # blue stone: BSTONEA + cellblock accent + sign decor
-    (40, ()),              # blue wall: BLUWALL plain panel/brick only
-    (40, (34, 36)),        # blue insignia: BLUWALL + BLUSKUL/BLUSWAS landmark decor
-    (12, (10, 11, 23)),    # wood: WOOD1 + eagle/portrait/cross decor
-    (15, (14,)),           # metal: METAL1 + sign decor
-    (17, (18, 20)),        # brick: BRICK1 + writing/eagle decor
+@dataclass(frozen=True, slots=True)
+class WallMaterialFamily:
+    """One coherent native WL6 material and its purposeful treatments.
+
+    Plain variants may cover a room. Damage variants require a compatible
+    atmosphere/concept. Landmarks are hung as sparse symmetric compositions;
+    they are never selected as bulk wall fill.
+    """
+    name: str
+    base: int
+    plain_variants: tuple[int, ...] = ()
+    damage_variants: tuple[int, ...] = ()
+    landmarks: tuple[int, ...] = ()
+
+    @property
+    def accents(self) -> tuple[int, ...]:
+        return self.plain_variants + self.damage_variants + self.landmarks
+
+
+# Names and grouping come from ECWolf's bundled xlat/wolf3d.txt. These are
+# material families rather than a flat texture lottery: the generator can use
+# the full registered WL6 vocabulary while keeping every visible district
+# coherent. FAKEDOR(13), SKY(16), stained GLASS(33), and inert ELEV1(85) are
+# special compositions and intentionally remain outside the general roster.
+WALL_MATERIALS = (
+    WallMaterialFamily("grey-stone", 1, (2, 27), (), (3, 4, 6, 28)),
+    WallMaterialFamily("damp-grey-stone", 24, (26,), (), (28,)),
+    WallMaterialFamily("blue-stone", 8, (), (), (7, 41)),
+    WallMaterialFamily("blue-panel", 40, (), (), (34, 36)),
+    WallMaterialFamily("wood", 12, (), (), (10, 11, 23)),
+    WallMaterialFamily("metal", 15, (), (), (14,)),
+    WallMaterialFamily("brick", 17, (38,), (), (18, 20)),
+    WallMaterialFamily("purple", 19, (), (25,), ()),
+    WallMaterialFamily("chipped-stone", 29, (), (30, 31, 32), ()),
+    WallMaterialFamily("grey-brick", 35, (), (39,), (37, 43, 49)),
+    WallMaterialFamily("marble", 42, (46,), (), (47,)),
+    WallMaterialFamily("brown-stone", 44, (45,), (), ()),
+    WallMaterialFamily("plaster", 48),
 )
+MATERIAL_BY_BASE = {material.base: material for material in WALL_MATERIALS}
+# Public compatibility view used by validation/tests and by secret hinting.
+WALL_THEMES = tuple((material.base, material.accents)
+                    for material in WALL_MATERIALS)
 JAIL_CANDIDATE_PROBABILITY = 0.35
 # BSTONEB (9) is mottled blue-stone masonry, distinct from the BLUWALL panel.
 # Keep it out of the normal pool: floor 10 occasionally uses it as a rare
@@ -161,7 +183,45 @@ FLOOR_TEN_STONE_THEME = (9, (41,))
 # way they're used in the original game, never as the material of an entire
 # room. Every other accent above is just an alternate plain material and is
 # fine covering a whole room's walls.
-DECOR_WALLS = frozenset({3, 4, 7, 10, 11, 14, 18, 20, 23, 34, 36, 41})
+DECOR_WALLS = frozenset(tile for material in WALL_MATERIALS
+                        for tile in material.landmarks)
+SPECIAL_WALL_TILES = frozenset({13, 16, 33, DUMMY_ELEVATOR_TILE})
+SECRET_HINT_BY_BASE = {
+    19: (25,),   # blooded purple panel
+    29: (30,),   # first, restrained blooded chipped-stone panel
+    44: (45,),   # alternate brown-stone course
+    48: (13,),   # a sealed fake door is the only logical plaster-wall hint
+}
+SECRET_HINT_WALLS = DECOR_WALLS | frozenset(
+    tile for hints in SECRET_HINT_BY_BASE.values() for tile in hints)
+
+# A landmark is only credible where the room identity gives it a reason to
+# exist. The fallback path used by low-level unit tests remains permissive;
+# generated maps always have RoomIdentity metadata and use this routing.
+WALL_LANDMARK_CONCEPTS = {
+    3: frozenset({"guardpost", "checkpoint", "war-room", "trophy-hall"}),
+    4: frozenset({"officers-quarters", "gallery", "trophy-hall", "war-room"}),
+    6: frozenset({"guardpost", "checkpoint", "gallery", "war-room"}),
+    7: frozenset({"jail", "holding-cell", "interrogation-room"}),
+    10: frozenset({"gallery", "war-room", "trophy-hall"}),
+    11: frozenset({"officers-quarters", "gallery", "lounge"}),
+    14: frozenset({"guardpost", "checkpoint", "armory", "workshop"}),
+    18: frozenset({"barracks", "ready-room", "training-room", "guardpost"}),
+    20: frozenset({"gallery", "war-room", "trophy-hall"}),
+    23: frozenset({"burial-chamber", "crypt", "gallery"}),
+    28: frozenset({"guardpost", "checkpoint", "storage", "workshop"}),
+    34: frozenset({"crypt", "ossuary", "trophy-hall"}),
+    36: frozenset({"war-room", "guardpost", "trophy-hall"}),
+    37: frozenset({"storage", "supply-cache", "workshop", "corridor"}),
+    41: frozenset({"jail", "holding-cell", "interrogation-room", "checkpoint"}),
+    43: frozenset({"war-room", "guardpost", "checkpoint", "workshop"}),
+    47: frozenset({"gallery", "trophy-hall", "war-room"}),
+    49: frozenset({"gallery", "trophy-hall", "officers-quarters"}),
+}
+DAMAGED_WALL_CONCEPTS = frozenset({
+    "crypt", "ossuary", "burial-chamber", "jail", "holding-cell",
+    "interrogation-room", "training-room", "workshop", "storage",
+})
 
 # Native WL6 furniture (things-plane old-num, from wolf3d.txt's xlat things
 # table). BLOCKING entries are +SOLID actors (verified against
@@ -314,8 +374,8 @@ class FloorVariant:
     closet_weight: float = 0.45       # _plan_floor filler closet-vs-branch
     extra_motif_chance: float = 0.35  # _plan_floor motif budget roll
     motif_pref: tuple[str, ...] = ()  # motifs promoted ahead of the shuffle
-    # Allowed WALL_THEMES base tiles; () = all. Must keep at least as many
-    # bases as the floor has districts (up to 3) or the pool is ignored.
+    # Allowed wall-material bases; () = all. Must keep at least as many bases
+    # as the floor has districts (up to 3) or the pool is ignored.
     theme_pool: tuple[int, ...] = ()
     jail_probability: float = JAIL_CANDIDATE_PROBABILITY
     decor_density: float = 1.0        # scales blocking/open decor budgets
@@ -326,34 +386,37 @@ class FloorVariant:
 FLOOR_VARIANT_ROTATION = (
     # Tidy military bunker: hard materials, sparse cells, guard fittings.
     FloorVariant("garrison", pillar_chance=0.10, jail_probability=0.15,
-                 theme_pool=(1, 15, 17),
+                 theme_pool=(1, 15, 17, 35, 48),
                  decor_overrides=(("barracks", "guardpost"),)),
     # Cramped dungeon: bitten-into rooms, narrow halls, cellblocks, gore.
     FloorVariant("catacombs", notch_chance=0.32,
                  pillar_chance=0.14, widen_chance=0.55, jail_probability=0.6,
-                 theme_pool=(8, 1, 17), decor_density=0.7,
+                 theme_pool=(8, 1, 24, 29, 44), decor_density=0.7,
                  decor_overrides=(("lounge", "barracks"),)),
     # Stately galleries: long halls, colonnades, wood and insignia panels.
     FloorVariant("grand-halls", hall_chance=0.4, extra_motif_chance=0.6,
                  motif_pref=("gallery",), pillar_chance=0.15, widen_chance=1.0,
-                 theme_pool=(12, 40, 1), decor_density=1.25,
+                 theme_pool=(12, 40, 42, 48, 19), decor_density=1.25,
                  decor_overrides=(("barracks", "lounge"),)),
     # Supply depot: closet-heavy plan, loading niches, barrels everywhere.
     FloorVariant("storehouse", closet_weight=0.65,
-                 pillar_chance=0.08, jail_probability=0.0, theme_pool=(17, 15, 12),
+                 pillar_chance=0.08, jail_probability=0.0,
+                 theme_pool=(17, 15, 12, 35, 44, 48),
                  decor_density=1.15,
                  decor_overrides=(("barracks", "storage"), ("lounge", "storage"))),
     # Officers' quarters: smooth walls, wide halls, lived-in furniture.
     FloorVariant("quarters", notch_chance=0.14, widen_chance=0.9,
                  pillar_chance=0.08,
-                 theme_pool=(12, 40, 1), decor_density=1.1,
+                 theme_pool=(12, 40, 1, 35, 48), decor_density=1.1,
                  decor_overrides=(("guardpost", "lounge"),)),
 )
 # Floors 9 and 10 keep their purpose-built inline treatments (boss arena,
 # treasure vault); the forced variants exist so every floor has a named
 # identity in the manifest and the decoration hooks apply uniformly.
-VARIANT_STRONGHOLD = FloorVariant("stronghold")
-VARIANT_VAULT = FloorVariant("vault")
+VARIANT_STRONGHOLD = FloorVariant(
+    "stronghold", theme_pool=(1, 15, 17, 19, 29, 35, 44))
+VARIANT_VAULT = FloorVariant(
+    "vault", theme_pool=(12, 19, 40, 42, 44, 48))
 
 # In-game display flavor for mapinfo level names.
 _VARIANT_TITLES = {
@@ -561,6 +624,7 @@ class VineScreen:
     kind: str
     room_index: int
     cells: tuple[tuple[int, int], ...]
+    ambush_anchor: tuple[int, int] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -589,12 +653,15 @@ class SecretDetail:
 
 @dataclass(frozen=True, slots=True)
 class ArrivalDetail:
-    """The inert elevator bay establishing how the player entered a floor."""
-    door: tuple[int, int]
-    cab: tuple[int, int]
+    """The inert elevator façade establishing how the player entered."""
+    kind: str
+    portal: tuple[int, int]
     player: tuple[int, int]
     facing: int
     footprint: tuple[tuple[int, int], ...]
+    car_cells: tuple[tuple[int, int], ...] = ()
+    clearance: tuple[tuple[int, int], ...] = ()
+    item: tuple[int, int, int] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -603,6 +670,17 @@ class GuardRecess:
     room_index: int
     cells: tuple[tuple[int, int], tuple[int, int]]
     actor_cell: tuple[int, int]
+
+
+@dataclass(frozen=True, slots=True)
+class GuardGallery:
+    """A symmetric, visible but physically inaccessible combat chamber."""
+    room_index: int
+    screen: tuple[tuple[int, int], ...]
+    actor_cells: tuple[tuple[int, int], tuple[int, int]]
+    rear_cells: tuple[tuple[int, int], ...]
+    facing: int
+    treatment: int = 30
 
 
 @dataclass(frozen=True, slots=True)
@@ -693,6 +771,7 @@ class GeneratedMap:
     secret_source: int = 0
     arrival: ArrivalDetail | None = None
     guard_recesses: tuple[GuardRecess, ...] = ()
+    guard_galleries: tuple[GuardGallery, ...] = ()
     encounters: tuple[EncounterPlacement, ...] = ()
     patrol_target: float = 0.0
 
@@ -2548,6 +2627,12 @@ def _assign_area_themes(tiles: list[int], rooms: list[Room], districts: list[int
 
     distinct_districts = sorted(set(districts))
     deduped = list({theme[0]: theme for theme in WALL_THEMES}.values())
+    # Floors 1--6 can own the campaign's hidden elevator. Plaster has no
+    # symmetric in-family landmark suitable for that mandatory hint, so save
+    # it for later administrative/reward districts rather than forcing a
+    # conspicuous cross-family triptych around a secret exit.
+    if number <= 6:
+        deduped = [theme for theme in deduped if theme[0] != 48]
     if theme_pool:
         pooled = [theme for theme in deduped if theme[0] in theme_pool]
         # A pool too small to give every district its own material would
@@ -2572,6 +2657,8 @@ def _select_jail_rooms(rooms: list[Room], districts: list[int],
                        jail_probability: float = JAIL_CANDIDATE_PROBABILITY
                        ) -> frozenset[int]:
     """Pick blue-stone rooms with a long enough unpainted wall for cells."""
+    blue_rooms = [ridx for ridx, room in enumerate(rooms)
+                  if group_theme[component_of[room.center]][0] == 8]
     selected = []
     for ridx, room in enumerate(rooms):
         base = group_theme[component_of[room.center]][0]
@@ -2591,6 +2678,14 @@ def _select_jail_rooms(rooms: list[Room], districts: list[int],
                 longest = max(longest, run)
         if longest >= 5 and rng.random() < jail_probability:
             selected.append(ridx)
+    # A blue-stone district still needs ordinary rooms so the cell treatment
+    # reads as a deliberate sub-area instead of consuming the whole material
+    # family. Keep jails a strict minority of all blue-stone rooms, including
+    # high-probability catacomb variants.
+    limit = max(0, (len(blue_rooms) - 1) // 2)
+    if len(selected) > limit:
+        rng.shuffle(selected)
+        selected = selected[:limit]
     return frozenset(selected)
 
 
@@ -2598,7 +2693,9 @@ def _apply_wall_theme(tiles: list[int], things: list[int], rooms: list[Room],
                       districts: list[int], component_of: dict[tuple[int, int], int],
                       group_theme: dict[int, tuple[int, tuple[int, ...]]],
                       rng: random.Random,
-                      jail_rooms: frozenset[int] = frozenset()
+                      jail_rooms: frozenset[int] = frozenset(),
+                      identities: list[RoomIdentity] | None = None,
+                      atmosphere: int = 3,
                       ) -> dict[int, list[tuple[int, int]]]:
     """Apply native WL6 materials without changing traversable geometry.
 
@@ -2606,6 +2703,7 @@ def _apply_wall_theme(tiles: list[int], things: list[int], rooms: list[Room],
     insignia) so the decoration pass can frame them with furniture instead
     of placing pieces mid-room."""
     landmark_cells: dict[int, list[tuple[int, int]]] = {}
+    fake_door_placed = False
     for index, tile in enumerate(tiles):
         if tile != WALL:
             continue
@@ -2650,11 +2748,62 @@ def _apply_wall_theme(tiles: list[int], things: list[int], rooms: list[Room],
                         if interior:
                             _set(things, *rng.choice(interior), rng.choice((42, 64, 65, 66)))
             continue
-        if not accents:
-            continue
-        accent = accents[district % len(accents)]
-        other_accents = set(accents) - {accent}
-        if accent in DECOR_WALLS:
+        material = MATERIAL_BY_BASE.get(base)
+        identity = (identities[ridx]
+                    if identities is not None and ridx < len(identities) else None)
+        concept = identity.concept if identity is not None else ""
+        plain_variants = tuple(tile for tile in (material.plain_variants
+                                                 if material else ())
+                               if tile in accents)
+        damage_variants = tuple(tile for tile in (material.damage_variants
+                                                  if material else ())
+                                if tile in accents)
+
+        # A room may use one coherent surface variant, never a scatter of
+        # unrelated tiles. Damage is additionally gated by both atmosphere
+        # and semantic room identity.
+        surface = base
+        if (damage_variants and atmosphere >= 3
+                and (identity is None or concept in DAMAGED_WALL_CONCEPTS)
+                and rng.random() < min(0.65, 0.20 + atmosphere * 0.09)):
+            surface = rng.choice(damage_variants)
+        elif plain_variants and (identity is None or rng.random() < 0.58):
+            surface = plain_variants[(ridx + district) % len(plain_variants)]
+        if surface != base:
+            for side in sides:
+                for x, y in side:
+                    if _at(tiles, x, y) == base:
+                        _set(tiles, x, y, surface)
+
+        material_landmarks = tuple(tile for tile in (material.landmarks
+                                                      if material else accents)
+                                   if tile in accents and tile in DECOR_WALLS)
+        eligible_landmarks = tuple(
+            tile for tile in material_landmarks
+            if identity is None or concept in WALL_LANDMARK_CONCEPTS.get(tile, ()))
+        formal = concept in {
+            "guardpost", "checkpoint", "war-room", "trophy-hall", "gallery",
+            "officers-quarters", "armory", "jail", "holding-cell",
+            "interrogation-room",
+        }
+        place_landmark = bool(eligible_landmarks) and (
+            identity is None or rng.random() < (0.30 if formal else 0.12))
+
+        # Stained glass is a complete paired composition in prestigious
+        # marble rooms, not a general-purpose material or isolated window.
+        special_glass = (identity is not None and base == 42
+                         and concept in {"gallery", "trophy-hall", "war-room"}
+                         and rng.random() < 0.12)
+
+        # A fake door is rare architectural misdirection in a service room.
+        # It is allowed only when one face is visible and solid rock continues
+        # behind it, so it cannot leak into a neighboring space or progression.
+        special_fake = (identity is not None and not fake_door_placed
+                        and concept in {"storage", "supply-cache", "workshop",
+                                        "checkpoint"}
+                        and rng.random() < 0.035)
+
+        if special_glass or place_landmark or special_fake:
             # Landmark tiles hang like pictures on the longest clean
             # (contiguous, same-base) wall run -- never the material for the
             # whole room. Short runs get one centered tile; longer runs get a
@@ -2664,13 +2813,42 @@ def _apply_wall_theme(tiles: list[int], things: list[int], rooms: list[Room],
             for side_index, side in enumerate(sides):
                 current: list[tuple[int, int]] = []
                 for cell in side:
-                    if _at(tiles, *cell) == base:
+                    if _at(tiles, *cell) in ({base, surface} | set(plain_variants)
+                                             | set(damage_variants)):
                         current.append(cell)
                     elif current:
                         runs.append((side_index, current))
                         current = []
                 if current:
                     runs.append((side_index, current))
+            if special_fake:
+                backed_runs = []
+                for run_side, candidate in runs:
+                    backed = []
+                    for x, y in candidate:
+                        floor_neighbors = [(nx, ny) for nx, ny in
+                                           ((x + 1, y), (x - 1, y),
+                                            (x, y + 1), (x, y - 1))
+                                           if _is_floor(_at(tiles, nx, ny))]
+                        if len(floor_neighbors) != 1:
+                            continue
+                        ix, iy = floor_neighbors[0]
+                        outward = (x + (x - ix), y + (y - iy))
+                        if (_is_floor(_at(tiles, *outward))
+                                or _at(tiles, *outward) in DOORS):
+                            continue
+                        backed.append((x, y))
+                    if backed:
+                        backed_runs.append((run_side, backed))
+                if backed_runs:
+                    _, backed = max(backed_runs, key=lambda item: len(item[1]))
+                    _set(tiles, *backed[len(backed) // 2], 13)
+                    fake_door_placed = True
+                    continue
+                special_fake = False
+                if not special_glass and not place_landmark:
+                    continue
+
             side_index, run = max(runs, key=lambda item: len(item[1]), default=(-1, []))
             if run:
                 selected_runs = [run]
@@ -2682,9 +2860,16 @@ def _apply_wall_theme(tiles: list[int], things: list[int], rooms: list[Room],
                 # composition, never an independently rolled second wall.
                 if compatible and len(run) >= 9 and rng.random() < 0.25:
                     selected_runs.append(max(compatible, key=len))
+                accent = (33 if special_glass else
+                          eligible_landmarks[district % len(eligible_landmarks)])
                 for selected in selected_runs:
                     mid = len(selected) // 2
-                    if accent == 7 or len(selected) < 9:
+                    if special_glass:
+                        if len(selected) < 7:
+                            continue
+                        offset = max(2, len(selected) // 4)
+                        spots = [selected[mid - offset], selected[mid + offset]]
+                    elif accent == 7 or len(selected) < 9:
                         spots = [selected[mid]]
                     elif len(selected) < 13:
                         offset = max(2, len(selected) // 4)
@@ -2708,20 +2893,6 @@ def _apply_wall_theme(tiles: list[int], things: list[int], rooms: list[Room],
                             if interior:
                                 _set(things, *rng.choice(interior),
                                      rng.choice((42, 64, 65, 66)))
-            continue
-        for side in sides:
-            for x, y in side:
-                if _at(tiles, x, y) != base:
-                    continue
-                # Two rooms can sit close enough that their wall rings land
-                # a single rock tile apart. Painting both with a different
-                # accent flips the material within a couple of corridor
-                # tiles; leaving this cell in the shared base material keeps
-                # a neutral buffer instead of an abrupt seam.
-                if any(_at(tiles, x + dx, y + dy) in other_accents
-                       for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1))):
-                    continue
-                _set(tiles, x, y, accent)
     return landmark_cells
 
 
@@ -2753,6 +2924,8 @@ def _hint_secrets(tiles: list[int], things: list[int],
             hints = tuple(accent for other_base, other_accents in WALL_THEMES
                           if other_base == base
                           for accent in other_accents if accent in DECOR_WALLS)
+        if not hints:
+            hints = SECRET_HINT_BY_BASE.get(base, ())
         if hints:
             hint = rng.choice(hints)
             tiles[index] = hint
@@ -2763,7 +2936,10 @@ def _hint_secrets(tiles: list[int], things: list[int],
                 # material family or spelling out "secret elevator".
                 for offset in (1, 2):
                     pair = ((x, y - offset), (x, y + offset))
-                    if all(_at(tiles, *cell) == base for cell in pair):
+                    family_surfaces = ({base}
+                                       | {tile for tile in accents
+                                          if tile not in DECOR_WALLS})
+                    if all(_at(tiles, *cell) in family_surfaces for cell in pair):
                         for cell in pair:
                             _set(tiles, *cell, hint)
                         treatments[(x, y)] = "symmetric-landmark"
@@ -2882,16 +3058,21 @@ def _place_elevator(tiles: list[int], room: Room, locked: bool = False) -> tuple
 
 
 def _place_arrival_elevator(tiles: list[int], room: Room,
-                            toward: tuple[int, int]) -> ArrivalDetail:
-    """Build a sealed, inert elevator behind a correctly faced player.
-
-    The ordinary exit shaft cannot be reused here because its tile-21 back
-    panel is a working level-exit switch. An arrival therefore uses the real
-    elevator door graphic in front of a one-cell rock-bounded cab with no
-    switch. The player stands two cells inside the room and faces toward the
-    floor, so the door is visibly and geometrically behind them.
-    """
+                            toward: tuple[int, int], rng: random.Random,
+                            variant: str = "garrison",
+                            forced_kind: str | None = None) -> ArrivalDetail:
+    """Place one bounded, inactive native-elevator arrival composition."""
     facings = ((0, -1), (1, 0), (0, 1), (-1, 0))
+    kinds = ("flush-facade", "outside-empty", "outside-supply",
+             "inside-open", "inside-closed")
+    if forced_kind is not None and forced_kind not in kinds:
+        raise ValueError("unknown arrival elevator kind")
+    weights = [0.35, 0.25, 0.15, 0.125, 0.125]
+    if variant == "storehouse":
+        weights = [0.30, 0.20, 0.25, 0.125, 0.125]
+    elif variant == "quarters":
+        weights = [0.30, 0.30, 0.20, 0.10, 0.10]
+    kind = forced_kind or rng.choices(kinds, weights=weights, k=1)[0]
     tx, ty = toward[0] - room.center[0], toward[1] - room.center[1]
     if abs(tx) >= abs(ty):
         preferred = (-1, 0) if tx >= 0 else (1, 0)
@@ -2904,34 +3085,69 @@ def _place_arrival_elevator(tiles: list[int], room: Room,
             wall = room.x + room.w if dx > 0 else room.x - 1
             offsets = sorted(range(room.y + 1, room.y + room.h - 1),
                              key=lambda value: abs(value - cy))
-            doors = [(wall, offset) for offset in offsets]
+            panels = [(wall, offset) for offset in offsets]
         else:
             wall = room.y + room.h if dy > 0 else room.y - 1
             offsets = sorted(range(room.x + 1, room.x + room.w - 1),
                              key=lambda value: abs(value - cx))
-            doors = [(offset, wall) for offset in offsets]
+            panels = [(offset, wall) for offset in offsets]
         px, py = -dy, dx
-        for door in doors:
-            cab = door[0] + dx, door[1] + dy
-            player = door[0] - 2 * dx, door[1] - 2 * dy
-            forward = player[0] - dx, player[1] - dy
-            footprint = {
-                (door[0] + depth * dx + side * px,
-                 door[1] + depth * dy + side * py)
-                for depth in range(3) for side in (-1, 0, 1)}
+        for panel in panels:
+            footprint = tuple(sorted({
+                (panel[0] + depth * dx + side * px,
+                 panel[1] + depth * dy + side * py)
+                for depth in range(5) for side in (-2, -1, 0, 1, 2)}))
             if (not all(1 <= x < GRID - 1 and 1 <= y < GRID - 1
                         for x, y in footprint)
                     or any(_at(tiles, x, y) != WALL for x, y in footprint)
-                    or not _is_floor(_at(tiles, *player))
-                    or not _is_floor(_at(tiles, *forward))):
+                    or not all(_is_floor(_at(
+                        tiles, panel[0] - depth * dx, panel[1] - depth * dy))
+                               for depth in (1, 2, 3))):
                 continue
-            _set(tiles, *cab, FLOOR)
-            _set(tiles, *door, DOOR_ELEVATOR if dx else DOOR_ELEVATOR_NS)
             inward = (-dx, -dy)
             facing = facings.index(inward)
-            return ArrivalDetail(door, cab, player, facing,
-                                 tuple(sorted(footprint)))
-    raise ValueError("start room has no rock-backed wall for an arrival elevator")
+            if kind == "flush-facade":
+                _set(tiles, *panel, DUMMY_ELEVATOR_TILE)
+                player = panel[0] - 2 * dx, panel[1] - 2 * dy
+                clearance = ((panel[0] - dx, panel[1] - dy),
+                             (panel[0] - 3 * dx, panel[1] - 3 * dy))
+                return ArrivalDetail(kind, panel, player, facing, footprint,
+                                     clearance=clearance)
+
+            car_cells = tuple((panel[0] + depth * dx,
+                               panel[1] + depth * dy)
+                              for depth in (1, 2))
+            for cell in car_cells:
+                _set(tiles, *cell, FLOOR)
+            for depth in (1, 2, 3):
+                for side in (-1, 1):
+                    _set(tiles, panel[0] + depth * dx + side * px,
+                         panel[1] + depth * dy + side * py,
+                         DUMMY_ELEVATOR_TILE)
+            _set(tiles, panel[0] + 3 * dx, panel[1] + 3 * dy,
+                 DUMMY_ELEVATOR_TILE)
+            closed = kind == "inside-closed"
+            _set(tiles, *panel, (DOOR_ELEVATOR if dx else DOOR_ELEVATOR_NS)
+                 if closed else FLOOR)
+            inside = kind.startswith("inside-")
+            player = (car_cells[-1] if inside else
+                      (panel[0] - 2 * dx, panel[1] - 2 * dy))
+            clearance = (((panel[0] + dx, panel[1] + dy),
+                          (panel[0] - dx, panel[1] - dy)) if inside else
+                         ((panel[0] - dx, panel[1] - dy),
+                          (panel[0] - 3 * dx, panel[1] - 3 * dy)))
+            item = None
+            if kind == "outside-supply":
+                supplies = {
+                    "garrison": AMMO, "catacombs": FIRST_AID,
+                    "grand-halls": TREASURE[0], "storehouse": AMMO,
+                    "quarters": FOOD, "stronghold": FIRST_AID,
+                    "vault": TREASURE[-1],
+                }
+                item = (*car_cells[-1], supplies.get(variant, AMMO))
+            return ArrivalDetail(kind, panel, player, facing, footprint,
+                                 car_cells, clearance, item)
+    raise ValueError("start room has no rock-backed wall for an arrival façade")
 
 
 def _carve_guard_recesses(tiles: list[int], things: list[int], rooms: list[Room],
@@ -3000,6 +3216,128 @@ def _carve_guard_recesses(tiles: list[int], things: list[int], rooms: list[Room]
             reserved.update(cells)
             return (GuardRecess(room_index, cells, actor_cell),)
     return ()
+
+
+def _place_guard_gallery(tiles: list[int], things: list[int], rooms: list[Room],
+                         identities: list[RoomIdentity], room_shapes: list[str],
+                         reserved: set[tuple[int, int]], rng: random.Random,
+                         start: tuple[int, int], eligible_rooms: frozenset[int]
+                         ) -> tuple[GuardGallery, ...]:
+    """Partition one optional symmetric room into a rare firing gallery.
+
+    A complete line of matched pillars is the chamber's only open face. The
+    floor remains one sound zone, but collision-aware reachability proves the
+    rear cells cannot be entered. Reserving the entire rear chamber before the
+    general population/pickup/decor passes gives the gallery exclusive
+    ownership of both its actors and its deliberately empty floor.
+    """
+    suitable_concepts = {"war-room", "trophy-hall", "gallery", "courtyard",
+                         "guardpost", "checkpoint"}
+    candidates = [index for index in eligible_rooms
+                  if index and room_shapes[index] == "rectangle"
+                  and identities[index].concept in suitable_concepts
+                  and min(rooms[index].w, rooms[index].h) >= 7
+                  and max(rooms[index].w, rooms[index].h) >= 9]
+    rng.shuffle(candidates)
+    candidates.sort(key=lambda index: (
+        identities[index].concept not in {"war-room", "trophy-hall", "gallery"},
+        abs(rooms[index].w * rooms[index].h - 80)))
+    for room_index in candidates:
+        room = rooms[room_index]
+        entries = []
+        ring = ({(x, y) for x in range(room.x, room.x + room.w)
+                 for y in (room.y, room.y + room.h - 1)}
+                | {(x, y) for x in (room.x, room.x + room.w - 1)
+                   for y in range(room.y, room.y + room.h)})
+        for x, y in ring:
+            if any((nx < room.x or nx >= room.x + room.w
+                    or ny < room.y or ny >= room.y + room.h)
+                   and (_is_floor(_at(tiles, nx, ny))
+                        or _at(tiles, nx, ny) in DOORS)
+                   for nx, ny in ((x + 1, y), (x - 1, y),
+                                  (x, y + 1), (x, y - 1))):
+                entries.append((x, y))
+        if not entries:
+            continue
+
+        arrangements: list[tuple[tuple[tuple[int, int], ...],
+                                 tuple[tuple[int, int], ...], int]] = []
+        # (screen, rear cells, actor facing toward the accessible half)
+        if room.w <= 9 and room.h >= 9:
+            divider = room.y + room.h // 2
+            if all(y < divider for _, y in entries):
+                arrangements.append((
+                    tuple((x, divider) for x in range(room.x, room.x + room.w)),
+                    tuple((x, y) for y in range(divider + 1, room.y + room.h)
+                          for x in range(room.x, room.x + room.w)), 0))
+            if all(y > divider for _, y in entries):
+                arrangements.append((
+                    tuple((x, divider) for x in range(room.x, room.x + room.w)),
+                    tuple((x, y) for y in range(room.y, divider)
+                          for x in range(room.x, room.x + room.w)), 2))
+        if room.h <= 9 and room.w >= 9:
+            divider = room.x + room.w // 2
+            if all(x < divider for x, _ in entries):
+                arrangements.append((
+                    tuple((divider, y) for y in range(room.y, room.y + room.h)),
+                    tuple((x, y) for x in range(divider + 1, room.x + room.w)
+                          for y in range(room.y, room.y + room.h)), 3))
+            if all(x > divider for x, _ in entries):
+                arrangements.append((
+                    tuple((divider, y) for y in range(room.y, room.y + room.h)),
+                    tuple((x, y) for x in range(room.x, divider)
+                          for y in range(room.y, room.y + room.h)), 1))
+        rng.shuffle(arrangements)
+        for screen, rear_cells, facing in arrangements:
+            occupied = set(screen) | set(rear_cells)
+            if (any(not _is_floor(_at(tiles, *cell)) or _at(things, *cell)
+                    or cell in reserved for cell in occupied)
+                    or len(screen) > 9):
+                continue
+            reachable = _reachable(tiles, start, locked_open=True,
+                                   blocked=set(screen))
+            if any(cell in reachable for cell in rear_cells):
+                continue
+            if facing in (0, 2):
+                rear_y = (screen[0][1] + (2 if facing == 0 else -2))
+                offset = max(1, room.w // 4)
+                actors = ((room.center[0] - offset, rear_y),
+                          (room.center[0] + offset, rear_y))
+            else:
+                rear_x = (screen[0][0] + (2 if facing == 3 else -2))
+                offset = max(1, room.h // 4)
+                actors = ((rear_x, room.center[1] - offset),
+                          (rear_x, room.center[1] + offset))
+            if (actors[0] == actors[1] or any(cell not in rear_cells for cell in actors)):
+                continue
+            for cell in screen:
+                _set(things, *cell, 30)  # one matched white-pillar screen
+            reserved.update(screen)
+            reserved.update(rear_cells)
+            return (GuardGallery(room_index, screen, actors, rear_cells, facing),)
+    return ()
+
+
+def _populate_guard_galleries(galleries: tuple[GuardGallery, ...], things: list[int],
+                              number: int, rng: random.Random,
+                              encounters: list[EncounterPlacement]
+                              ) -> tuple[int, int, int]:
+    """Give each gallery exactly one mirrored pair of stationary guards."""
+    tiers = [0, 0, 0]
+    for gallery in galleries:
+        tier = 1 if number >= 7 and rng.random() < 0.45 else 0
+        code = GUARDS[gallery.facing] + 36 * tier
+        placed = []
+        for x, y in gallery.actor_cells:
+            if _at(things, x, y):
+                raise ValueError("guard gallery actor cell was preempted")
+            _set(things, x, y, code)
+            placed.append((x, y, code))
+            tiers[tier] += 1
+        encounters.append(EncounterPlacement(
+            "guard-gallery", gallery.room_index, tuple(placed),
+            hidden_cells=gallery.actor_cells, family="guard"))
+    return tuple(tiers)
 
 
 def _pick_secret_variant(rng: random.Random, used: list[str]) -> str:
@@ -4565,7 +4903,8 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
                        atmosphere: int = 3,
                        landmark_frame_chance: float = 0.15,
                        notch_anchors: dict[int, tuple[tuple[int, int], ...]] | None = None,
-                       traversal_pair_chance: float | None = None
+                       traversal_pair_chance: float | None = None,
+                       hallway_vine_budget: int = 0,
                        ) -> tuple[tuple[str, ...], tuple[VineScreen, ...]]:
     """Place purposeful, themed furniture in rooms following community-map patterns.
 
@@ -4593,6 +4932,7 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
     lighting_counts: Counter[str] = Counter()
     lighting_families = ["none"] * len(rooms)
     vine_screens: list[VineScreen] = []
+    sky_composition_placed = False
 
     for ridx, room in enumerate(rooms):
         role = _roles[ridx] if ridx < len(_roles) else "beat"
@@ -4730,6 +5070,62 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
             edge_free.discard(cell)
             static_headroom -= 1
             return True
+
+        # A sky tile is a view beyond the building, never ordinary wallpaper.
+        # Every tile is completely covered by its own blocking pillar and the
+        # ray behind the wall must remain solid all the way to the map edge,
+        # proving this is an outside-most face rather than a leak into another
+        # room. One symmetric colonnade is enough to establish the motif.
+        if (not sky_composition_placed
+                and concept in {"courtyard", "gallery", "trophy-hall"}
+                and min(room.w, room.h) >= 7
+                and rng.random() < (0.26 if concept == "courtyard" else 0.08)):
+            side_candidates: list[list[tuple[tuple[int, int], tuple[int, int]]]] = []
+            side_specs = (
+                [((x, room.y), (x, room.y - 1))
+                 for x in range(room.x + 1, room.x + room.w - 1)],
+                [((x, room.y + room.h - 1), (x, room.y + room.h))
+                 for x in range(room.x + 1, room.x + room.w - 1)],
+                [((room.x, y), (room.x - 1, y))
+                 for y in range(room.y + 1, room.y + room.h - 1)],
+                [((room.x + room.w - 1, y), (room.x + room.w, y))
+                 for y in range(room.y + 1, room.y + room.h - 1)],
+            )
+            for side in side_specs:
+                eligible = []
+                for interior_cell, wall_cell in side:
+                    ix, iy = interior_cell
+                    wx, wy = wall_cell
+                    dx, dy = wx - ix, wy - iy
+                    if (interior_cell not in edge_free
+                            or _at(tiles, wx, wy) in DECOR_WALLS | SPECIAL_WALL_TILES
+                            or _is_floor(_at(tiles, wx, wy))
+                            or _at(tiles, wx, wy) in DOORS):
+                        continue
+                    outside_clear = True
+                    ox, oy = wx + dx, wy + dy
+                    while 0 <= ox < GRID and 0 <= oy < GRID:
+                        if (_is_floor(_at(tiles, ox, oy))
+                                or _at(tiles, ox, oy) in DOORS):
+                            outside_clear = False
+                            break
+                        ox += dx
+                        oy += dy
+                    if outside_clear:
+                        eligible.append((interior_cell, wall_cell))
+                if len(eligible) >= 4:
+                    side_candidates.append(eligible)
+            rng.shuffle(side_candidates)
+            for side in side_candidates:
+                mid = len(side) // 2
+                offset = max(1, len(side) // 4)
+                pair = [side[mid - offset], side[mid + offset]]
+                pillars = [interior for interior, _ in pair]
+                if _try_place(pillars, 30):
+                    for _, wall_cell in pair:
+                        _set(tiles, *wall_cell, 16)
+                    sky_composition_placed = True
+                    break
 
         # Vines are complete architectural screens, never loose foliage. A
         # room screen spans from one bounding wall to the opposite wall and
@@ -5178,8 +5574,8 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
     # --- Corridor rhythm: ceiling lights pace long straight halls ---
     # Open fixtures only, so nothing here can affect reachability, patrol
     # routes (in-room only), or actor facing.
-    hallway_vine_placed = False
-    for path in paths or ():
+    straight_segments: list[tuple[int, list[tuple[int, int]]]] = []
+    for path_index, path in enumerate(paths or ()):
         segments: list[list[tuple[int, int]]] = [[]]
         previous: tuple[int, int] | None = None
         heading: tuple[int, int] | None = None
@@ -5200,43 +5596,71 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
         for segment in segments:
             if len(segment) < 5:
                 continue
-            # Extremely rarely, a one-cell-wide straight hallway receives a
-            # complete cross-section sight screen. Because the corridor is
-            # exactly one tile wide, one vine fills it; doors, bends, actors,
-            # and objectives receive generous clearance.
-            if (not hallway_vine_placed and len(segment) >= 9
-                    and static_headroom > 0 and rng.random() < 0.035):
-                horizontal = segment[0][1] == segment[-1][1]
-                candidates = list(segment[3:-3])
-                candidates.sort(key=lambda cell: (
-                    abs(segment.index(cell) - len(segment) // 2), cell))
-                for cell in candidates:
-                    x, y = cell
-                    sides = ((x, y - 1), (x, y + 1)) if horizontal else (
-                        (x - 1, y), (x + 1, y))
-                    if (cell in reserved or _at(things, *cell) != 0
-                            or any(_is_floor(_at(tiles, *side))
-                                   or _at(tiles, *side) in DOORS for side in sides)
-                            or any(_at(tiles, x + dx, y + dy) in DOORS
-                                   for dx in range(-3, 4) for dy in range(-3, 4)
-                                   if abs(dx) + abs(dy) <= 3)
-                            or any(_at(things, x + dx, y + dy) != 0
-                                   for dx in range(-2, 3) for dy in range(-2, 3)
-                                   if abs(dx) + abs(dy) <= 2)):
-                        continue
-                    _set(things, *cell, 70)
-                    reserved.add(cell)
-                    static_headroom -= 1
-                    vine_screens.append(VineScreen("hallway-screen", -1, (cell,)))
-                    hallway_vine_placed = True
-                    break
-            for cell in segment[2:-1:4]:
-                if static_headroom <= 0:
-                    break
-                if cell not in reserved and _at(things, *cell) == 0:
-                    _set(things, *cell, 37)   # CeilingLight
-                    reserved.add(cell)
-                    static_headroom -= 1
+            straight_segments.append((path_index, segment))
+
+    # The campaign scheduler nominates at most one floor for hallway
+    # overgrowth. A composition fills the longitudinal safe center of a
+    # one-cell-wide corridor; it never degrades to the old isolated singleton.
+    # Existing actors beyond an endpoint or around a bend rank the corridor
+    # first, turning the foliage into sightline cover without inventing an
+    # encounter in the decoration pass.
+    enemy_cells = [(index % GRID, index // GRID)
+                   for index, item in enumerate(things) if item in ENEMY_CODES]
+    vine_candidates: list[tuple[int, int, tuple[tuple[int, int], ...],
+                                tuple[int, int] | None]] = []
+    for path_index, segment in straight_segments:
+        cells = tuple(segment[1:-1])
+        if len(cells) < 3 or static_headroom < len(cells):
+            continue
+        horizontal = cells[0][1] == cells[-1][1]
+        if any(cell in reserved or _at(things, *cell) != 0 for cell in cells):
+            continue
+        if any(any(_is_floor(_at(tiles, *side)) or _at(tiles, *side) in DOORS
+                   for side in (((x, y - 1), (x, y + 1)) if horizontal else
+                                ((x - 1, y), (x + 1, y))))
+               for x, y in cells):
+            continue
+        if any(any(_at(tiles, x + dx, y + dy) in DOORS
+                   for dx in range(-2, 3) for dy in range(-2, 3)
+                   if abs(dx) + abs(dy) <= 2) for x, y in cells):
+            continue
+        nearby = [(abs(actor[0] - endpoint[0]) + abs(actor[1] - endpoint[1]), actor)
+                  for actor in enemy_cells for endpoint in (cells[0], cells[-1])
+                  if actor not in cells
+                  and abs(actor[0] - endpoint[0]) + abs(actor[1] - endpoint[1]) <= 6]
+        anchor = min(nearby, default=(99, None))[1]
+        around_bend = bool(anchor and not (
+            anchor[1] == cells[0][1] if horizontal else anchor[0] == cells[0][0]))
+        score = 2 if around_bend else 1 if anchor else 0
+        vine_candidates.append((score, path_index, cells, anchor))
+
+    rng.shuffle(vine_candidates)
+    vine_candidates.sort(key=lambda item: (-item[0], -len(item[2])))
+    chosen_path: int | None = None
+    hallway_runs_placed = 0
+    for score, path_index, cells, anchor in vine_candidates:
+        if hallway_runs_placed >= hallway_vine_budget:
+            break
+        if chosen_path is not None and path_index != chosen_path:
+            continue
+        if static_headroom < len(cells) or any(_at(things, *cell) for cell in cells):
+            continue
+        for cell in cells:
+            _set(things, *cell, 70)
+            reserved.add(cell)
+        static_headroom -= len(cells)
+        vine_screens.append(VineScreen("hallway-run", -1, cells, anchor))
+        chosen_path = path_index
+        hallway_runs_placed += 1
+
+    for _, segment in straight_segments:
+        for cell in segment[2:-1:4]:
+            if static_headroom <= 0:
+                break
+            if cell not in reserved and _at(things, *cell) == 0:
+                _set(things, *cell, 37)   # CeilingLight
+                reserved.add(cell)
+                static_headroom -= 1
 
     # --- Alcove niches: a dead-end pocket earns one deliberate piece ---
     if paths:
@@ -5356,7 +5780,9 @@ def _place_boss(tiles: list[int], things: list[int], room: Room,
 
 
 def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
-                 secret_exit: bool = False, secret_source: int | None = None
+                 secret_exit: bool = False, secret_source: int | None = None,
+                 hallway_vine_budget: int = 0,
+                 guard_gallery_enabled: bool = False,
                  ) -> GeneratedMap:
     seed = config.floor_seed(number, attempt)
     rng = random.Random(seed)
@@ -5411,9 +5837,12 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
     _widen_corridors(tiles, rooms, paths, rng, widen_chance=floor_variant.widen_chance)
     first_neighbor = next((second if first == 0 else first
                            for first, second in edges if 0 in (first, second)), 1)
-    arrival = _place_arrival_elevator(tiles, rooms[0], rooms[first_neighbor].center)
+    arrival = _place_arrival_elevator(
+        tiles, rooms[0], rooms[first_neighbor].center, rng, floor_variant.name)
     start = arrival.player
     _set(things, *start, PLAYER_START_CODES[arrival.facing])
+    if arrival.item is not None:
+        _set(things, *arrival.item)
     is_boss = number == 9
     exit_room = None
     exit_stand = None
@@ -5466,12 +5895,7 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
         roles[planned_exit_index] = "relief"
         roles[exit_index] = "exit"
     notch_cells = {cell for cells in notch_anchors.values() for cell in cells}
-    arrival_delta = ((0, -1), (1, 0), (0, 1), (-1, 0))[arrival.facing]
-    arrival_threshold = (start[0] - arrival_delta[0],
-                         start[1] - arrival_delta[1])
-    arrival_landing = (start[0] + arrival_delta[0],
-                       start[1] + arrival_delta[1])
-    reserved = {start, arrival.cab, arrival_threshold, arrival_landing,
+    reserved = {start, *arrival.clearance, *arrival.car_cells,
                 exit_stand, *notch_cells}
     rewards: list[tuple[int, int]] = []
     secret_variants: list[str] = []
@@ -5707,17 +6131,27 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
                                                     theme_pool=floor_variant.theme_pool)
     jail_rooms = _select_jail_rooms(rooms, districts, component_of, group_theme, tiles, rng,
                                     jail_probability=floor_variant.jail_probability)
+    identities = _room_identities(rooms, specs, districts, edges, floor_variant, jail_rooms,
+                                  component_of, group_theme, exit_room, boss_room,
+                                  plan.special_family, key_objectives)
     landmarks = _apply_wall_theme(tiles, things, rooms, districts, component_of, group_theme,
-                                  rng, jail_rooms)
+                                  rng, jail_rooms, identities=identities,
+                                  atmosphere=int(config.atmosphere))
     exit_pushwall = next((detail.pushwall for detail in secret_details
                           if detail.secret_exit), None)
     secret_hints = _hint_secrets(tiles, things, component_of, group_theme, rng,
                                  special_pushwall=exit_pushwall)
     if exit_pushwall is not None and secret_hints.get(exit_pushwall) != "symmetric-landmark":
         raise ValueError("secret elevator host cannot support its landmark hint")
-    identities = _room_identities(rooms, specs, districts, edges, floor_variant, jail_rooms,
-                                  component_of, group_theme, exit_room, boss_room,
-                                  plan.special_family, key_objectives)
+    gallery_eligible = frozenset(
+        index for index in range(1, len(rooms))
+        if index not in critical_route and rooms[index] != exit_room
+        and index not in {objective.host_room for objective in key_objectives}
+        and roles[index] not in {"arrival", "victory", "recovery", "boss-arena",
+                                 "staging", "premium-vault"})
+    guard_galleries = (_place_guard_gallery(
+        tiles, things, rooms, identities, realized_shapes, reserved, rng, start,
+        gallery_eligible) if guard_gallery_enabled else ())
     actor_clearance: set[tuple[int, int]] = set()
     calm_rooms = frozenset(index for index, role in enumerate(roles)
                            if role in ("arrival", "victory"))
@@ -5734,6 +6168,10 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
         optional_rooms=optional_rooms, identities=identities,
         critical_route=tuple(critical_route), guard_recesses=guard_recesses,
         key_objectives=key_objectives, encounter_out=encounters)
+    gallery_tiers = _populate_guard_galleries(
+        guard_galleries, things, number, rng, encounters)
+    enemy_tiers = tuple(ordinary + gallery
+                        for ordinary, gallery in zip(enemy_tiers, gallery_tiers))
     premium_index = (next((index for index, role in enumerate(roles)
                            if role == "premium-vault"), None)
                      if number == 10 else None)
@@ -5756,7 +6194,7 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
                  * DECORATION_MULTIPLIERS[int(config.decoration_amount)]),
         theme_overrides=floor_variant.decor_overrides, landmarks=landmarks,
         paths=paths, identities=identities, atmosphere=int(config.atmosphere),
-        notch_anchors=notch_anchors)
+        notch_anchors=notch_anchors, hallway_vine_budget=hallway_vine_budget)
     final_distances = _floor_distances(tiles, start)
     deepest_room_distance = max((final_distances.get(room.center, 0) for room in rooms),
                                 default=1) or 1
@@ -5804,6 +6242,7 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
                           expedition_rooms=tuple(dict.fromkeys(expedition_rooms)),
                           secret_source=secret_source or 0,
                           arrival=arrival, guard_recesses=guard_recesses,
+                          guard_galleries=guard_galleries,
                           encounters=tuple(encounters),
                           patrol_target=PATROL_TARGETS[int(config.patrol_activity)])
     validate_map(result)
@@ -5821,29 +6260,67 @@ def validate_map(level: GeneratedMap) -> None:
     arrival = level.arrival
     facings = ((0, -1), (1, 0), (0, 1), (-1, 0))
     inward = facings[arrival.facing]
-    if (arrival.player != level.start
-            or arrival.door != (level.start[0] - 2 * inward[0],
-                                level.start[1] - 2 * inward[1])
-            or arrival.cab != (arrival.door[0] - inward[0],
-                               arrival.door[1] - inward[1])
+    outward = (-inward[0], -inward[1])
+    inside = arrival.kind.startswith("inside-")
+    expected_player = (arrival.portal[0] + 2 * (outward[0] if inside else inward[0]),
+                       arrival.portal[1] + 2 * (outward[1] if inside else inward[1]))
+    if (arrival.kind not in {"flush-facade", "outside-empty", "outside-supply",
+                             "inside-open", "inside-closed"}
+            or arrival.player != level.start or level.start != expected_player
             or _at(level.things, *level.start) != PLAYER_START_CODES[arrival.facing]
             or sum(thing in PLAYER_START_CODES for thing in level.things) != 1):
         raise ValueError("player does not face away from the arrival elevator")
-    expected_door = DOOR_ELEVATOR if inward[0] else DOOR_ELEVATOR_NS
-    threshold = (level.start[0] - inward[0], level.start[1] - inward[1])
-    landing = (level.start[0] + inward[0], level.start[1] + inward[1])
-    if (_at(level.tiles, *arrival.door) != expected_door
-            or not _is_floor(_at(level.tiles, *arrival.cab))
-            or _at(level.tiles, *arrival.cab) == SECRET_EXIT_ZONE
-            or _at(level.things, *arrival.cab) != 0
+    if (any(_at(level.tiles, *cell) == ELEVATOR_TILE
+            for cell in arrival.footprint)
             or not all(_is_floor(_at(level.tiles, *cell))
                        and _at(level.things, *cell) == 0
-                       for cell in (threshold, landing))
-            or any(_at(level.tiles, *cell) == ELEVATOR_TILE
-                   for cell in arrival.footprint)):
-        raise ValueError("arrival elevator is not an inert sealed cab")
+                       for cell in arrival.clearance)):
+        raise ValueError("arrival elevator contains a switch or blocked threshold")
+    car_cells = tuple((arrival.portal[0] + depth * outward[0],
+                       arrival.portal[1] + depth * outward[1])
+                      for depth in (1, 2))
+    if arrival.kind == "flush-facade":
+        if (arrival.car_cells
+                or _at(level.tiles, *arrival.portal) != DUMMY_ELEVATOR_TILE):
+            raise ValueError("flush arrival is not an inert elevator façade")
+        dressed = {arrival.portal}
+    else:
+        if (arrival.car_cells != car_cells
+                or any(not _is_floor(_at(level.tiles, *cell)) for cell in car_cells)):
+            raise ValueError("arrival elevator car has invalid floor geometry")
+        expected_portal = ((DOOR_ELEVATOR if inward[0] else DOOR_ELEVATOR_NS)
+                           if arrival.kind == "inside-closed" else None)
+        if (expected_portal is not None
+                and _at(level.tiles, *arrival.portal) != expected_portal):
+            raise ValueError("closed arrival car lacks its normal elevator door")
+        if expected_portal is None and not _is_floor(_at(level.tiles, *arrival.portal)):
+            raise ValueError("open arrival car has a blocked doorway")
+        px, py = -outward[1], outward[0]
+        dressed = {
+            (arrival.portal[0] + depth * outward[0] + side * px,
+             arrival.portal[1] + depth * outward[1] + side * py)
+            for depth in (1, 2, 3) for side in (-1, 1)}
+        dressed.add((arrival.portal[0] + 3 * outward[0],
+                     arrival.portal[1] + 3 * outward[1]))
+        if any(_at(level.tiles, *cell) != DUMMY_ELEVATOR_TILE
+               for cell in dressed):
+            raise ValueError("arrival car does not use inert native panels")
+    if arrival.item is not None:
+        if (arrival.kind != "outside-supply"
+                or arrival.item[:2] not in arrival.car_cells
+                or arrival.item[2] not in PICKUP_CODES
+                or _at(level.things, *arrival.item[:2]) != arrival.item[2]):
+            raise ValueError("arrival car item lacks contextual provenance")
+    elif arrival.kind == "outside-supply":
+        raise ValueError("staged arrival car has no item")
+    allowed_things = {level.start}
+    if arrival.item is not None:
+        allowed_things.add(arrival.item[:2])
+    if any(_at(level.things, *cell) and cell not in allowed_things
+           for cell in arrival.car_cells):
+        raise ValueError("arrival car contains an unexplained object")
     for cell in arrival.footprint:
-        if cell in (arrival.door, arrival.cab):
+        if cell in dressed or cell in arrival.car_cells or cell == arrival.portal:
             continue
         if _is_floor(_at(level.tiles, *cell)) or _at(level.tiles, *cell) in DOORS:
             raise ValueError("arrival elevator is not rock bounded")
@@ -5871,9 +6348,59 @@ def validate_map(level: GeneratedMap) -> None:
                    for dx, dy in facings) != 1 for cell in recess.cells):
             raise ValueError("guard recess is not a blind one-cell pocket")
 
+    if len(level.guard_galleries) > 1:
+        raise ValueError("guard galleries dominate the floor")
+    for gallery in level.guard_galleries:
+        if (not 0 <= gallery.room_index < len(level.rooms)
+                or level.room_shapes[gallery.room_index] != "rectangle"
+                or gallery.treatment != 30
+                or len(gallery.actor_cells) != 2):
+            raise ValueError("guard gallery lacks a symmetric architectural host")
+        room = level.rooms[gallery.room_index]
+        horizontal = len({y for _, y in gallery.screen}) == 1
+        vertical = len({x for x, _ in gallery.screen}) == 1
+        expected_screen = (
+            {(x, gallery.screen[0][1]) for x in range(room.x, room.x + room.w)}
+            if horizontal else
+            {(gallery.screen[0][0], y) for y in range(room.y, room.y + room.h)})
+        if (not (horizontal or vertical)
+                or set(gallery.screen) != expected_screen
+                or any(_at(level.things, *cell) != gallery.treatment
+                       for cell in gallery.screen)):
+            raise ValueError("guard gallery does not have one complete matched screen")
+        first, second = gallery.actor_cells
+        mirrored = ((horizontal and first[1] == second[1]
+                     and first[0] + second[0] == 2 * room.center[0])
+                    or (vertical and first[0] == second[0]
+                        and first[1] + second[1] == 2 * room.center[1]))
+        if (not mirrored or any(_at(level.things, *cell) not in ENEMY_CODES
+                                for cell in gallery.actor_cells)
+                or any(cell not in gallery.rear_cells for cell in gallery.actor_cells)):
+            raise ValueError("guard gallery actors are not a matched firing pair")
+        collision_reachable = _reachable(
+            level.tiles, level.start, locked_open=True, blocked=set(gallery.screen))
+        if any(cell in collision_reachable for cell in gallery.rear_cells):
+            raise ValueError("guard gallery is physically accessible")
+        if any(_at(level.things, *cell) in PICKUP_CODES | {GOLD_KEY, SILVER_KEY}
+               for cell in gallery.rear_cells):
+            raise ValueError("inaccessible guard gallery contains a pickup")
+        dx, dy = facings[gallery.facing]
+        for actor in gallery.actor_cells:
+            x, y = actor
+            crossed = None
+            for _ in range(max(room.w, room.h)):
+                x, y = x + dx, y + dy
+                if (x, y) in gallery.screen:
+                    crossed = (x, y)
+                    break
+                if not _is_floor(_at(level.tiles, x, y)):
+                    break
+            if crossed is None:
+                raise ValueError("guard gallery actor cannot fire through its screen")
+
     allowed_encounters = {"visible-sentry", "blind-corner-ambush",
                           "staggered-flank", "strongpoint", "objective-guard",
-                          "patrol", "boss-support", "novelty"}
+                          "patrol", "boss-support", "novelty", "guard-gallery"}
     tracked_actors: dict[tuple[int, int], int] = {}
     for encounter in level.encounters:
         if (encounter.template not in allowed_encounters or not encounter.cells
@@ -5960,6 +6487,70 @@ def validate_map(level: GeneratedMap) -> None:
             if not fixtures <= LIGHTING_FAMILY_ITEMS[family]:
                 raise ValueError("room mixes incompatible lighting families")
 
+    # Special wall graphics are complete architectural compositions, never
+    # members of the ordinary material scatter.
+    fake_doors = [(index % GRID, index // GRID)
+                  for index, tile in enumerate(level.tiles)
+                  if tile == 13 and level.things[index] != PUSHWALL]
+    if len(fake_doors) > 1:
+        raise ValueError("fake doors dominate the floor")
+    for x, y in fake_doors:
+        visible_from = [(nx, ny) for nx, ny in
+                        ((x + 1, y), (x - 1, y), (x, y + 1), (x, y - 1))
+                        if _is_floor(_at(level.tiles, nx, ny))]
+        if len(visible_from) != 1:
+            raise ValueError("fake door exposes more than one wall face")
+        ix, iy = visible_from[0]
+        backing = (x + (x - ix), y + (y - iy))
+        if (_is_floor(_at(level.tiles, *backing))
+                or _at(level.tiles, *backing) in DOORS):
+            raise ValueError("fake door has no solid architectural backing")
+
+    sky_walls = [(index % GRID, index // GRID)
+                 for index, tile in enumerate(level.tiles) if tile == 16]
+    if sky_walls and (len(sky_walls) < 2 or len(sky_walls) % 2):
+        raise ValueError("sky vista is not a matched pillar composition")
+    for x, y in sky_walls:
+        visible_from = [(nx, ny) for nx, ny in
+                        ((x + 1, y), (x - 1, y), (x, y + 1), (x, y - 1))
+                        if _is_floor(_at(level.tiles, nx, ny))]
+        if len(visible_from) != 1:
+            raise ValueError("sky wall is not on an outside-most face")
+        interior = visible_from[0]
+        if _at(level.things, *interior) != 30:
+            raise ValueError("sky wall is not completely hidden by its pillar")
+        dx, dy = x - interior[0], y - interior[1]
+        ox, oy = x + dx, y + dy
+        while 0 <= ox < GRID and 0 <= oy < GRID:
+            if (_is_floor(_at(level.tiles, ox, oy))
+                    or _at(level.tiles, ox, oy) in DOORS):
+                raise ValueError("sky vista leaks into interior architecture")
+            ox += dx
+            oy += dy
+
+    glass_walls = {(index % GRID, index // GRID)
+                   for index, tile in enumerate(level.tiles) if tile == 33}
+    accounted_glass: set[tuple[int, int]] = set()
+    for room in level.rooms:
+        sides = (
+            {(x, room.y - 1) for x in range(room.x - 1, room.x + room.w + 1)},
+            {(x, room.y + room.h) for x in range(room.x - 1, room.x + room.w + 1)},
+            {(room.x - 1, y) for y in range(room.y, room.y + room.h)},
+            {(room.x + room.w, y) for y in range(room.y, room.y + room.h)},
+        )
+        room_glass = glass_walls & set().union(*sides)
+        if not room_glass:
+            continue
+        if len(room_glass) % 2:
+            raise ValueError("stained glass is not a matched wall composition")
+        if any(not any(other != cell and
+                       (other[0] == cell[0] or other[1] == cell[1])
+                       for other in room_glass) for cell in room_glass):
+            raise ValueError("stained glass has an isolated panel")
+        accounted_glass.update(room_glass)
+    if accounted_glass != glass_walls:
+        raise ValueError("stained glass has no owning formal room")
+
     spear_positions = [(index % GRID, index // GRID)
                        for index, thing in enumerate(level.things) if thing == 69]
     for cell in spear_positions:
@@ -6030,19 +6621,29 @@ def validate_map(level: GeneratedMap) -> None:
                           and xs == set(range(room.x, room.x + room.w)))
             if not (vertical or horizontal):
                 raise ValueError("vine divider does not span the complete room")
-        elif screen.kind == "hallway-screen":
-            if len(screen.cells) != 1 or screen.room_index != -1:
-                raise ValueError("hallway vine screen has invalid extent")
-            x, y = screen.cells[0]
-            horizontal_sides = ((_at(level.tiles, x, y - 1),
-                                 _at(level.tiles, x, y + 1)))
-            vertical_sides = ((_at(level.tiles, x - 1, y),
-                               _at(level.tiles, x + 1, y)))
-            if not (all(not _is_floor(tile) and tile not in DOORS
-                        for tile in horizontal_sides)
-                    or all(not _is_floor(tile) and tile not in DOORS
-                           for tile in vertical_sides)):
-                raise ValueError("hallway vine does not fill a one-tile cross-section")
+        elif screen.kind == "hallway-run":
+            if len(screen.cells) < 3 or screen.room_index != -1:
+                raise ValueError("hallway vine run has invalid extent")
+            horizontal = len({y for _, y in screen.cells}) == 1
+            vertical = len({x for x, _ in screen.cells}) == 1
+            ordered = sorted(screen.cells,
+                             key=lambda cell: cell[0] if horizontal else cell[1])
+            if (not (horizontal or vertical)
+                    or any(abs(first[0] - second[0]) + abs(first[1] - second[1]) != 1
+                           for first, second in zip(ordered, ordered[1:]))):
+                raise ValueError("hallway vines do not fill one continuous length")
+            for x, y in screen.cells:
+                sides = (((x, y - 1), (x, y + 1)) if horizontal else
+                         ((x - 1, y), (x + 1, y)))
+                if any(_is_floor(_at(level.tiles, *side))
+                       or _at(level.tiles, *side) in DOORS for side in sides):
+                    raise ValueError("hallway vine escaped its one-tile corridor")
+            if screen.ambush_anchor is not None:
+                if (_at(level.things, *screen.ambush_anchor) not in ENEMY_CODES
+                        or min(abs(screen.ambush_anchor[0] - endpoint[0])
+                               + abs(screen.ambush_anchor[1] - endpoint[1])
+                               for endpoint in (screen.cells[0], screen.cells[-1])) > 6):
+                    raise ValueError("hallway vine ambush anchor is not credible")
         else:
             raise ValueError("unknown vine-screen composition")
 
@@ -6153,7 +6754,7 @@ def validate_map(level: GeneratedMap) -> None:
             raise ValueError("pushwall has no movement clearance")
         if not all(_is_floor(_at(level.tiles, x + step, y)) for step in (1, 2)):
             raise ValueError("pushwall has no two-tile backstop")
-        if _at(level.tiles, x, y) not in DECOR_WALLS:
+        if _at(level.tiles, x, y) not in SECRET_HINT_WALLS:
             raise ValueError("pushwall is not hinted by a decor wall tile")
     # Nested secrets become approachable in sequence. Simulate each push at
     # its real two-tile travel distance rather than pretending the inner wall
@@ -6524,11 +7125,64 @@ def _mapinfo(secret_from: int, variants: tuple[str, ...] = ()) -> str:
     return "\n".join(lines) + "\n"
 
 
+def _reproducibility_text(config: CampaignConfig, secret_from: int) -> str:
+    """Human-readable, copyable record of every campaign input."""
+    settings = json.loads(config.to_json())
+    commit = BUILD_COMMIT or "unknown"
+    lines = [
+        "InfiniWolf campaign reproducibility record",
+        "==========================================",
+        "",
+        f"version = {__version__}",
+        f"commit = {commit}",
+        "seed_source = LittleEntropyMachine",
+        f"seed = {config.seed}",
+        f"secret_floor_source = {secret_from}",
+        "",
+        "Resolved settings",
+        "-----------------",
+    ]
+    for name, value in settings.items():
+        if name != "seed":
+            lines.append(f"{name} = {value}")
+    arguments = [f"--seed {config.seed}"]
+    for name, value in settings.items():
+        if name != "seed":
+            arguments.append(f"--{name.replace('_', '-')} {value}")
+    lines.extend((
+        "",
+        "Reproduction command",
+        "--------------------",
+        "python3 -m infiniwolf " + " ".join(arguments)
+        + " --output infiniwolf.pk3",
+        "",
+        "The same InfiniWolf version and commit are required for byte-identical output.",
+        "",
+    ))
+    return "\n".join(lines)
+
+
 def generate_campaign(config: CampaignConfig, output: Path,
                       progress: Callable[[int, int], None] | None = None,
                       cancelled: Callable[[], bool] | None = None) -> Path:
     levels = []
     secret_from = 1 + config.floor_seed(10) % 6
+    variants = _variant_sequence(config)
+    vine_rng = random.Random(config.vine_seed())
+    vine_floors = list(range(2, 9))
+    vine_weights = [4 if variants[floor - 1].name == "catacombs" else
+                    2 if variants[floor - 1].name in ("storehouse", "grand-halls") else 1
+                    for floor in vine_floors]
+    vine_floor = vine_rng.choices(vine_floors, weights=vine_weights, k=1)[0]
+    vine_budget = 2 if vine_rng.random() < 0.28 else 1
+    gallery_rng = random.Random(config.guard_gallery_seed())
+    gallery_enabled = gallery_rng.random() < 0.22
+    gallery_floors = list(range(3, 9))
+    gallery_weights = [3 if variants[floor - 1].name in
+                       ("garrison", "grand-halls") else 1
+                       for floor in gallery_floors]
+    gallery_floor = (gallery_rng.choices(gallery_floors, weights=gallery_weights, k=1)[0]
+                     if gallery_enabled else 0)
     for number in range(1, 11):
         if cancelled and cancelled():
             raise GenerationCancelled("campaign generation cancelled")
@@ -6537,7 +7191,10 @@ def generate_campaign(config: CampaignConfig, output: Path,
         for attempt in range(50):
             try:
                 candidate = generate_map(config, number, attempt, number == secret_from,
-                                         secret_source=secret_from if number == 10 else None)
+                                         secret_source=secret_from if number == 10 else None,
+                                         hallway_vine_budget=(vine_budget
+                                                              if number == vine_floor else 0),
+                                         guard_gallery_enabled=(number == gallery_floor))
             except ValueError as error:
                 last_error = error
                 continue
@@ -6555,10 +7212,34 @@ def generate_campaign(config: CampaignConfig, output: Path,
                 raise RuntimeError(f"floor {number} failed generation: {last_error}")
         if progress:
             progress(number, 10)
+    realized_vine_floors = {
+        level.number for level in levels
+        if any(screen.kind == "hallway-run" for screen in level.vine_screens)}
+    realized_vine_runs = sum(
+        screen.kind == "hallway-run" for level in levels for screen in level.vine_screens)
+    if (realized_vine_floors - {vine_floor}
+            or len(realized_vine_floors) > 1
+            or realized_vine_runs > vine_budget):
+        raise RuntimeError("campaign hallway-vine budget was violated")
+    realized_gallery_floors = {
+        level.number for level in levels if level.guard_galleries}
+    if realized_gallery_floors - {gallery_floor} or len(realized_gallery_floors) > 1:
+        raise RuntimeError("campaign guard-gallery budget was violated")
+    if any(first.variant == second.variant
+           for first, second in zip(levels, levels[1:])):
+        raise RuntimeError("campaign repeated the same floor type consecutively")
+    if any(first.circulation_skeleton == second.circulation_skeleton
+           for first, second in zip(levels, levels[1:])):
+        raise RuntimeError("campaign repeated the same circulation skeleton consecutively")
     manifest = {
-        "generator": "infiniwolf", "version": __version__, "seed": config.seed,
+        "generator": "infiniwolf", "version": __version__,
+        "commit": BUILD_COMMIT or "unknown", "seed": config.seed,
         "seed_source": "LittleEntropyMachine",
         "settings": json.loads(config.to_json()), "secret_from": secret_from,
+        "vine_schedule": {"floor": vine_floor, "requested_runs": vine_budget,
+                          "realized_runs": realized_vine_runs},
+        "guard_gallery_schedule": {"floor": gallery_floor,
+                                   "realized": bool(realized_gallery_floors)},
         "lock_schedule": [plan.colors for plan in _lock_schedule(config)],
         "floors": [{"number": level.number, "seed": level.seed,
                     "secrets": len(level.secret_rewards),
@@ -6573,15 +7254,23 @@ def generate_campaign(config: CampaignConfig, output: Path,
                     "preboss_room": level.preboss_room,
                     "premium_room": level.premium_room,
                     "expedition_rooms": level.expedition_rooms,
-                    "arrival": ({"door": level.arrival.door,
-                                  "cab": level.arrival.cab,
+                    "arrival": ({"kind": level.arrival.kind,
+                                  "portal": level.arrival.portal,
                                   "player": level.arrival.player,
-                                  "facing": level.arrival.facing}
+                                  "facing": level.arrival.facing,
+                                  "car_cells": level.arrival.car_cells,
+                                  "item": level.arrival.item}
                                  if level.arrival else None),
                     "guard_recesses": [
                         {"room": recess.room_index, "cells": recess.cells,
                          "actor_cell": recess.actor_cell}
                         for recess in level.guard_recesses],
+                    "guard_galleries": [
+                        {"room": gallery.room_index, "screen": gallery.screen,
+                         "actors": gallery.actor_cells,
+                         "rear_cells": gallery.rear_cells,
+                         "treatment": gallery.treatment}
+                        for gallery in level.guard_galleries],
                     "encounters": [
                         {"template": encounter.template,
                          "room": encounter.room_index,
@@ -6602,7 +7291,8 @@ def generate_campaign(config: CampaignConfig, output: Path,
                     "lighting_families": level.lighting_families,
                     "vine_screens": [
                         {"kind": screen.kind, "room": screen.room_index,
-                         "cells": screen.cells}
+                         "cells": screen.cells,
+                         "ambush_anchor": screen.ambush_anchor}
                         for screen in level.vine_screens],
                     "motifs": level.motifs,
                     "secret_variants": level.secret_variants,
@@ -6656,6 +7346,7 @@ def generate_campaign(config: CampaignConfig, output: Path,
                 package.writestr(info, data)
             write("mapinfo.txt", _mapinfo(secret_from, tuple(level.variant for level in levels)))
             write("infiniwolf-manifest.json", json.dumps(manifest, indent=2, sort_keys=True))
+            write("infiniwolf-settings.txt", _reproducibility_text(config, secret_from))
             for level in levels:
                 write(f"maps/iw{level.number:02d}.wad",
                       _wad_bytes(f"IW{level.number:02d}", level.tiles, level.things))
@@ -6683,12 +7374,30 @@ def validate_package(package_path: Path) -> dict[str, object]:
         expected_maps = {f"maps/iw{number:02d}.wad" for number in range(1, 11)}
         if not expected_maps.issubset(names):
             raise ValueError("package is missing one or more campaign maps")
+        if not {"mapinfo.txt", "infiniwolf-manifest.json",
+                "infiniwolf-settings.txt"}.issubset(names):
+            raise ValueError("package is missing required reproducibility metadata")
         forbidden = (".wl6", ".png", ".wav", ".ogg", ".voc")
         if any(name.lower().endswith(forbidden) for name in names):
             raise ValueError("package contains an asset file instead of map metadata")
         manifest = json.loads(package.read("infiniwolf-manifest.json"))
         if len(manifest.get("floors", ())) != 10:
             raise ValueError("manifest does not describe ten floors")
+        settings_text = package.read("infiniwolf-settings.txt").decode("utf-8")
+        settings_lines = set(settings_text.splitlines())
+        required_settings = {
+            f"version = {manifest.get('version')}",
+            f"commit = {manifest.get('commit')}",
+            f"seed = {manifest.get('seed')}",
+            f"secret_floor_source = {manifest.get('secret_from')}",
+            "seed_source = LittleEntropyMachine",
+        }
+        required_settings.update(
+            f"{name} = {value}"
+            for name, value in manifest.get("settings", {}).items()
+            if name != "seed")
+        if not required_settings <= settings_lines:
+            raise ValueError("reproducibility text disagrees with the manifest")
         for name in expected_maps:
             wad = package.read(name)
             if len(wad) < 46 or wad[:4] != b"PWAD" or wad[12:18] != b"WDC3.1":
