@@ -3861,7 +3861,12 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
                          else 0.45 if len(traversal.entries) >= 2 else 0.20)
         if (travel_pairs and pairs_placed < pair_budget
                 and rng.random() < travel_chance):
-            pair_items = list(dict.fromkeys(frame_pool))
+            # Traversal pairs are room furniture, not landmark frames.  Use
+            # the room's own blocking palette when no concept-specific pair
+            # palette exists; the landmark-frame fallback is a floor lamp,
+            # which would otherwise leak into themes such as jails.
+            pair_items = list(dict.fromkeys(
+                concept_frames.get(concept, blocking)))
             rng.shuffle(pair_items)
             placed_travel_pair = False
             for pair in travel_pairs:
