@@ -1097,6 +1097,11 @@ def _plan_floor(rng: random.Random, complexity: int, number: int,
     # The two highest settings now reach beyond Normal's twenty-room plan;
     # local filler recovery below raises realized density at every setting.
     target = min(24, 14 + 2 * complexity)
+    if number == 10:
+        # The reward expedition uses larger room footprints and consequently
+        # loses more optional placements. Give it four additional destinations
+        # to realize instead of making its already-large rooms even bigger.
+        target = min(24, target + 4)
     # Roughly 55% of authored rooms belong to the mandatory progression
     # spine. Optional motifs and side rooms still provide exploration, but
     # the elevator can no longer sit only five rooms away in a twenty-room
@@ -3393,6 +3398,18 @@ def _room_graph_path(room_count: int, edges: list[tuple[int, int]],
         path.append(cursor)
         cursor = parent[cursor]
     return list(reversed(path))
+
+
+def _minimum_critical_route_rooms(roles: list[str] | tuple[str, ...]) -> int:
+    """Require most of the progression spine, independent of side-room count.
+
+    Optional density must not make a valid exit mathematically impossible.
+    Roles used exclusively by optional graph nodes are excluded; a reassigned
+    optional exit still adds itself to the requirement and its realized route.
+    """
+    optional_roles = {"ring", "branch", "closet"}
+    spine_rooms = sum(role not in optional_roles for role in roles)
+    return max(6, math.ceil(spine_rooms * 0.90))
 
 
 def _room_predecessor(room_count: int, edges: list[tuple[int, int]], target: int) -> int | None:
@@ -6388,7 +6405,7 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
     center_distances = {index: preliminary_distances.get(room.center, 0)
                         for index, room in enumerate(rooms)}
     deepest_center = max(center_distances.values(), default=1) or 1
-    minimum_route_rooms = max(6, math.ceil(len(rooms) * 0.55))
+    minimum_route_rooms = _minimum_critical_route_rooms(roles)
     required_post_anchor = next((index for index, role in enumerate(roles)
                                  if role in ("victory", "recovery")), None)
     exit_candidates = []
@@ -7302,7 +7319,7 @@ def validate_map(level: GeneratedMap) -> None:
                            default=1) or 1
         if distances.get(level.exit_stand, 0) / deepest_room < 0.75:
             raise ValueError("elevator route is shallower than 75% of the floor")
-        minimum_route_rooms = max(6, math.ceil(len(level.rooms) * 0.55))
+        minimum_route_rooms = _minimum_critical_route_rooms(level.room_roles)
         if len(level.critical_route) < minimum_route_rooms:
             raise ValueError("critical route visits too few authored rooms")
         edge_sets = [{first, second} for first, second in level.edges]

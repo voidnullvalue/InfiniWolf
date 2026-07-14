@@ -688,6 +688,8 @@ class GeneratorTests(unittest.TestCase):
             rng = random.Random(700 + int(intensity))
             plan = _plan_floor(rng, int(intensity), 5)
             self.assertEqual(len(plan.specs), target)
+        floor_ten = _plan_floor(random.Random(710), int(Intensity.NORMAL), 10)
+        self.assertEqual(len(floor_ten.specs), 24)
 
         for seed in range(64):
             width, height = generator._room_size(random.Random(seed), "standard", 5)
@@ -991,7 +993,14 @@ class GeneratorTests(unittest.TestCase):
         level = _generate_with_retries(CampaignConfig(seed=3332), 1, attempts=3)
         self.assertGreaterEqual(level.exit_depth_ratio, 0.75)
         self.assertGreaterEqual(len(level.critical_route),
-                                max(6, math.ceil(len(level.rooms) * 0.55)))
+                                generator._minimum_critical_route_rooms(
+                                    level.room_roles))
+
+    def test_optional_density_does_not_make_exit_depth_impossible(self):
+        spine = ("start", *("beat" for _ in range(7)),
+                 "climax", "relief", "exit")
+        roles = (*spine, *("branch" for _ in range(13)))
+        self.assertEqual(generator._minimum_critical_route_rooms(roles), 10)
 
     def test_floor_nine_has_native_boss(self):
         level = _generate_with_retries(CampaignConfig(seed=909), 9, attempts=5)
