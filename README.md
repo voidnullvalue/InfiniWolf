@@ -6,7 +6,7 @@
 [![License](https://img.shields.io/github/license/voidnullvalue/InfiniWolf)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.11%2B-blue)](https://www.python.org/downloads/)
 
-InfiniWolf generates deterministic ten-map Wolfenstein 3D campaigns for ECWolf, with varied building layouts, coherent room themes, staged progression, and context-aware encounters and rewards. Every floor begins at one of five believable, rock-bounded inactive elevator arrivals. District-aware stone, brick, wood, metal, marble, plaster, and damaged wall families give rooms a stronger sense of place, while room-owned sentries, flanks, ambushes, strongpoints, moving patrols, and rare firing galleries make combat spaces feel purposeful. The goal is simple: make each seed fun to explore and enjoyable to replay, building toward a distinctive boss stronghold on floor 9 and a secret reward expedition on floor 10. It uses the player's registered WL6 data at runtime and never copies Wolfenstein graphics, sounds, music, or data files into generated packages.
+InfiniWolf generates deterministic ten-map Wolfenstein 3D campaigns for ECWolf, with varied building layouts, coherent room themes, staged progression, and context-aware encounters and rewards. Independent progression grammars, circulation skeletons, district patterns, reconvergence motifs, and asymmetric room profiles prevent one repeated generator silhouette from owning the campaign. Every floor begins at one of four believable, rock-bounded inactive elevator arrivals; every full arrival car has a real working door. District-aware stone, brick, wood, metal, marble, plaster, and damaged wall families give rooms a stronger sense of place, with purple reserved for floors 6–10 as a late-campaign escalation. Room-owned sentries, flanks, ambushes, strongpoints, moving patrols, and rare firing galleries make combat spaces feel purposeful. The goal is simple: make each seed fun to explore and enjoyable to replay, building toward one of five geometry-rich boss strongholds on floor 9 and a secret reward expedition on floor 10. It uses the player's registered WL6 data at runtime and never copies Wolfenstein graphics, sounds, music, or data files into generated packages.
 
 Curious how the generator actually works? Start with the human-readable
 [`GENERATION_FLOW.md`](GENERATION_FLOW.md) flowchart, then use
@@ -40,6 +40,9 @@ python3 run.py
 
 The first launch attempts to find ECWolf and WL6 data automatically. Confirm the paths, choose generation settings and an optional seed, then select **Generate**. Once validation succeeds, select **Play**.
 
+After generation, **View Maps** opens a scalable top-down viewer for all ten
+maps. The floor list and optional start/exit, route, enemy, pickup, and secret
+overlays make it possible to inspect a campaign without launching ECWolf.
 The window title and footer show the exact InfiniWolf version and abbreviated
 Git commit, making screenshots and bug reports straightforward to identify.
 
@@ -68,8 +71,8 @@ python3 -m infiniwolf --seed 42 --guard-density 4 --enemy-toughness 3 \
 The desktop interface groups the original gameplay controls separately from
 the style controls. Style settings deliberately influence bounded choices
 rather than disabling map validation: decoration amount controls prop budget,
-room-shape variation controls a restrained mix of mirrored notches and symmetric
-profiles while keeping rectangles in the clear majority, patrol activity controls
+room-shape variation controls a target mix of chamfers, L/T profiles, offset bays,
+mirrored notches, and symmetric profiles (40% shaped rooms at the normal setting), patrol activity controls
 the target share of actors assigned to validated moving routes, atmosphere controls
 how clean or grim rooms look, and secret
 reward quality shifts the secret-room reward mix. Theme bias strongly favors a
@@ -77,7 +80,25 @@ floor identity without forcing every floor to repeat it; `mixed` keeps the
 default rotating sequence. Adjacent floors are guaranteed to use different
 base identities and different circulation skeletons.
 
-Using the same version, commit, seed, and settings produces byte-identical output. The named `LittleEntropyMachine` seed source derives independent floor, variant, circulation, lock, vine-sector, and rare-gallery streams without retry attempts perturbing campaign-scale choices. A manifest inside the PK3 records that seed source, the resolved seed and settings, arrival elevator, wall and room identity, encounter compositions, patrol routes, the single-floor corridor-vine schedule, rare guard galleries, special-floor family, room shapes, lighting families, key objectives, bounded secrets, pickup compositions, and validation results. Every generated PK3 also includes `infiniwolf-settings.txt`: a plain-text record of the exact version, commit, resolved seed, every control value, and a copyable reproduction command.
+Using the same version, commit, seed, and settings produces byte-identical output. The named `LittleEntropyMachine` seed source derives independent floor, variant, circulation, progression-grammar, lock, vine-sector, rare-gallery, and rare-motif streams without retry attempts perturbing campaign-scale choices. A manifest inside the PK3 records that seed source, the resolved seed and settings, arrival elevator, wall and room identity, encounter compositions, patrol routes, the single-floor corridor-vine schedule, rare guard galleries, special-floor family, room shapes, lighting families, key objectives, bounded secrets, pickup compositions, and validation results. Every generated PK3 also includes `infiniwolf-settings.txt`: a plain-text record of the exact version, commit, resolved seed, every control value, and a copyable reproduction command.
+
+Generated maps also carry a gameplay-neutral provenance signature in their
+sound-zone numbering. Each standalone `IWNN.wad` has two independently
+checkable residues; all ten primary residues additionally total 42 modulo 43.
+The signature is bound to zone layout, door geometry, and selected ordinary
+map objects, so removing a metadata file is insufficient and broad edits tend
+to invalidate it. Check a campaign or one extracted map from either CLI or an
+optional GUI:
+
+```sh
+python3 tools/check_infiniwolf.py campaign.pk3
+python3 tools/check_infiniwolf.py maps/iw05.wad
+python3 tools/check_infiniwolf.py renamed.wad --floor 5 --json
+python3 tools/check_infiniwolf.py --gui
+```
+
+This is evidence of generator origin, not cryptographic proof of authorship;
+someone deliberately re-encoding a copied map can forge it.
 
 ## Tests
 
@@ -92,7 +113,7 @@ python3 tools/fuzz.py --seeds 1000
 python3 tools/smoke_ecwolf.py --ecwolf /path/to/ecwolf --data /path/to/wl6-data
 ```
 
-Generated packages contain only WAD map data, MAPINFO, and the reproducibility manifest. Registered WL6 assets remain in the user's data directory.
+Generated packages contain only WAD map data, MAPINFO, and reproducibility metadata. Registered WL6 assets remain in the user's data directory.
 
 ## Building a release locally
 
@@ -102,7 +123,7 @@ Generated packages contain only WAD map data, MAPINFO, and the reproducibility m
 pip install pyinstaller .
 pyinstaller --onefile --windowed --name InfiniWolf run.py
 pyinstaller --onefile --name infiniwolf-cli infiniwolf_cli.py
-python3 packaging/make_release.py --platform linux --version 1.4.0   # or windows / macos
+python3 packaging/make_release.py --platform linux --version 1.5.0   # or windows / macos
 ```
 
 The script downloads ECWolf's official prebuilt binary for the target platform from `maniacsvault.net`, checks it against a pinned SHA-256, and packages it alongside the two executables. It never touches Wolfenstein 3D game data.

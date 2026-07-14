@@ -47,7 +47,7 @@ class GeneratorTests(unittest.TestCase):
         engine_facing = {19: (1, 0), 20: (0, -1),
                          21: (-1, 0), 22: (0, 1)}
         kinds = ("flush-facade", "outside-empty", "outside-supply",
-                 "inside-open", "inside-closed")
+                 "inside-closed")
         for kind in kinds:
             with self.subTest(kind=kind):
                 tiles = [WALL] * (GRID * GRID)
@@ -79,11 +79,19 @@ class GeneratorTests(unittest.TestCase):
                 else:
                     self.assertTrue(all(_is_floor(_at(tiles, *cell))
                                         for cell in arrival.car_cells))
-                    if kind == "inside-closed":
-                        self.assertIn(_at(tiles, *arrival.portal),
-                                      generator.DOORS)
-                    else:
-                        self.assertTrue(_is_floor(_at(tiles, *arrival.portal)))
+                    self.assertEqual(
+                        _at(tiles, *arrival.portal),
+                        (generator.DOOR_ELEVATOR if dx
+                         else generator.DOOR_ELEVATOR_NS),
+                        "every full arrival car must retain an elevator door")
+                    outward = (-dx, -dy)
+                    px, py = -outward[1], outward[0]
+                    for side in (-1, 1):
+                        self.assertNotEqual(
+                            _at(tiles, arrival.portal[0] + outward[0] + side * px,
+                                arrival.portal[1] + outward[1] + side * py),
+                            generator.DUMMY_ELEVATOR_TILE,
+                            "arrival rail must begin behind the doorway sightline")
                 self.assertEqual(bool(arrival.item), kind == "outside-supply")
 
     def test_generated_floors_record_purposeful_encounters_and_real_patrols(self):
@@ -1063,6 +1071,19 @@ class GeneratorTests(unittest.TestCase):
                 any(materials <= family for family in families),
                 f"theme base={base} accents={accents} mixes incompatible wall materials")
 
+    def test_purple_wall_material_is_reserved_for_late_floors(self):
+        room = Room(20, 20, 8, 8)
+        tiles = [WALL] * (GRID * GRID)
+        for y in range(room.y, room.y + room.h):
+            for x in range(room.x, room.x + room.w):
+                tiles[y * GRID + x] = FLOOR
+        _, early = generator._assign_area_themes(
+            tiles, [room], [0], random.Random(1), 5, theme_pool=(19,))
+        _, late = generator._assign_area_themes(
+            tiles, [room], [0], random.Random(1), 6, theme_pool=(19,))
+        self.assertNotIn(19, {base for base, _ in early.values()})
+        self.assertEqual({base for base, _ in late.values()}, {19})
+
     def test_cell_wall_tile_is_never_the_base_theme(self):
         """BSTCELA1(5)/BSTCELB1(7), the barred prison-cell wall, reads as a
         specific set piece; if either is a theme's base it fills every wall
@@ -1559,6 +1580,14 @@ class GeneratorTests(unittest.TestCase):
             door_x = sx - 2 if switch_east else sx + 2
             self.assertEqual(_at(level.tiles, door_x, sy), 100,
                              "elevator entrance must be a real elevator door")
+            switch_dx = 1 if switch_east else -1
+            threshold_x = sx - switch_dx
+            self.assertNotEqual(_at(level.tiles, threshold_x, sy - 1), ELEVATOR_TILE,
+                                "upper rail must begin behind the doorway sightline")
+            self.assertNotEqual(_at(level.tiles, threshold_x, sy + 1), ELEVATOR_TILE,
+                                "lower rail must begin behind the doorway sightline")
+            self.assertEqual(_at(level.tiles, sx, sy - 1), ELEVATOR_TILE)
+            self.assertEqual(_at(level.tiles, sx, sy + 1), ELEVATOR_TILE)
 
     def _floor_with_variant(self, name, floor=2, max_seed=200):
         for seed in range(max_seed):

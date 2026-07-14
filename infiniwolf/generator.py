@@ -178,6 +178,7 @@ JAIL_CANDIDATE_PROBABILITY = 0.35
 # hinted by a decor wall tile, and a theme with no accent at all has nothing
 # in-family to hint with otherwise (see _hint_secrets).
 FLOOR_TEN_STONE_THEME = (9, (41,))
+PURPLE_MIN_FLOOR = 6
 # Landmark decoration tiles (portraits, banners, insignia, signage/graffiti):
 # these should read as a single accent set into an otherwise plain wall, the
 # way they're used in the original game, never as the material of an entire
@@ -448,6 +449,14 @@ CIRCULATION_MODES = (
     "service-bays", "formal-axis", "tunnel-cluster",
 )
 
+PROGRESSION_GRAMMARS = (
+    "axial-journey", "hub-relay", "offset-ladder",
+    "clustered-chain", "nested-circuit", "bounded-perimeter",
+)
+
+SHAPE_TARGETS = (0.0, 0.15, 0.25, 0.40, 0.48, 0.55)
+RARE_MOTIF_CHANCE = 0.03
+
 
 def _variant_sequence(config: CampaignConfig) -> tuple[FloorVariant, ...]:
     """The campaign's per-floor variants, a pure function of the seed.
@@ -574,6 +583,30 @@ def _circulation_sequence(config: CampaignConfig) -> tuple[str, ...]:
                    for name in pool]
         result.append(rng.choices(pool, weights=weights, k=1)[0])
     return tuple(result)
+
+
+def _progression_sequence(config: CampaignConfig) -> tuple[str, ...]:
+    """Choose macro progression grammars independently of floor retries."""
+    result: list[str] = []
+    for floor in range(1, 11):
+        seed = config.circulation_seed(floor) ^ 0x50524F4752455353
+        if config.say_aardwolf:
+            seed ^= config.aardwolf_seed(floor)
+        rng = random.Random(seed)
+        pool = [grammar for grammar in PROGRESSION_GRAMMARS
+                if not result or grammar != result[-1]]
+        if len(result) > 1:
+            distant = [grammar for grammar in pool if grammar != result[-2]]
+            if distant:
+                pool = distant
+        result.append(rng.choice(pool))
+    return tuple(result)
+
+
+def _rare_motif_schedule(config: CampaignConfig) -> int:
+    """Return the nominated late floor for the rare plan motif, or zero."""
+    rng = random.Random(config.rare_motif_seed())
+    return rng.choice((6, 7, 8, 9)) if rng.random() < RARE_MOTIF_CHANCE else 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -735,6 +768,22 @@ class SecretDetail:
 
 
 @dataclass(frozen=True, slots=True)
+class RareMotifDetail:
+    kind: str
+    room_index: int
+    realization: str
+    endpoints: tuple[tuple[int, int], ...]
+
+
+@dataclass(frozen=True, slots=True)
+class BossArenaDetail:
+    family: str
+    profile: str
+    geometry: tuple[tuple[int, int], ...]
+    decorations: tuple[tuple[int, int, int], ...]
+
+
+@dataclass(frozen=True, slots=True)
 class ArrivalDetail:
     """The inert elevator façade establishing how the player entered."""
     kind: str
@@ -798,6 +847,8 @@ class FloorPlan:
     skeleton: str = "bent-spine"
     district_circulation: tuple[str, ...] = ()
     special_family: str = "standard"
+    progression_grammar: str = "axial-journey"
+    motif_realizations: tuple[str, ...] = ()
 
 
 @dataclass(slots=True)
@@ -857,6 +908,11 @@ class GeneratedMap:
     guard_galleries: tuple[GuardGallery, ...] = ()
     encounters: tuple[EncounterPlacement, ...] = ()
     patrol_target: float = 0.0
+    progression_grammar: str = "axial-journey"
+    motif_realizations: tuple[str, ...] = ()
+    rare_motif: RareMotifDetail | None = None
+    boss_arena: BossArenaDetail | None = None
+    shape_target: float = 0.0
 
 
 def _room_identities(rooms: list[Room], specs: list[RoomSpec], districts: list[int],
@@ -1017,11 +1073,16 @@ def _overlaps(a: Room, b: Room, pad: int = 2) -> bool:
 
 def _plan_floor(rng: random.Random, complexity: int, number: int,
                 variant: FloorVariant | None = None,
-                skeleton: str | None = None) -> FloorPlan:
+                skeleton: str | None = None,
+                progression_grammar: str | None = None,
+                rare_motif: bool = False) -> FloorPlan:
     variant = variant or FloorVariant("default")
     skeleton = skeleton or rng.choice(CIRCULATION_SKELETONS)
     if skeleton not in CIRCULATION_SKELETONS:
         raise ValueError("unknown circulation skeleton")
+    progression_grammar = progression_grammar or rng.choice(PROGRESSION_GRAMMARS)
+    if progression_grammar not in PROGRESSION_GRAMMARS:
+        raise ValueError("unknown progression grammar")
     special_family = "standard"
     if number == 9:
         special_family = rng.choice((
@@ -1059,13 +1120,13 @@ def _plan_floor(rng: random.Random, complexity: int, number: int,
     # whether surrounding rooms form offices, suites, bays, or chambers.
     beat_indices = list(range(1, beat_count + 1))
     fractions = {
-        "bent-spine": (0.35, 0.72),
-        "parallel-cross": (0.25, 0.52, 0.78),
-        "central-wings": (0.38, 0.62),
-        "forked": (0.28, 0.58, 0.82),
-        "perimeter-loop": (0.22, 0.50, 0.78),
-        "staggered-grid": (0.30, 0.55, 0.80),
-    }[skeleton]
+        "axial-journey": (0.32, 0.70),
+        "hub-relay": (0.22, 0.50, 0.78),
+        "offset-ladder": (0.27, 0.55, 0.82),
+        "clustered-chain": (0.38, 0.68),
+        "nested-circuit": (0.20, 0.48, 0.76),
+        "bounded-perimeter": (0.18, 0.50, 0.82),
+    }[progression_grammar]
     desired = 3 if beat_count >= 6 and len(fractions) >= 3 else 2
     corridor_indices: list[int] = []
     for fraction in fractions:
@@ -1132,8 +1193,21 @@ def _plan_floor(rng: random.Random, complexity: int, number: int,
     budget = min(3, 1 + (complexity >= 3) + (rng.random() < variant.extra_motif_chance))
     if number == 10:
         budget = max(2, budget)
-    motifs = ["ring"]
-    remaining = ["hub", "wings", "gallery"]
+    loop_realizations = {
+        "axial-journey": ("asymmetric-detour", "short-room-loop"),
+        "hub-relay": ("courtyard-circuit", "short-room-loop"),
+        "offset-ladder": ("ladder-rung", "service-loop"),
+        "clustered-chain": ("service-loop", "asymmetric-detour"),
+        "nested-circuit": ("nested-room-loop", "courtyard-circuit"),
+        "bounded-perimeter": ("bounded-perimeter",),
+    }[progression_grammar]
+    primary_loop = rng.choice(loop_realizations)
+    primary_motif = ("courtyard" if "courtyard" in primary_loop else
+                     "service" if "service" in primary_loop else
+                     "ladder" if "ladder" in primary_loop else "ring")
+    motifs = [primary_motif]
+    motif_realizations = [primary_loop]
+    remaining = ["hub", "wings", "gallery", "courtyard", "service"]
     rng.shuffle(remaining)
     family_preferences = {
         "throne-stronghold": ("hub", "wings"),
@@ -1156,6 +1230,8 @@ def _plan_floor(rng: random.Random, complexity: int, number: int,
             remaining.remove(preferred)
             remaining.insert(0, preferred)
     motifs += remaining[:budget - 1]
+    motif_realizations += [f"{motif}-{rng.choice(('compact', 'offset', 'staggered'))}"
+                           for motif in motifs[1:]]
 
     # The first motif always spends topology budget on a real reconvergence.
     pairs = [(i, j) for i in range(1, spine_count - 2)
@@ -1166,9 +1242,12 @@ def _plan_floor(rng: random.Random, complexity: int, number: int,
     # The reconvergence may add variety but must never be a faster route to
     # the elevator than the spine segment it parallels.
     ring_rooms = max(right - left - 1, rng.randrange(1, 3))
+    if primary_loop in ("courtyard-circuit", "nested-room-loop", "bounded-perimeter"):
+        ring_rooms = min(3, ring_rooms + 1)
     for _ in range(ring_rooms):
         node = len(specs)
-        specs.append(RoomSpec("ring", "standard", districts[left], "ring"))
+        tier = "hall" if primary_loop == "courtyard-circuit" else "standard"
+        specs.append(RoomSpec("ring", tier, districts[left], primary_motif))
         edges.append((parent, node))
         parent = node
     edges.append((parent, right)); loops.append((parent, right))
@@ -1210,6 +1289,27 @@ def _plan_floor(rng: random.Random, complexity: int, number: int,
             parent = node
         groups.append(tuple(gallery))
 
+    if "courtyard" in motifs and primary_motif != "courtyard":
+        parent = rng.choice(middle_beats)
+        node = len(specs)
+        specs.append(RoomSpec("branch", "hall", districts[parent], "courtyard"))
+        edges.append((parent, node))
+    if "service" in motifs and primary_motif != "service":
+        left = rng.choice(middle_beats[:-2])
+        right = min(middle_beats[-1], left + rng.randrange(2, 4))
+        node = len(specs)
+        specs.append(RoomSpec("branch", "corridor", districts[left], "service"))
+        edges.extend(((left, node), (node, right)))
+        loops.append((node, right))
+
+    if rare_motif and number in (6, 7, 8, 9):
+        parent = rng.choice(middle_beats)
+        node = len(specs)
+        specs.append(RoomSpec("branch", "motif", districts[parent], "swastika"))
+        edges.append((parent, node))
+        motifs.append("swastika")
+        motif_realizations.append("swastika-room-profile")
+
     filler_tips: list[int] = []
     while len(specs) < target:
         suite_tips = [tip for tip in filler_tips
@@ -1237,7 +1337,8 @@ def _plan_floor(rng: random.Random, complexity: int, number: int,
     if sum(spec.tier == "anchor" for spec in specs) != 1:
         raise ValueError("floor plan must have exactly one anchor")
     return FloorPlan(specs, edges, loops, tuple(motifs), frozenset(critical), tuple(groups),
-                     skeleton, tuple(district_circulation), special_family)
+                     skeleton, tuple(district_circulation), special_family,
+                     progression_grammar, tuple(motif_realizations))
 
 
 def _room_size(rng: random.Random, tier: str, number: int = 0) -> tuple[int, int]:
@@ -1246,6 +1347,8 @@ def _room_size(rng: random.Random, tier: str, number: int = 0) -> tuple[int, int
         if number == 9:
             return rng.randrange(14, 18), rng.randrange(14, 18)
         return rng.randrange(10 + bump, 14 + bump), rng.randrange(10 + bump, 14 + bump)
+    if tier == "motif":
+        return 15, 15
     if tier == "closet":
         return rng.randrange(4, 6), rng.randrange(4, 6)
     if tier == "corridor":
@@ -1310,8 +1413,9 @@ def _place_planned_rooms(rng: random.Random, plan: FloorPlan, number: int = 0) -
     while pending:
         available = [index for index in pending if parents[index] not in pending]
         index = min(available, key=lambda item: (
-            0 if plan.specs[parents[item]].role == "hub" else
-            1 if item in grouped else 2 if plan.specs[item].role == "ring" else 3,
+            0 if plan.specs[item].motif == "swastika" else
+            1 if plan.specs[parents[item]].role == "hub" else
+            2 if item in grouped else 3 if plan.specs[item].role == "ring" else 4,
             item))
         order.append(index); pending.remove(index)
     for index in order:
@@ -1324,12 +1428,20 @@ def _place_planned_rooms(rng: random.Random, plan: FloorPlan, number: int = 0) -
             if index < spine_count:
                 dx, dy = heading
                 sides = [(dx, dy), (-dy, dx), (dy, -dx)]
-                turning_node = (plan.specs[index].tier == "corridor"
-                                and plan.skeleton in ("bent-spine", "forked",
-                                                      "perimeter-loop", "staggered-grid"))
-                weights = (2, 4, 4) if turning_node else (7, 1.5, 1.5)
+                turning_node = plan.specs[index].tier == "corridor"
+                grammar_weights = {
+                    "axial-journey": (8.0, 1.2, 1.2),
+                    "hub-relay": ((2.0, 4.0, 4.0) if turning_node else (5.0, 2.5, 2.5)),
+                    "offset-ladder": ((1.5, 4.5, 4.5) if turning_node else (4.0, 3.0, 3.0)),
+                    "clustered-chain": ((3.0, 3.5, 3.5) if turning_node else (7.0, 1.5, 1.5)),
+                    "nested-circuit": (2.0, 4.0, 4.0),
+                    "bounded-perimeter": (1.5, 4.25, 4.25),
+                }
+                weights = grammar_weights.get(plan.progression_grammar,
+                                              (7.0, 1.5, 1.5))
                 side = rng.choices(sides, weights=weights, k=1)[0]
-                gap = rng.randrange(1, 4)
+                gap = (rng.randrange(1, 3) if plan.progression_grammar == "clustered-chain"
+                       else rng.randrange(1, 4))
             else:
                 counts = used_sides.setdefault(parent_index, {})
                 sides = ((1, 0), (-1, 0), (0, 1), (0, -1))
@@ -1416,7 +1528,8 @@ def _place_planned_rooms(rng: random.Random, plan: FloorPlan, number: int = 0) -
     edges = []
     for a, b in plan.edges:
         if ((a in dropped or b in dropped)
-                and (plan.specs[a].motif == "ring" or plan.specs[b].motif == "ring")):
+                and (plan.specs[a].motif in {"ring", "courtyard", "service", "ladder"}
+                     or plan.specs[b].motif in {"ring", "courtyard", "service", "ladder"})):
             continue
         a, b = survivor(a), survivor(b)
         edge = (remap[a], remap[b])
@@ -1428,14 +1541,16 @@ def _place_planned_rooms(rng: random.Random, plan: FloorPlan, number: int = 0) -
 
 
 def _carve_notches(tiles: list[int], rooms: list[Room], rng: random.Random,
-                   chance: float = 0.22, max_rooms: int | None = None
+                   chance: float = 0.22, max_rooms: int | None = None,
+                   excluded: frozenset[int] = frozenset()
                    ) -> dict[int, tuple[tuple[int, int], ...]]:
     """Carve only mirrored corner compositions and return decor anchors."""
     anchors: dict[int, tuple[tuple[int, int], ...]] = {}
     for room_index, room in enumerate(rooms):
         if max_rooms is not None and len(anchors) >= max_rooms:
             break
-        if room.w < 6 or room.h < 6 or rng.random() >= chance:
+        if (room_index in excluded or room.w < 6 or room.h < 6
+                or rng.random() >= chance):
             continue
         corners = [(False, False), (True, False), (False, True), (True, True)]
         nw = rng.randint(2, min(3, (room.w - 2) // 2))
@@ -1482,12 +1597,12 @@ def _carve_symmetric_profiles(
     anchors: dict[int, tuple[tuple[int, int], ...]] = {}
     shapes: dict[int, str] = {}
     family_counts: Counter[str] = Counter()
-    family_cap = max(1, math.ceil(max_rooms / 2)) if max_rooms else 0
+    family_cap = max(1, math.ceil(max_rooms * 0.35)) if max_rooms else 0
 
     for room_index, room in enumerate(rooms):
         if len(shapes) >= max_rooms:
             break
-        if (room_index in excluded or room.w < 8 or room.h < 8
+        if (room_index in excluded or room.w < 6 or room.h < 6
                 or rng.random() >= chance):
             continue
         cx, cy = room.center
@@ -1506,6 +1621,45 @@ def _carve_symmetric_profiles(
             corner_anchors.append((ox + 2 * sx, oy + 2 * sy))
         candidates.append(("stepped-cross", corner_cells, tuple(corner_anchors)))
 
+        # Asymmetric corner cuts keep the room legible while breaking the
+        # generator's former mirror-everything signature.
+        corner_order = [(False, False), (True, False),
+                        (False, True), (True, True)]
+        rng.shuffle(corner_order)
+        right, bottom = corner_order[0]
+        ox = room.x + room.w - 1 if right else room.x
+        oy = room.y + room.h - 1 if bottom else room.y
+        sx = -1 if right else 1
+        sy = -1 if bottom else 1
+        chamfer = {(ox, oy), (ox + sx, oy), (ox, oy + sy)}
+        candidates.append(("single-chamfer", chamfer,
+                           ((ox + 2 * sx, oy + 2 * sy),)))
+
+        if room.w >= 9 and room.h >= 9:
+            cut_w = min(3, room.w // 3)
+            cut_h = min(3, room.h // 3)
+            x0 = room.x + room.w - cut_w if right else room.x
+            y0 = room.y + room.h - cut_h if bottom else room.y
+            l_cut = {(x, y) for y in range(y0, y0 + cut_h)
+                     for x in range(x0, x0 + cut_w)}
+            candidates.append(("l-shaped", l_cut,
+                               ((x0 - 1 if right else x0 + cut_w,
+                                 y0 - 1 if bottom else y0 + cut_h),)))
+
+            # Remove both corners from one end, leaving a broad T-shaped stem.
+            end_bottom = rng.randrange(2) == 1
+            ey = room.y + room.h - 2 if end_bottom else room.y
+            t_cells = set()
+            for depth in range(2):
+                y = ey + (-depth if end_bottom else depth)
+                for x in list(range(room.x, room.x + 2)) + list(
+                        range(room.x + room.w - 2, room.x + room.w)):
+                    t_cells.add((x, y))
+            anchor_y = ey + (-2 if end_bottom else 2)
+            candidates.append(("shallow-t", t_cells,
+                               ((room.x + 2, anchor_y),
+                                (room.x + room.w - 3, anchor_y))))
+
         # Matching mid-wall shoulders create an hourglass/paired-bay plan.
         if room.w >= 10:
             band = (range(cy - 1, cy + 2) if room.h % 2 else
@@ -1519,6 +1673,13 @@ def _carve_symmetric_profiles(
                                tuple((x, y) for y in band
                                      for x in (room.x + 2,
                                                room.x + room.w - 3))))
+            side_right = rng.randrange(2) == 1
+            bx = room.x + room.w - 2 if side_right else room.x
+            offset_cells = {(bx + (-depth if side_right else depth), y)
+                            for depth in range(2) for y in band}
+            candidates.append(("offset-side-bay", offset_cells,
+                               ((room.x + room.w - 3 if side_right else room.x + 2,
+                                 band[len(band) // 2]),)))
         if room.h >= 10:
             band = (range(cx - 1, cx + 2) if room.w % 2 else
                     range(room.x + room.w // 2 - 1,
@@ -1554,6 +1715,59 @@ def _carve_symmetric_profiles(
             family_counts[family] += 1
             break
     return anchors, shapes
+
+
+def _carve_swastika_profile(tiles: list[int], room: Room, rng: random.Random
+                            ) -> tuple[str, tuple[tuple[int, int], ...]] | None:
+    """Carve one bounded, optional three-wide hooked-cross room profile."""
+    if room.w < 15 or room.h < 15:
+        return None
+    cx, cy = room.center
+    radius = 7
+    handedness = rng.choice(("clockwise", "counterclockwise"))
+    cells = ({(x, y) for x in range(cx - 1, cx + 2)
+                     for y in range(cy - radius, cy + radius + 1)}
+             | {(x, y) for x in range(cx - radius, cx + radius + 1)
+                         for y in range(cy - 1, cy + 2)})
+    if handedness == "clockwise":
+        hooks = (
+            {(x, y) for x in range(cx, cx + radius + 1)
+             for y in range(cy - radius, cy - radius + 3)},
+            {(x, y) for x in range(cx + radius - 2, cx + radius + 1)
+             for y in range(cy, cy + radius + 1)},
+            {(x, y) for x in range(cx - radius, cx + 1)
+             for y in range(cy + radius - 2, cy + radius + 1)},
+            {(x, y) for x in range(cx - radius, cx - radius + 3)
+             for y in range(cy - radius, cy + 1)},
+        )
+        endpoints = ((cx + radius, cy - radius + 1),
+                     (cx + radius - 1, cy + radius),
+                     (cx - radius, cy + radius - 1),
+                     (cx - radius + 1, cy - radius))
+    else:
+        hooks = (
+            {(x, y) for x in range(cx - radius, cx + 1)
+             for y in range(cy - radius, cy - radius + 3)},
+            {(x, y) for x in range(cx + radius - 2, cx + radius + 1)
+             for y in range(cy - radius, cy + 1)},
+            {(x, y) for x in range(cx, cx + radius + 1)
+             for y in range(cy + radius - 2, cy + radius + 1)},
+            {(x, y) for x in range(cx - radius, cx - radius + 3)
+             for y in range(cy, cy + radius + 1)},
+        )
+        endpoints = ((cx - radius, cy - radius + 1),
+                     (cx + radius - 1, cy - radius),
+                     (cx + radius, cy + radius - 1),
+                     (cx - radius + 1, cy + radius))
+    for hook in hooks:
+        cells |= hook
+    bounds = {(x, y) for y in range(room.y, room.y + room.h)
+             for x in range(room.x, room.x + room.w)}
+    if not cells <= bounds:
+        return None
+    for cell in bounds - cells:
+        _set(tiles, *cell, WALL)
+    return handedness, endpoints
 
 
 def _add_pillars(tiles: list[int], room: Room, rng: random.Random,
@@ -1729,6 +1943,9 @@ def _carve_connection(tiles: list[int], a: Room, b: Room,
         route = find_route(start, goal, direction_a, (-direction_b[0], -direction_b[1]))
         if route is None:
             continue
+        direct = abs(start[0] - goal[0]) + abs(start[1] - goal[1])
+        if len(route) > math.ceil(direct * 1.6) + 6:
+            continue
         path = [outer_a] + route + [outer_b]
         for x, y in path:
             _set(tiles, x, y, FLOOR)
@@ -1880,6 +2097,9 @@ def _carve_connection(tiles: list[int], a: Room, b: Room,
     while state is not None:
         route.append(state[0]); state = previous[state]
     route.reverse()
+    direct = abs(a.center[0] - b.center[0]) + abs(a.center[1] - b.center[1])
+    if len(route) > math.ceil(direct * 1.8) + 8:
+        raise ValueError("fallback corridor is an excessive perimeter wrap")
     carved = []
     for index, cell in enumerate(route[1:-1], 1):
         if open_cell(cell):
@@ -2172,11 +2392,12 @@ def _place_doors(tiles: list[int], things: list[int], rooms: list[Room],
             both = reachable({first_color, second_color})
             first_key = _key_spot_in_region(
                 tiles, things, rooms, roles, closed, set(), start,
-                {(first[1][0], first[1][1])})
+                {(first[1][0], first[1][1])}, set(reserved))
             second_key = (_key_spot_in_region(
                 tiles, things, rooms, roles, only_first, closed, start,
                 {(second[1][0], second[1][1])},
-                {first_key[0]} if first_key else frozenset()) if first_key else None)
+                set(reserved) | ({first_key[0]} if first_key else set()))
+                          if first_key else None)
             if (first_key and second_key and gate_target not in closed
                     and gate_target not in only_first and gate_target not in only_second
                     and gate_target in both):
@@ -2194,7 +2415,8 @@ def _place_doors(tiles: list[int], things: list[int], rooms: list[Room],
             closed = reachable(set())
             opened = reachable({color})
             key = _key_spot_in_region(
-                tiles, things, rooms, roles, closed, set(), start, {(x, y)})
+                tiles, things, rooms, roles, closed, set(), start, {(x, y)},
+                set(reserved))
             if key and gate_target not in closed and gate_target in opened:
                 return commit([(progress, candidate, color)], [key])
             _set(tiles, x, y, normal)
@@ -2716,6 +2938,11 @@ def _assign_area_themes(tiles: list[int], rooms: list[Room], districts: list[int
     # conspicuous cross-family triptych around a secret exit.
     if number <= 6:
         deduped = [theme for theme in deduped if theme[0] != 48]
+    # Purple reads as an unusually rich, ominous finish.  Reserve it for the
+    # campaign's later half instead of letting an early grand-halls roll spend
+    # that visual escalation on floor one or two.
+    if number < PURPLE_MIN_FLOOR:
+        deduped = [theme for theme in deduped if theme[0] != 19]
     if theme_pool:
         pooled = [theme for theme in deduped if theme[0] in theme_pool]
         # A pool too small to give every district its own material would
@@ -3131,7 +3358,12 @@ def _place_elevator(tiles: list[int], room: Room, locked: bool = False) -> tuple
             continue
         for depth in (1, 2):
             _set(tiles, wx + dx * depth, wy, FLOOR)
-        for depth in (1, 2, 3):
+        # Keep the first tile behind the door as a wall-material vestibule.
+        # Starting tile-21 side rails flush with the threshold exposes their
+        # east/west switch face around the edge of a closed or partly-open
+        # door when viewed obliquely from the room.  The stand and back wall
+        # retain the authentic elevator paneling one tile farther in.
+        for depth in (2, 3):
             for side in (-1, 1):
                 _set(tiles, wx + dx * depth, wy + side, ELEVATOR_TILE)
         _set(tiles, wx + dx * 3, wy, ELEVATOR_TILE)
@@ -3147,14 +3379,14 @@ def _place_arrival_elevator(tiles: list[int], room: Room,
     """Place one bounded, inactive native-elevator arrival composition."""
     facings = ((0, -1), (1, 0), (0, 1), (-1, 0))
     kinds = ("flush-facade", "outside-empty", "outside-supply",
-             "inside-open", "inside-closed")
+             "inside-closed")
     if forced_kind is not None and forced_kind not in kinds:
         raise ValueError("unknown arrival elevator kind")
-    weights = [0.35, 0.25, 0.15, 0.125, 0.125]
+    weights = [0.35, 0.25, 0.15, 0.25]
     if variant == "storehouse":
-        weights = [0.30, 0.20, 0.25, 0.125, 0.125]
+        weights = [0.30, 0.20, 0.25, 0.25]
     elif variant == "quarters":
-        weights = [0.30, 0.30, 0.20, 0.10, 0.10]
+        weights = [0.30, 0.30, 0.20, 0.20]
     kind = forced_kind or rng.choices(kinds, weights=weights, k=1)[0]
     tx, ty = toward[0] - room.center[0], toward[1] - room.center[1]
     if abs(tx) >= abs(ty):
@@ -3208,16 +3440,22 @@ def _place_arrival_elevator(tiles: list[int], room: Room,
                               for depth in (1, 2))
             for cell in car_cells:
                 _set(tiles, *cell, FLOOR)
-            for depth in (1, 2, 3):
+            # Leave a plain jamb immediately behind the door.  Besides making
+            # the threshold read as a doorway, this keeps the outward face of
+            # the inert elevator rails out of the room's oblique sightline.
+            for depth in (2, 3):
                 for side in (-1, 1):
                     _set(tiles, panel[0] + depth * dx + side * px,
                          panel[1] + depth * dy + side * py,
                          DUMMY_ELEVATOR_TILE)
             _set(tiles, panel[0] + 3 * dx, panel[1] + 3 * dy,
                  DUMMY_ELEVATOR_TILE)
-            closed = kind == "inside-closed"
-            _set(tiles, *panel, (DOOR_ELEVATOR if dx else DOOR_ELEVATOR_NS)
-                 if closed else FLOOR)
+            # Old-format maps cannot encode a door slab permanently parked in
+            # its open position.  A plain floor portal has no door or track at
+            # all, so every full arrival car uses a genuine elevator door.  It
+            # opens normally, while the tile-85 car remains inert and cannot
+            # act as another level exit.
+            _set(tiles, *panel, DOOR_ELEVATOR if dx else DOOR_ELEVATOR_NS)
             inside = kind.startswith("inside-")
             player = (car_cells[-1] if inside else
                       (panel[0] - 2 * dx, panel[1] - 2 * dy))
@@ -5041,7 +5279,20 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
             theme = overrides.get(theme, theme)
             concept = theme
 
-        lighting = _lighting_family(concept, room, rng, lighting_counts)
+        existing_lights = {
+            _at(things, x, y)
+            for y in range(room.y, room.y + room.h)
+            for x in range(room.x, room.x + room.w)
+            if _at(things, x, y) in LIGHTING_ITEMS}
+        if existing_lights:
+            compatible = [family for family, items in LIGHTING_FAMILY_ITEMS.items()
+                          if existing_lights <= items]
+            if not compatible:
+                raise ValueError("authored room mixes incompatible lighting families")
+            lighting = compatible[0]
+            lighting_counts[lighting] += 1
+        else:
+            lighting = _lighting_family(concept, room, rng, lighting_counts)
         lighting_families[ridx] = lighting
 
         if room.w < 5 or room.h < 5:
@@ -5809,8 +6060,8 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
 
 def _prepare_boss_arena(tiles: list[int], things: list[int], room: Room,
                         reserved: set[tuple[int, int]], rng: random.Random,
-                        family: str) -> int:
-    """Add sparse symmetric cover while preserving a broad combat loop."""
+                        family: str) -> BossArenaDetail:
+    """Build family-owned cover and decoration around a broad combat loop."""
     cx, cy = room.center
     dx = max(3, min(5, room.w // 3))
     dy = max(3, min(5, room.h // 3))
@@ -5824,8 +6075,15 @@ def _prepare_boss_arena(tiles: list[int], things: list[int], room: Room,
                                ((cx - dx, cy + dy), (cx + dx, cy + dy))],
         "central-duel": [((cx, cy - dy), (cx, cy + dy))],
     }.get(family, [((cx - dx, cy), (cx + dx, cy))])
+    profiles = {
+        "throne-stronghold": "stepped-apse",
+        "command-bunker": "offset-command-bunker",
+        "laboratory-gauntlet": "paired-side-laboratories",
+        "columned-fortress": "cruciform-colonnade",
+        "central-duel": "chamfered-duel-ring",
+    }
     rng.shuffle(patterns)
-    placed = 0
+    geometry: list[tuple[int, int]] = []
     for pair in patterns:
         if not all(_is_floor(_at(tiles, *cell)) and _at(things, *cell) == 0
                    and cell not in reserved
@@ -5836,15 +6094,46 @@ def _prepare_boss_arena(tiles: list[int], things: list[int], room: Room,
         for cell in pair:
             _set(tiles, *cell, WALL)
             reserved.add(cell)
-        placed += len(pair)
-    return placed
+            geometry.append(cell)
+
+    decor_specs = {
+        "throne-stronghold": (
+            (cx - 5, cy - 5, 62), (cx + 5, cy - 5, 62),
+            (cx - 5, cy + 4, 39), (cx + 5, cy + 4, 39),
+            (cx, cy - 5, 27)),
+        "command-bunker": (
+            (cx - 4, cy - 4, 36), (cx + 4, cy + 4, 36),
+            (cx - 5, cy + 4, 62), (cx + 5, cy - 4, 62),
+            (cx, cy - 5, 37), (cx, cy + 5, 37)),
+        "laboratory-gauntlet": (
+            (cx - 5, cy - 4, 36), (cx + 5, cy - 4, 33),
+            (cx - 5, cy + 4, 24), (cx + 5, cy + 4, 36),
+            (cx - 2, cy, 37), (cx + 2, cy, 37)),
+        "columned-fortress": (
+            (cx - 5, cy, 39), (cx + 5, cy, 39),
+            (cx, cy - 5, 62), (cx, cy + 5, 62),
+            (cx - 3, cy - 3, 27), (cx + 3, cy + 3, 27)),
+        "central-duel": (
+            (cx - 5, cy - 5, 26), (cx + 5, cy - 5, 26),
+            (cx - 5, cy + 5, 26), (cx + 5, cy + 5, 26)),
+    }.get(family, ())
+    decorations: list[tuple[int, int, int]] = []
+    for x, y, item in decor_specs:
+        if (_is_floor(_at(tiles, x, y)) and _at(things, x, y) == 0
+                and (x, y) not in reserved):
+            _set(things, x, y, item)
+            reserved.add((x, y))
+            decorations.append((x, y, item))
+    return BossArenaDetail(family, profiles.get(family, "symmetric-arena"),
+                           tuple(geometry), tuple(decorations))
 
 
 def _place_boss(tiles: list[int], things: list[int], room: Room,
                 reserved: set[tuple[int, int]], rng: random.Random,
                 *, room_index: int = -1,
                 placements: list[SpritePlacement] | None = None,
-                boss: int | None = None) -> int:
+                boss: int | None = None,
+                family: str = "central-duel") -> int:
     cx, cy = room.center
     positions = [(cx, cy), (cx + 1, cy), (cx - 1, cy), (cx, cy + 1), (cx, cy - 1)]
     bx, by = next(((x, y) for x, y in positions
@@ -5856,8 +6145,20 @@ def _place_boss(tiles: list[int], things: list[int], room: Room,
     boss = boss or rng.choice(tuple(sorted(KEY_DROP_BOSSES)))
     _set(things, bx, by, boss)
     reserved.add((bx, by))
-    supplies = ((cx - 2, cy - 2, FIRST_AID), (cx + 2, cy - 2, FIRST_AID),
-                (cx - 2, cy + 2, AMMO), (cx + 2, cy + 2, AMMO))
+    supply_patterns = {
+        "throne-stronghold": ((cx - 3, cy + 5, FIRST_AID),
+                               (cx + 3, cy + 5, AMMO)),
+        "command-bunker": ((cx - 5, cy, AMMO), (cx + 5, cy, AMMO),
+                            (cx, cy + 5, FIRST_AID)),
+        "laboratory-gauntlet": ((cx - 4, cy, FIRST_AID),
+                                 (cx + 4, cy, FIRST_AID),
+                                 (cx, cy + 5, AMMO)),
+        "columned-fortress": ((cx - 4, cy + 4, AMMO),
+                               (cx + 4, cy - 4, FIRST_AID)),
+        "central-duel": ((cx, cy - 5, FIRST_AID), (cx, cy + 5, AMMO)),
+    }
+    supplies = supply_patterns.get(family, ((cx - 2, cy - 2, FIRST_AID),
+                                            (cx + 2, cy + 2, AMMO)))
     placed_supplies = []
     for x, y, thing in supplies:
         if _at(things, x, y) == 0 and _is_floor(_at(tiles, x, y)):
@@ -5875,6 +6176,7 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
                  secret_exit: bool = False, secret_source: int | None = None,
                  hallway_vine_budget: int = 0,
                  guard_gallery_enabled: bool = False,
+                 rare_motif_enabled: bool = False,
                  ) -> GeneratedMap:
     seed = config.floor_seed(number, attempt)
     if config.say_aardwolf:
@@ -5886,9 +6188,12 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
     floor_variant = _aardwolf_variant(
         config, number, _variant_sequence(config)[number - 1])
     circulation_skeleton = _circulation_sequence(config)[number - 1]
+    progression_grammar = _progression_sequence(config)[number - 1]
     scheduled_gate = _lock_schedule(config)[number - 1]
     plan = _plan_floor(rng, complexity, number, variant=floor_variant,
-                       skeleton=circulation_skeleton)
+                       skeleton=circulation_skeleton,
+                       progression_grammar=progression_grammar,
+                       rare_motif=rare_motif_enabled)
     placed = _place_planned_rooms(rng, plan, number)
     rooms = placed.rooms
     edges = placed.edges
@@ -5900,24 +6205,40 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
             for x in range(room.x, room.x + room.w):
                 _set(tiles, x, y, FLOOR)
     shape_scale = SHAPE_MULTIPLIERS[int(config.room_shape_variation)]
-    # Rectangles remain the architectural baseline. Mirrored notches and the
-    # broader shaped-room grammar share one floor-level budget capped at a
-    # quarter of all rooms, so neither mechanism can quietly dominate.
-    shape_budget = max(1, math.floor(len(rooms) * 0.25))
-    notch_budget = max(1, shape_budget // 2)
+    shape_target = SHAPE_TARGETS[int(config.room_shape_variation)]
+    shape_budget = max(1, round(len(rooms) * shape_target))
+    utility_shapes = frozenset(
+        index for index, spec in enumerate(specs)
+        if spec.role in {"start", "arrival", "exit", "victory", "recovery"}
+        or spec.tier in {"closet", "corridor", "motif"}
+        or spec.role == "boss-arena")
+    rare_profile: tuple[int, str, tuple[tuple[int, int], ...]] | None = None
+    for room_index, (room, spec) in enumerate(zip(rooms, specs)):
+        if spec.motif != "swastika":
+            continue
+        carved = _carve_swastika_profile(tiles, room, rng)
+        if carved is not None:
+            rare_profile = (room_index, carved[0], carved[1])
+        break
+    if rare_motif_enabled and rare_profile is None:
+        raise ValueError("scheduled rare motif could not be realized")
+    notch_budget = max(1, round(shape_budget * 0.30))
     notch_anchors = _carve_notches(
         tiles, rooms, rng,
         chance=min(1.0, floor_variant.notch_chance * shape_scale),
-        max_rooms=notch_budget)
+        max_rooms=notch_budget, excluded=utility_shapes)
+    authored_shape_count = (1 if rare_profile is not None else 0) + (1 if number == 9 else 0)
     profile_anchors, profile_shapes = _carve_symmetric_profiles(
         tiles, rooms, rng,
-        chance=min(0.45, 0.24 * shape_scale),
-        max_rooms=max(0, shape_budget - len(notch_anchors)),
-        excluded=frozenset(notch_anchors))
+        chance=min(1.0, shape_scale),
+        max_rooms=max(0, shape_budget - len(notch_anchors) - authored_shape_count),
+        excluded=frozenset(notch_anchors) | utility_shapes)
     notch_anchors.update(profile_anchors)
     realized_shapes = ["rectangle"] * len(rooms)
     for room_index in notch_anchors:
         realized_shapes[room_index] = profile_shapes.get(room_index, "mirrored-notch")
+    if rare_profile is not None:
+        realized_shapes[rare_profile[0]] = "swastika-profile"
     overrides = dict(floor_variant.decor_overrides)
     for room, spec in zip(rooms, specs):
         predicted = overrides.get(_decor_theme(spec.role, spec.tier),
@@ -6008,7 +6329,9 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
     target_secrets = ordinary_secret_target + (1 if secret_exit else 0)
     # A secret pocket must never reuse or seal the terminal room's elevator
     # wall after the elevator has been carved.
-    candidates = [room for room in rooms[1:] if room != exit_room]
+    rare_room_index = rare_profile[0] if rare_profile is not None else -1
+    candidates = [room for index, room in enumerate(rooms[1:], 1)
+                  if room != exit_room and index != rare_room_index]
     room_index_by_room = {room: index for index, room in enumerate(rooms)}
     if number == 9:
         arena_depth = room_distances[rooms[anchor_index]]
@@ -6163,9 +6486,18 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
         door_gate_plan = scheduled_gate
         door_route = critical_route
         door_target = exit_stand
+    rare_key_reservations: set[tuple[int, int]] = set()
+    if rare_room_index >= 0:
+        rare_room = rooms[rare_room_index]
+        rare_key_reservations = {
+            (x, y) for y in range(rare_room.y, rare_room.y + rare_room.h)
+            for x in range(rare_room.x, rare_room.x + rare_room.w)
+            if _is_floor(_at(tiles, x, y))}
+        reserved.update(rare_key_reservations)
     locks, key_order, key_objectives = _place_doors(
         tiles, things, rooms, edges, paths, rng, start, door_target, roles,
         reserved, door_gate_plan, door_route)
+    reserved.difference_update(rare_key_reservations)
     for objective in key_objectives:
         room = rooms[objective.host_room]
         inward = sorted(
@@ -6195,17 +6527,19 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
     guard_recesses = _carve_guard_recesses(
         tiles, things, rooms, specs, roles, reserved, rng, start, exit_room)
     boss_room = None
+    boss_arena_detail = None
     preboss_index = None
     pickup_placements: list[SpritePlacement] = []
     if is_boss:
         boss_index = anchor_index
         boss_room = rooms[boss_index]
         boss_choice = rng.choice(tuple(sorted(KEY_DROP_BOSSES)))
-        _prepare_boss_arena(tiles, things, boss_room, reserved, rng,
-                            plan.special_family)
+        boss_arena_detail = _prepare_boss_arena(
+            tiles, things, boss_room, reserved, rng, plan.special_family)
+        realized_shapes[boss_index] = f"boss-{boss_arena_detail.profile}"
         boss = _place_boss(tiles, things, boss_room, reserved, rng,
                            room_index=boss_index, placements=pickup_placements,
-                           boss=boss_choice)
+                           boss=boss_choice, family=plan.special_family)
         preboss_index = next((index for index, role in enumerate(roles)
                               if role == "staging"),
                              _room_predecessor(len(rooms), edges, boss_index))
@@ -6238,6 +6572,17 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
                                  special_pushwall=exit_pushwall)
     if exit_pushwall is not None and secret_hints.get(exit_pushwall) != "symmetric-landmark":
         raise ValueError("secret elevator host cannot support its landmark hint")
+    rare_motif_detail = None
+    if rare_profile is not None:
+        room_index, realization, endpoints = rare_profile
+        for cell in endpoints:
+            item = 62
+            if (_is_floor(_at(tiles, *cell)) and _at(things, *cell) == 0
+                    and cell not in reserved):
+                _set(things, *cell, item)
+                reserved.add(cell)
+        rare_motif_detail = RareMotifDetail(
+            "swastika", room_index, realization, endpoints)
     gallery_eligible = frozenset(
         index for index in range(1, len(rooms))
         if index not in critical_route and rooms[index] != exit_room
@@ -6298,7 +6643,8 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
                          for first, second in edges)
     mediated_ratio = corridor_edges / max(1, len(edges))
     layout_signature = (
-        plan.special_family, plan.skeleton, *plan.district_circulation,
+        plan.special_family, plan.progression_grammar, plan.skeleton,
+        *plan.motif_realizations, *plan.district_circulation,
         f"corridors-{sum(spec.tier == 'corridor' for spec in specs)}",
         f"mediated-{round(mediated_ratio, 1):.1f}",
         f"shapes-{','.join(sorted(Counter(realized_shapes).elements()))}",
@@ -6339,7 +6685,12 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
                           arrival=arrival, guard_recesses=guard_recesses,
                           guard_galleries=guard_galleries,
                           encounters=tuple(encounters),
-                          patrol_target=PATROL_TARGETS[int(config.patrol_activity)])
+                          patrol_target=PATROL_TARGETS[int(config.patrol_activity)],
+                          progression_grammar=plan.progression_grammar,
+                          motif_realizations=plan.motif_realizations,
+                          rare_motif=rare_motif_detail,
+                          boss_arena=boss_arena_detail,
+                          shape_target=shape_target)
     validate_map(result)
     result.critique = _critique(result)
     return result
@@ -6350,6 +6701,9 @@ def validate_map(level: GeneratedMap) -> None:
         raise ValueError("invalid plane dimensions")
     if 63 in level.things:
         raise ValueError("Call Apogee decoration is forbidden")
+    if (level.number < PURPLE_MIN_FLOOR
+            and any(tile in {19, 25} for tile in level.tiles)):
+        raise ValueError("purple wall material appears before the late campaign")
     if level.arrival is None:
         raise ValueError("floor has no arrival elevator")
     arrival = level.arrival
@@ -6360,7 +6714,7 @@ def validate_map(level: GeneratedMap) -> None:
     expected_player = (arrival.portal[0] + 2 * (outward[0] if inside else inward[0]),
                        arrival.portal[1] + 2 * (outward[1] if inside else inward[1]))
     if (arrival.kind not in {"flush-facade", "outside-empty", "outside-supply",
-                             "inside-open", "inside-closed"}
+                             "inside-closed"}
             or arrival.player != level.start or level.start != expected_player
             or _at(level.things, *level.start) != PLAYER_START_CODES[arrival.facing]
             or sum(thing in PLAYER_START_CODES for thing in level.things) != 1):
@@ -6383,18 +6737,14 @@ def validate_map(level: GeneratedMap) -> None:
         if (arrival.car_cells != car_cells
                 or any(not _is_floor(_at(level.tiles, *cell)) for cell in car_cells)):
             raise ValueError("arrival elevator car has invalid floor geometry")
-        expected_portal = ((DOOR_ELEVATOR if inward[0] else DOOR_ELEVATOR_NS)
-                           if arrival.kind == "inside-closed" else None)
-        if (expected_portal is not None
-                and _at(level.tiles, *arrival.portal) != expected_portal):
-            raise ValueError("closed arrival car lacks its normal elevator door")
-        if expected_portal is None and not _is_floor(_at(level.tiles, *arrival.portal)):
-            raise ValueError("open arrival car has a blocked doorway")
+        expected_portal = DOOR_ELEVATOR if inward[0] else DOOR_ELEVATOR_NS
+        if _at(level.tiles, *arrival.portal) != expected_portal:
+            raise ValueError("arrival car lacks its normal elevator door")
         px, py = -outward[1], outward[0]
         dressed = {
             (arrival.portal[0] + depth * outward[0] + side * px,
              arrival.portal[1] + depth * outward[1] + side * py)
-            for depth in (1, 2, 3) for side in (-1, 1)}
+            for depth in (2, 3) for side in (-1, 1)}
         dressed.add((arrival.portal[0] + 3 * outward[0],
                      arrival.portal[1] + 3 * outward[1]))
         if any(_at(level.tiles, *cell) != DUMMY_ELEVATOR_TILE
@@ -6539,6 +6889,8 @@ def validate_map(level: GeneratedMap) -> None:
             raise ValueError("room circulation metadata is incomplete")
         if level.circulation_skeleton not in CIRCULATION_SKELETONS:
             raise ValueError("unknown circulation skeleton")
+        if level.progression_grammar not in PROGRESSION_GRAMMARS:
+            raise ValueError("unknown progression grammar")
         if (not level.district_circulation
                 or any(mode not in CIRCULATION_MODES
                        for mode in level.district_circulation)):
@@ -6551,6 +6903,9 @@ def validate_map(level: GeneratedMap) -> None:
                < 2 * min(level.rooms[index].w, level.rooms[index].h)
                for index in corridor_indices):
             raise ValueError("circulation node reads as a room, not a hallway")
+        degrees = Counter(index for edge in level.edges for index in edge)
+        if any(degrees[index] < 2 for index in corridor_indices):
+            raise ValueError("circulation hallway ends without a destination")
         mediated = sum(first in corridor_indices or second in corridor_indices
                        for first, second in level.edges) / max(1, len(level.edges))
         if not 0.25 <= mediated <= 0.70:
@@ -6560,14 +6915,31 @@ def validate_map(level: GeneratedMap) -> None:
         if len(level.room_shapes) != len(level.rooms):
             raise ValueError("room-shape metadata is incomplete")
         allowed_shapes = {"rectangle", "mirrored-notch", "stepped-cross",
-                          "paired-side-bays", "paired-end-bays"}
-        if any(shape not in allowed_shapes for shape in level.room_shapes):
+                          "single-chamfer", "l-shaped", "shallow-t",
+                          "paired-side-bays", "paired-end-bays",
+                          "offset-side-bay", "swastika-profile"}
+        if any(shape not in allowed_shapes and not shape.startswith("boss-")
+               for shape in level.room_shapes):
             raise ValueError("unknown shaped-room family")
         shaped = sum(shape != "rectangle" for shape in level.room_shapes)
-        if shaped > math.floor(len(level.rooms) * 0.25):
+        if shaped > math.ceil(len(level.rooms) * 0.60):
             raise ValueError("non-rectangular rooms dominate the floor")
-        if shaped >= len(level.rooms) - shaped:
-            raise ValueError("rectangular rooms are not the clear majority")
+        counts = Counter(shape for shape in level.room_shapes
+                         if shape != "rectangle" and not shape.startswith("boss-"))
+        if shaped >= 4 and counts and max(counts.values()) / shaped > 0.50:
+            raise ValueError("one shaped-room family dominates the floor")
+
+    if level.rare_motif is not None:
+        detail = level.rare_motif
+        if (detail.kind != "swastika" or level.number not in (6, 7, 8, 9)
+                or detail.room_index in level.critical_route
+                or detail.room_index == level.boss_arena_room
+                or any(objective.host_room == detail.room_index
+                       for objective in level.key_objectives)
+                or len(detail.endpoints) != 4):
+            raise ValueError("rare plan motif owns progression or invalid geometry")
+        if any(not _is_floor(_at(level.tiles, *cell)) for cell in detail.endpoints):
+            raise ValueError("rare plan motif endpoint is not traversable")
 
     if level.lighting_families:
         if len(level.lighting_families) != len(level.rooms):
@@ -6785,6 +7157,12 @@ def validate_map(level: GeneratedMap) -> None:
                and _is_floor(_at(level.tiles, sx - dx, sy))
                for dx in (1, -1)):
         raise ValueError("elevator switch is not usable from its standing position")
+    switch_dx = next(dx for dx in (1, -1)
+                     if _at(level.tiles, sx + dx, sy) == ELEVATOR_TILE)
+    threshold = (sx - switch_dx, sy)
+    if any(_at(level.tiles, threshold[0], threshold[1] + side) == ELEVATOR_TILE
+           for side in (-1, 1)):
+        raise ValueError("elevator side rail is exposed at the doorway")
     if level.rooms and level.critical_route:
         distances = _floor_distances(level.tiles, level.start)
         deepest_room = max((distances.get(room.center, 0) for room in level.rooms),
@@ -7033,6 +7411,11 @@ def validate_map(level: GeneratedMap) -> None:
         arena = level.rooms[level.boss_arena_room]
         if min(arena.w, arena.h) < 14:
             raise ValueError("boss arena is too small for its encounter")
+        if (level.boss_arena is None
+                or level.boss_arena.family != level.special_family
+                or len(level.boss_arena.geometry) < 2
+                or len(level.boss_arena.decorations) < 3):
+            raise ValueError("boss arena lacks its family-owned composition")
         interior_cover = sum(
             not _is_floor(_at(level.tiles, x, y))
             for y in range(arena.y + 2, arena.y + arena.h - 2)
@@ -7220,6 +7603,13 @@ def _mapinfo(secret_from: int, variants: tuple[str, ...] = ()) -> str:
     return "\n".join(lines) + "\n"
 
 
+def _display_name(number: int, variant: str = "") -> str:
+    if number == 10:
+        return "Secret Floor"
+    title = _VARIANT_TITLES.get(variant, "")
+    return f"Floor {number}: {title}" if title else f"Random Floor {number}"
+
+
 def _reproducibility_text(config: CampaignConfig, secret_from: int) -> str:
     """Human-readable, copyable record of every campaign input."""
     settings = json.loads(config.to_json())
@@ -7358,6 +7748,7 @@ def generate_campaign(config: CampaignConfig, output: Path,
                        for floor in gallery_floors]
     gallery_floor = (gallery_rng.choices(gallery_floors, weights=gallery_weights, k=1)[0]
                      if gallery_enabled else 0)
+    rare_motif_floor = _rare_motif_schedule(config)
     for number in range(1, 11):
         if cancelled and cancelled():
             raise GenerationCancelled("campaign generation cancelled")
@@ -7370,7 +7761,8 @@ def generate_campaign(config: CampaignConfig, output: Path,
                                          secret_source=secret_from if number == 10 else None,
                                          hallway_vine_budget=(vine_budget
                                                               if number == vine_floor else 0),
-                                         guard_gallery_enabled=(number == gallery_floor))
+                                         guard_gallery_enabled=(number == gallery_floor),
+                                         rare_motif_enabled=(number == rare_motif_floor))
             except ValueError as error:
                 last_error = error
                 continue
@@ -7429,22 +7821,44 @@ def generate_campaign(config: CampaignConfig, output: Path,
     if any(first.circulation_skeleton == second.circulation_skeleton
            for first, second in zip(levels, levels[1:])):
         raise RuntimeError("campaign repeated the same circulation skeleton consecutively")
+    if any(first.progression_grammar == second.progression_grammar
+           for first, second in zip(levels, levels[1:])):
+        raise RuntimeError("campaign repeated the same progression grammar consecutively")
+    realized_rare = [level.number for level in levels if level.rare_motif is not None]
+    expected_rare = [rare_motif_floor] if rare_motif_floor else []
+    if realized_rare != expected_rare:
+        raise RuntimeError("campaign rare-motif schedule was violated")
+    # Encode metadata-independent provenance only after every gameplay choice
+    # is final. Zone-label permutations preserve all acoustic grouping.
+    from .watermark import apply_campaign_watermark
+    apply_campaign_watermark(levels, config.seed)
+    for level in levels:
+        validate_map(level)
     manifest = {
         "generator": "infiniwolf", "version": __version__,
         "commit": BUILD_COMMIT or "unknown", "seed": config.seed,
         "seed_source": "LittleEntropyMachine",
+        "watermark": {"scheme": "zone-item-geometry-v2",
+                      "primary_modulus": 43, "secondary_modulus": 17,
+                      "per_map": True, "campaign_residue": 42},
         "settings": json.loads(config.to_json()), "secret_from": secret_from,
         "vine_schedule": {"floor": vine_floor, "requested_runs": vine_budget,
                           "realized_runs": realized_vine_runs},
         "guard_gallery_schedule": {"floor": gallery_floor,
                                    "realized": bool(realized_gallery_floors)},
+        "rare_motif_schedule": {"floor": rare_motif_floor,
+                                "realized_floor": (realized_rare[0]
+                                                   if realized_rare else 0)},
         "lock_schedule": [plan.colors for plan in _lock_schedule(config)],
-        "floors": [{"number": level.number, "seed": level.seed,
+        "floors": [{"number": level.number,
+                    "name": _display_name(level.number, level.variant),
+                    "seed": level.seed,
                     "secrets": len(level.secret_rewards),
                     "locked_doors": level.locked_doors,
                     "key_order": level.key_order,
                     "critical_route_rooms": len(level.critical_route),
                     "exit_depth_ratio": round(level.exit_depth_ratio, 4),
+                    "exit_stand": level.exit_stand,
                     "boss": level.boss,
                     "special_family": level.special_family,
                     "secret_source": level.secret_source,
@@ -7482,8 +7896,21 @@ def generate_campaign(config: CampaignConfig, output: Path,
                     "enemy_tiers": level.enemy_tiers,
                     "variant": level.variant,
                     "circulation_skeleton": level.circulation_skeleton,
+                    "progression_grammar": level.progression_grammar,
                     "district_circulation": level.district_circulation,
                     "layout_signature": level.layout_signature,
+                    "motif_realizations": level.motif_realizations,
+                    "shape_target": level.shape_target,
+                    "rare_motif": ({"kind": level.rare_motif.kind,
+                                    "room": level.rare_motif.room_index,
+                                    "realization": level.rare_motif.realization,
+                                    "endpoints": level.rare_motif.endpoints}
+                                   if level.rare_motif else None),
+                    "boss_arena": ({"family": level.boss_arena.family,
+                                    "profile": level.boss_arena.profile,
+                                    "geometry": level.boss_arena.geometry,
+                                    "decorations": level.boss_arena.decorations}
+                                   if level.boss_arena else None),
                     "room_concepts": level.room_concepts,
                     "room_shapes": level.room_shapes,
                     "lighting_families": level.lighting_families,
@@ -7603,4 +8030,20 @@ def validate_package(package_path: Path) -> dict[str, object]:
             width, height = struct.unpack_from("<HH", wad, 42)
             if (width, height) != (GRID, GRID):
                 raise ValueError(f"{name} is not a {GRID}x{GRID} map")
+        # Provenance is part of the installed artifact contract, not merely
+        # descriptive manifest data. Recompute it from the map planes before
+        # the temporary package is allowed to replace the previous campaign.
+        from .watermark import (floor_target, plane_residue,
+                                plane_residue_secondary, secondary_target,
+                                _parse_wad)
+        primary = []
+        for number in range(1, 11):
+            record = _parse_wad(package.read(f"maps/iw{number:02d}.wad"))
+            first = plane_residue(record.tiles, record.things, number)
+            second = plane_residue_secondary(record.tiles, record.things, number)
+            if first != floor_target(number) or second != secondary_target(number):
+                raise ValueError(f"IW{number:02d} provenance watermark is invalid")
+            primary.append(first)
+        if sum(primary) % 43 != 42:
+            raise ValueError("campaign provenance residue is not 42")
         return manifest

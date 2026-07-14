@@ -20,6 +20,8 @@ flowchart TD
     B --> B4[Choose the one secret-elevator source floor]
     B --> B5[Nominate one possible overgrown floor<br/>1–2 longitudinal hallway runs]
     B --> B6[Rarely nominate one possible guard-gallery floor]
+    B --> B7[_progression_sequence<br/>non-repeating macro layout grammars]
+    B --> B8[3% chance: nominate one late optional<br/>hooked-cross room motif]
 
     B1 --> C{{For floors 1 through 10}}
     B2 --> C
@@ -27,6 +29,8 @@ flowchart TD
     B4 --> C
     B5 --> C
     B6 --> C
+    B7 --> C
+    B8 --> C
 
     C --> D[Derive floor_seed number + attempt<br/>create isolated floor RNG]
 
@@ -35,7 +39,7 @@ flowchart TD
         E --> E0[Select special family on floors 9/10<br/>independent of skeleton, districts, and motifs]
         E0 --> E1[Build mandatory spine<br/>ordinary progression, boss sequence, or reward expedition]
         E1 --> E2[Choose 2–3 districts and circulation modes<br/>double-loaded, single-loaded, suite,<br/>service-bays, formal-axis, tunnel-cluster]
-        E2 --> E3[Add ring plus optional hub/wings/gallery motifs]
+        E2 --> E3[Compose progression grammar with a local<br/>detour, courtyard, service, ladder, nested,<br/>or bounded-perimeter reconvergence]
         E3 --> E4[Add filler through district rules<br/>rooms prefer shared corridor nodes]
 
         E4 --> F[_place_planned_rooms]
@@ -45,12 +49,12 @@ flowchart TD
         F3 --> F4[Drop optional rooms that cannot remain local<br/>remap surviving rooms and graph edges]
 
         F4 --> G[Paint room floors into 64×64 tiles plane]
-        G --> G1[_carve_notches + _carve_symmetric_profiles<br/>mirrored forms; combined cap 25%; rectangles stay majority]
+        G --> G1[_carve_notches + _carve_symmetric_profiles<br/>normal target 40%; chamfer, L, T, offset,<br/>stepped, and paired-bay families]
         G1 --> G2[_add_pillars<br/>rare symmetric structural pairs]
         G2 --> G3[_carve_connection for every graph edge<br/>safe portal route + protected seam fallback]
         G3 --> G4[_widen_corridors where geometry and traffic allow]
 
-        G4 --> H[_place_arrival_elevator<br/>weighted inactive façade/open-car/closed-car arrival<br/>with native bounded elevator geometry]
+        G4 --> H[_place_arrival_elevator<br/>weighted inert façade or functional-door car arrival<br/>with native bounded elevator geometry]
         H --> H1[Measure graph/tile depth from start]
         H1 --> H2[Select post-climax elevator candidate]
         H2 --> H3{Route contains ≥55% of rooms,<br/>crosses a district, and reaches ≥75% depth?}
@@ -75,7 +79,7 @@ flowchart TD
         J3 --> J4[Very rarely carve one mirrored guard-recess pair<br/>only when a hallway ambush can own it]
 
         J4 --> K{Floor 9 boss?}
-        K -- yes --> K1[Prepare the mandatory boss arena<br/>sparse symmetric cover]
+        K -- yes --> K1[Prepare family-owned boss arena profile<br/>themed geometry, decoration, cover, and supplies]
         K1 --> K2[Place Hans or Gretel<br/>verified native gold-key drop + bounded support]
         K2 --> K3[Stock pre-boss staging room<br/>keep post-boss victory room calm]
         K -- no --> M[Resolve finalized room identity]
@@ -142,8 +146,9 @@ flowchart TD
     U --> Y{All ten floors accepted?}
     W --> Y
     Y -- no --> C
-    Y -- yes --> Y1[Validate adjacent floor types and skeletons differ;<br/>enforce one-floor vine and guard-gallery budgets]
-    Y1 --> AA[Write deterministic MAPINFO, manifest,<br/>plain-text reproduction settings, and ten ECWolf map WADs<br/>to a temporary campaign file]
+    Y -- yes --> Y1[Validate adjacent floor types, skeletons, and<br/>progression grammars differ; enforce one-floor<br/>vine, gallery, and rare-motif budgets]
+    Y1 --> Y2[Permute gameplay-neutral sound-zone labels<br/>until every map has two provenance residues;<br/>ten primary residues total 42 modulo 43]
+    Y2 --> AA[Write deterministic MAPINFO, manifest,<br/>plain-text reproduction settings, and ten ECWolf map WADs<br/>to a temporary campaign file]
     AA --> AB[validate_package<br/>reopen archive, verify entries, headers,<br/>dimensions, manifest, and asset-free contents]
     AB --> AC{Package valid and not cancelled?}
     AC -- no --> Z

@@ -6,10 +6,12 @@ import tkinter as tk
 from pathlib import Path
 import threading
 from tkinter import filedialog, messagebox, ttk
+import zipfile
 
 from .build_info import build_label
 from .config import CampaignConfig, Intensity, ThemeBias
 from .generator import GenerationCancelled, generate_campaign, read_manifest
+from .preview import MapPreview, load_previews, overlay_cells, tile_color
 from .runtime import AppSettings, launch_ecwolf, load_settings, save_settings, validate_settings
 
 
@@ -88,12 +90,16 @@ class App(ttk.Frame):
         self._path_row(2, "ECWolf executable", self.ecwolf, self._choose_ecwolf, False)
         self._path_row(3, "Registered WL6 data", self.wl6_data, self._choose_data, True)
         self._path_row(4, "Output PK3", self.output, self._choose_output, False)
-        self.generate_button = ttk.Button(self, text="Generate", command=self._generate)
-        self.generate_button.grid(row=5, column=0, pady=(16, 0), sticky="w")
+        actions = ttk.Frame(self)
+        actions.grid(row=5, column=0, columnspan=3, pady=(16, 0), sticky="ew")
+        self.generate_button = ttk.Button(actions, text="Generate", command=self._generate)
+        self.generate_button.pack(side="left")
         self.cancel_button = ttk.Button(self, text="Cancel", command=self._cancel, state="disabled")
-        self.cancel_button.grid(row=5, column=1, pady=(16, 0))
+        self.cancel_button.pack(side="left", padx=(8, 0))
         self.play_button = ttk.Button(self, text="Play", command=self._play)
-        self.play_button.grid(row=5, column=2, pady=(16, 0), sticky="e")
+        self.play_button.pack(side="right")
+        self.view_button = ttk.Button(self, text="View Maps", command=self._view_maps)
+        self.view_button.pack(side="right", padx=(0, 8))
         self._sync_play_state()
         ttk.Label(self, textvariable=self.status, wraplength=520).grid(row=6, column=0, columnspan=3, sticky="w", pady=(12, 0))
         ttk.Label(self, text=f"InfiniWolf {build_label()}").grid(
@@ -142,6 +148,8 @@ class App(ttk.Frame):
     def _sync_play_state(self) -> None:
         exists = bool(self.output.get()) and Path(self.output.get()).expanduser().is_file()
         self.play_button.configure(state="normal" if exists else "disabled")
+        if hasattr(self, "view_button"):
+            self.view_button.configure(state="normal" if exists else "disabled")
 
     def _generate(self) -> None:
         try:
@@ -162,6 +170,7 @@ class App(ttk.Frame):
         self.generate_button.configure(state="disabled")
         self.cancel_button.configure(state="normal")
         self.play_button.configure(state="disabled")
+        self.view_button.configure(state="disabled")
         self.cancel_event.clear()
         self.status.set("Generating and validating ten maps…")
         output_path = Path(self.output.get()).expanduser()
@@ -225,6 +234,96 @@ class App(ttk.Frame):
             messagebox.showerror("Could not launch ECWolf", str(error), parent=self)
             return
         self.status.set("ECWolf launched with the generated campaign.")
+
+    def _view_maps(self) -> None:
+        try:
+            previews = load_previews(Path(self.output.get()).expanduser())
+        except (OSError, ValueError, KeyError, zipfile.BadZipFile) as error:
+            messagebox.showerror("Could not view maps", str(error), parent=self)
+            return
+        MapViewer(self, previews)
+
+
+class MapViewer(tk.Toplevel):
+    """Modal, scalable top-down viewer for one completed campaign."""
+
+    def __init__(self, parent: tk.Misc, previews: tuple[MapPreview, ...]) -> None:
+        super().__init__(parent)
+        self.previews = previews
+        self.title("InfiniWolf — Campaign Maps")
+        self.geometry("900x720")
+        self.transient(parent)
+        self.protocol("WM_DELETE_WINDOW", self.destroy)
+        self.bind("<Escape>", lambda _event: self.destroy())
+        self.overlays = {name: tk.BooleanVar(value=False)
+                         for name in ("start-exit", "enemies", "pickups", "secrets", "route")}
+        body = ttk.Frame(self, padding=10)
+        body.pack(fill="both", expand=True)
+        self.listbox = tk.Listbox(body, exportselection=False, width=26)
+        for preview in previews:
+            self.listbox.insert("end", preview.name)
+        self.listbox.grid(row=0, column=0, rowspan=2, sticky="ns", padx=(0, 10))
+        self.listbox.bind("<<ListboxSelect>>", lambda _event: self._draw())
+        self.bind("<Left>", lambda _event: self._select_relative(-1))
+        self.bind("<Right>", lambda _event: self._select_relative(1))
+        self.canvas = tk.Canvas(body, background="#17191c", highlightthickness=0)
+        self.canvas.grid(row=0, column=1, sticky="nsew")
+        self.canvas.bind("<Configure>", lambda _event: self._draw())
+        controls = ttk.Frame(body)
+        controls.grid(row=1, column=1, sticky="ew", pady=(8, 0))
+        labels = (("start-exit", "Start / exit"), ("enemies", "Enemies"),
+                  ("pickups", "Pickups"), ("secrets", "Secrets"), ("route", "Route"))
+        for column, (name, label) in enumerate(labels):
+            ttk.Checkbutton(controls, text=label, variable=self.overlays[name],
+                            command=self._draw).grid(row=0, column=column, padx=4)
+        ttk.Button(controls, text="Close", command=self.destroy).grid(
+            row=0, column=len(labels), sticky="e", padx=(16, 0))
+        controls.columnconfigure(len(labels), weight=1)
+        body.columnconfigure(1, weight=1)
+        body.rowconfigure(0, weight=1)
+        self.listbox.selection_set(0)
+        self.listbox.activate(0)
+        self.after_idle(self._draw)
+        self.grab_set()
+
+    def _select_relative(self, step: int) -> None:
+        current = self.listbox.curselection()
+        index = (current[0] if current else 0) + step
+        index = max(0, min(len(self.previews) - 1, index))
+        self.listbox.selection_clear(0, "end")
+        self.listbox.selection_set(index)
+        self.listbox.activate(index)
+        self.listbox.see(index)
+        self._draw()
+
+    def _draw(self) -> None:
+        selection = self.listbox.curselection()
+        if not selection:
+            return
+        preview = self.previews[selection[0]]
+        self.canvas.delete("all")
+        width = max(64, self.canvas.winfo_width())
+        height = max(64, self.canvas.winfo_height())
+        scale = min(width, height) / 64.0
+        ox, oy = (width - 64 * scale) / 2, (height - 64 * scale) / 2
+        for index, tile in enumerate(preview.tiles):
+            x, y = index % 64, index // 64
+            self.canvas.create_rectangle(
+                ox + x * scale, oy + y * scale,
+                ox + (x + 1) * scale + 0.5, oy + (y + 1) * scale + 0.5,
+                fill=tile_color(tile), outline="")
+        styles = {"route": ("#3b82f6", 0.22), "start-exit": ("#24d66d", 0.34),
+                  "enemies": ("#ef4444", 0.30), "pickups": ("#f4d35e", 0.27),
+                  "secrets": ("#d946ef", 0.34)}
+        for kind, enabled in self.overlays.items():
+            if not enabled.get():
+                continue
+            color, inset = styles[kind]
+            for x, y in overlay_cells(preview, kind):
+                self.canvas.create_oval(
+                    ox + (x + inset) * scale, oy + (y + inset) * scale,
+                    ox + (x + 1 - inset) * scale, oy + (y + 1 - inset) * scale,
+                    fill=color, outline="")
 
 
 def main() -> None:
