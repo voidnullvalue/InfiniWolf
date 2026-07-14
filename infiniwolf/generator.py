@@ -3093,10 +3093,16 @@ def _place_arrival_elevator(tiles: list[int], room: Room,
             panels = [(offset, wall) for offset in offsets]
         px, py = -dy, dx
         for panel in panels:
-            footprint = tuple(sorted({
-                (panel[0] + depth * dx + side * px,
-                 panel[1] + depth * dy + side * py)
-                for depth in range(5) for side in (-2, -1, 0, 1, 2)}))
+            if kind == "flush-facade":
+                footprint = tuple(sorted({
+                    (panel[0] + depth * dx + side * px,
+                     panel[1] + depth * dy + side * py)
+                    for depth in (0, 1) for side in (-1, 0, 1)}))
+            else:
+                footprint = tuple(sorted({
+                    (panel[0] + depth * dx + side * px,
+                     panel[1] + depth * dy + side * py)
+                    for depth in range(5) for side in (-2, -1, 0, 1, 2)}))
             if (not all(1 <= x < GRID - 1 and 1 <= y < GRID - 1
                         for x, y in footprint)
                     or any(_at(tiles, x, y) != WALL for x, y in footprint)
@@ -3147,6 +3153,9 @@ def _place_arrival_elevator(tiles: list[int], room: Room,
                 item = (*car_cells[-1], supplies.get(variant, AMMO))
             return ArrivalDetail(kind, panel, player, facing, footprint,
                                  car_cells, clearance, item)
+    if forced_kind is None and kind != "flush-facade":
+        return _place_arrival_elevator(
+            tiles, room, toward, rng, variant, forced_kind="flush-facade")
     raise ValueError("start room has no rock-backed wall for an arrival façade")
 
 
