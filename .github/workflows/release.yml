@@ -11,6 +11,12 @@ on:
 permissions:
   contents: write
 
+# A newer main-branch candidate supersedes every older one. Keep tag-triggered
+# runs in their own ref group so the auto-tag build can finish independently.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
     runs-on: ubuntu-latest
