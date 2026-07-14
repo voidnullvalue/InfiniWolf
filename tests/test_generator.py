@@ -263,6 +263,31 @@ class GeneratorTests(unittest.TestCase):
                                     blocked={(x + 2, y) for x, y in pushwalls})
                 self.assertIn(reward, opened)
 
+    def test_floor_nine_secrets_are_boss_preparation_caches(self):
+        px, py = 20, 30
+        tiles = [WALL] * (GRID * GRID)
+        things = [0] * len(tiles)
+        tiles[py * GRID + px - 1] = FLOOR
+        reward = generator._carve_secret_pocket(
+            tiles, things, px, py, random.Random(9), False, "square", 0.7,
+            reward_quality=3, number=9)
+        self.assertIsNotNone(reward)
+        rewards = [item for item in things
+                   if item in {AMMO, generator.FOOD, FIRST_AID, MACHINE_GUN,
+                               CHAINGUN, ONE_UP, *generator.TREASURE}]
+        self.assertEqual(len(rewards), 7)
+        self.assertEqual(rewards.count(AMMO), 4)
+        self.assertIn(FIRST_AID, rewards)
+        self.assertTrue(any(item in (MACHINE_GUN, CHAINGUN) for item in rewards))
+
+    def test_generated_floor_nine_carries_each_boss_secret_budget(self):
+        level = _generate_with_retries(CampaignConfig(seed=909), 9, attempts=8)
+        secret_count = len(level.secret_rewards)
+        self.assertGreaterEqual(level.things.count(AMMO), 4 * secret_count)
+        self.assertGreaterEqual(
+            sum(item in (MACHINE_GUN, CHAINGUN) for item in level.things),
+            secret_count)
+
     def test_call_apogee_is_absent_from_all_decoration_registries(self):
         self.assertNotIn(63, generator.STATIC_BLOCKING)
         self.assertNotIn(63, generator.STATIC_OPEN)
@@ -847,6 +872,45 @@ class GeneratorTests(unittest.TestCase):
         self.assertEqual(_at(things, 13, 10), _at(things, 15, 10),
                          "frame must be a matched mirrored pair")
         self.assertEqual(_at(things, 14, 10), 0, "the picture itself stays visible")
+
+    def test_hallway_pairs_are_bisected_by_door_to_door_travel(self):
+        room = Room(10, 10, 12, 8)
+        tiles = [WALL] * (GRID * GRID)
+        for y in range(room.y, room.y + room.h):
+            for x in range(room.x, room.x + room.w):
+                tiles[y * GRID + x] = FLOOR
+        travel_y = 14
+        tiles[travel_y * GRID + room.x - 1] = generator.DOOR_EW
+        tiles[travel_y * GRID + room.x + room.w] = generator.DOOR_EW
+        tiles[travel_y * GRID + room.x - 2] = FLOOR
+        tiles[travel_y * GRID + room.x + room.w + 1] = FLOOR
+        things = [0] * len(tiles)
+        identity = generator.RoomIdentity("circulation", "hall", "spine", 0,
+                                          "grand-halls", "corridor", "corridor")
+        _place_decorations(
+            [room], tiles, things, set(), (room.x - 2, travel_y), random.Random(4),
+            identities=[identity], traversal_pair_chance=1.0)
+        lamps = {(index % GRID, index // GRID)
+                 for index, item in enumerate(things) if item == 26}
+        self.assertGreaterEqual(len(lamps), 2)
+        self.assertEqual(len(lamps) % 2, 0)
+        self.assertTrue(all((x, 2 * travel_y - y) in lamps for x, y in lamps),
+                        "matched lamps must occupy opposite sides of the travel line")
+
+    def test_bent_traversal_frame_uses_local_path_directions(self):
+        room = Room(10, 10, 8, 8)
+        tiles = [WALL] * (GRID * GRID)
+        for y in range(room.y, room.y + room.h):
+            for x in range(room.x, room.x + room.w):
+                tiles[y * GRID + x] = FLOOR
+        tiles[9 * GRID + 14] = generator.DOOR_NS
+        tiles[8 * GRID + 14] = FLOOR
+        tiles[14 * GRID + 18] = generator.DOOR_EW
+        tiles[14 * GRID + 19] = FLOOR
+        frame = generator._room_traversal_frame(room, tiles)
+        self.assertEqual(len(frame.entries), 2)
+        self.assertIn((1, 0), frame.station_axes)
+        self.assertIn((0, 1), frame.station_axes)
 
     def test_doorway_approach_cells_never_get_blocking_decor(self):
         room = Room(10, 10, 8, 8)

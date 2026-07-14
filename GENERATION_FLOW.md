@@ -55,7 +55,7 @@ flowchart TD
         H4 --> I[Carve bespoke sealed secrets]
         I --> I1[Choose square/vault/reliquary/gallery/nested shape]
         I1 --> I2[Require unused rock shell and no normal-room connection]
-        I2 --> I3[Place three depth/quality-aware secret rewards]
+        I2 --> I3[Place depth/quality-aware secret rewards<br/>3 normally; 7-item boss caches on floor 9]
         I3 --> I4[Reserve pushwall travel, rewards, and secret footprint]
 
         I4 --> J[_place_doors from seeded GatePlan]
@@ -91,7 +91,7 @@ flowchart TD
         N5 -- yes --> O[_place_decorations]
         O --> O1[Populate mirrored notch anchors with matching accents]
         O1 --> O2[Attempt room-concept signature]
-        O2 --> O3[Compose landmark/door frames, zones, clusters,<br/>wall-backed appliances/armor, and open clutter]
+        O2 --> O3[Compose traversal-balanced pairs, landmark/door frames,<br/>zones, clusters, wall-backed appliances/armor, and open clutter]
         O3 --> O4[Check doorway clearance, statics headroom,<br/>full-map reachability, spacing, and reservations]
         O4 --> O5[Add corridor rhythm lights and valid niche accents]
 

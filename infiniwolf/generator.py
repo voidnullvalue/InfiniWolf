@@ -2550,6 +2550,7 @@ def _secret_reward(rng: random.Random, depth: float,
 def _place_secret(tiles: list[int], things: list[int], room: Room,
                   rng: random.Random, variant: str, depth: float,
                   secret_exit: bool = False, *, reward_quality: int = 3,
+                  number: int = 0,
                   protected: set[tuple[int, int]] | None = None
                   ) -> tuple[tuple[int, int], str, tuple[int, int]] | None:
     px = room.x + room.w
@@ -2562,6 +2563,7 @@ def _place_secret(tiles: list[int], things: list[int], room: Room,
     for py in rows:
         reward = _carve_secret_pocket(tiles, things, px, py, rng, secret_exit,
                                       variant, depth, reward_quality=reward_quality,
+                                      number=number,
                                       protected=protected)
         if reward:
             return reward, variant, (px, py)
@@ -2572,6 +2574,7 @@ def _carve_secret_pocket(tiles: list[int], things: list[int], px: int, py: int,
                          rng: random.Random, secret_exit: bool,
                          variant: str = "square", depth: float = 0.5,
                          *, reward_quality: int = 3,
+                         number: int = 0,
                          protected: set[tuple[int, int]] | None = None
                          ) -> tuple[int, int] | None:
     """Carve one purpose-built, rock-shelled secret east of its pushwall."""
@@ -2625,20 +2628,34 @@ def _carve_secret_pocket(tiles: list[int], things: list[int], px: int, py: int,
                         key=lambda cell: (-cell[0], abs(cell[1] - py), cell[1]))
     if secret_exit:
         candidates = [cell for cell in candidates if cell != (east, py)]
-    if len(candidates) < 3:
+    reward_count = 7 if number == 9 else 3
+    if len(candidates) < reward_count:
         return None
 
-    treasure_weights = (max(0.2, 2.5 - depth * reward_quality),
-                        1.5, 0.5 + depth * reward_quality,
-                        0.2 + depth * reward_quality)
-    rewards = [rng.choices(TREASURE, weights=treasure_weights, k=1)[0]]
-    useful_choices = (AMMO, FOOD, FIRST_AID)
-    useful_weights = (3.0, max(0.2, 3.0 - reward_quality * 0.4),
-                      0.5 + reward_quality * 0.7)
-    rewards.append(rng.choices(useful_choices, weights=useful_weights, k=1)[0])
-    rewards.append(_secret_reward(rng, depth, premium=True, quality=reward_quality,
-                                  allow_one_up=ONE_UP not in things))
-    reward_cells = candidates[:3]
+    if number == 9:
+        # Boss-floor secrets are preparation caches, not ordinary treasure
+        # cupboards. Four clips make the discovery materially change the
+        # coming fight, while a weapon, first-aid, and premium slot provide
+        # an exciting upgrade without making the secret mandatory to win.
+        chaingun_chance = min(0.85, 0.20 + 0.10 * reward_quality + 0.20 * depth)
+        weapon = CHAINGUN if rng.random() < chaingun_chance else MACHINE_GUN
+        one_up_chance = min(0.40, 0.10 + 0.05 * reward_quality)
+        premium = (ONE_UP if ONE_UP not in things and rng.random() < one_up_chance
+                   else _secret_reward(rng, depth, premium=True,
+                                       quality=reward_quality, allow_one_up=False))
+        rewards = [AMMO, AMMO, AMMO, AMMO, weapon, FIRST_AID, premium]
+    else:
+        treasure_weights = (max(0.2, 2.5 - depth * reward_quality),
+                            1.5, 0.5 + depth * reward_quality,
+                            0.2 + depth * reward_quality)
+        rewards = [rng.choices(TREASURE, weights=treasure_weights, k=1)[0]]
+        useful_choices = (AMMO, FOOD, FIRST_AID)
+        useful_weights = (3.0, max(0.2, 3.0 - reward_quality * 0.4),
+                          0.5 + reward_quality * 0.7)
+        rewards.append(rng.choices(useful_choices, weights=useful_weights, k=1)[0])
+        rewards.append(_secret_reward(rng, depth, premium=True, quality=reward_quality,
+                                      allow_one_up=ONE_UP not in things))
+    reward_cells = candidates[:reward_count]
     for cell, item in zip(reward_cells, rewards):
         _set(things, *cell, item)
 
@@ -3100,6 +3117,15 @@ class RoomAnchors:
     wall_midcells: tuple[tuple[int, int], ...]
 
 
+@dataclass(frozen=True, slots=True)
+class TraversalFrame:
+    """The dominant path a player is expected to take through one room."""
+    entries: tuple[tuple[int, int], ...]
+    axis: tuple[int, int]
+    stations: tuple[tuple[int, int], ...]
+    station_axes: tuple[tuple[int, int], ...]
+
+
 def _room_anchors(room: Room, tiles: list[int]) -> RoomAnchors:
     entries: list[tuple[tuple[int, int], tuple[int, int]]] = []
     for x in range(room.x, room.x + room.w):
@@ -3123,6 +3149,124 @@ def _room_anchors(room: Room, tiles: list[int]) -> RoomAnchors:
     midcells = ((cx, room.y + 1), (cx, room.y + room.h - 2),
                 (room.x + 1, cy), (room.x + room.w - 2, cy))
     return RoomAnchors(tuple(entries), frozenset(clear), corners, midcells)
+
+
+def _room_traversal_frame(room: Room, tiles: list[int],
+                          anchors: RoomAnchors | None = None) -> TraversalFrame:
+    """Resolve doors into a stable visual axis and balanced decor stations.
+
+    Opposing, widely separated doors win in multi-door rooms. A single door
+    projects inward toward the room center; a doorless room falls back to its
+    major axis. Stations are ordered midpoint-first, then at one-third and
+    two-thirds, so the first matched pair bisects the most visible crossing.
+    """
+    anchors = anchors or _room_anchors(room, tiles)
+    door_entries = list(anchors.door_entries)
+    cx, cy = room.center
+    if len(door_entries) >= 2:
+        choices = list(combinations(door_entries, 2))
+
+        def pair_score(pair):
+            (first, first_in), (second, second_in) = pair
+            opposite = first_in == (-second_in[0], -second_in[1])
+            separation = abs(first[0] - second[0]) + abs(first[1] - second[1])
+            midpoint_offset = abs(first[0] + second[0] - 2 * cx) + abs(
+                first[1] + second[1] - 2 * cy)
+            return opposite, separation, -midpoint_offset, first, second
+
+        (start, start_in), (end, end_in) = max(choices, key=pair_score)
+        if start_in == (-end_in[0], -end_in[1]):
+            axis = start_in
+        else:
+            dx, dy = end[0] - start[0], end[1] - start[1]
+            axis = ((1 if dx >= 0 else -1), 0) if abs(dx) >= abs(dy) else (
+                0, (1 if dy >= 0 else -1))
+        entries = (start, end)
+    elif door_entries:
+        start, axis = door_entries[0]
+        end = (cx, cy)
+        entries = (start,)
+    else:
+        axis = (1, 0) if room.w >= room.h else (0, 1)
+        start = (room.x, cy) if axis[0] else (cx, room.y)
+        end = (room.x + room.w - 1, cy) if axis[0] else (cx, room.y + room.h - 1)
+        entries = ()
+
+    previous: dict[tuple[int, int], tuple[int, int] | None] = {start: None}
+    queue = deque([start])
+    while queue and end not in previous:
+        x, y = queue.popleft()
+        directions = sorted(((1, 0), (-1, 0), (0, 1), (0, -1)),
+                            key=lambda step: abs(x + step[0] - end[0])
+                            + abs(y + step[1] - end[1]))
+        for dx, dy in directions:
+            nxt = x + dx, y + dy
+            if (nxt in previous
+                    or not (room.x <= nxt[0] < room.x + room.w
+                            and room.y <= nxt[1] < room.y + room.h)
+                    or not _is_floor(_at(tiles, *nxt))):
+                continue
+            previous[nxt] = (x, y)
+            queue.append(nxt)
+    if end in previous:
+        path = []
+        cell: tuple[int, int] | None = end
+        while cell is not None:
+            path.append(cell)
+            cell = previous[cell]
+        path.reverse()
+    else:
+        path = [start, end]
+
+    stations = []
+    station_axes = []
+    for numerator, denominator in ((1, 2), (1, 3), (2, 3)):
+        index = min(len(path) - 1,
+                    ((len(path) - 1) * numerator + denominator // 2) // denominator)
+        station = path[index]
+        if station not in stations:
+            stations.append(station)
+            before = path[max(0, index - 1)]
+            after = path[min(len(path) - 1, index + 1)]
+            dx, dy = after[0] - before[0], after[1] - before[1]
+            local_axis = (((1 if dx >= 0 else -1), 0) if abs(dx) >= abs(dy) and dx
+                          else (0, (1 if dy >= 0 else -1)) if dy else axis)
+            station_axes.append(local_axis)
+    return TraversalFrame(entries, axis, tuple(stations), tuple(station_axes))
+
+
+def _traversal_pair_candidates(room: Room, tiles: list[int], frame: TraversalFrame
+                               ) -> list[tuple[tuple[int, int], tuple[int, int]]]:
+    """Matched cells on opposite sides of the player's travel line.
+
+    Larger offsets are preferred so lamps and furniture read as two balanced
+    sides of an aisle. Exact floor/occupancy checks remain the caller's job.
+    """
+    pairs = []
+    max_offset = max(room.w, room.h)
+    for (sx, sy), local_axis in zip(frame.stations, frame.station_axes):
+        # A doorless even-sized room has its visual axis between tiles. Keep
+        # that half-tile center exact so opposite-wall pairs remain possible.
+        if local_axis[0]:
+            center2 = 2 * sy if frame.entries else 2 * room.y + room.h - 1
+        else:
+            center2 = 2 * sx if frame.entries else 2 * room.x + room.w - 1
+        for offset in range(max_offset, -1, -1):
+            low = center2 // 2 - offset
+            high = (center2 + 1) // 2 + offset
+            first, second = (((sx, low), (sx, high)) if local_axis[0]
+                             else ((low, sy), (high, sy)))
+            if first == second:
+                continue
+            if not all(room.x <= x < room.x + room.w
+                       and room.y <= y < room.y + room.h
+                       and _is_floor(_at(tiles, x, y))
+                       for x, y in (first, second)):
+                continue
+            pair = (first, second)
+            if pair not in pairs and pair[::-1] not in pairs:
+                pairs.append(pair)
+    return pairs
 
 
 AUTHORED_PICKUP_TEMPLATES = frozenset({
@@ -3520,7 +3664,8 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
                        identities: list[RoomIdentity] | None = None,
                        atmosphere: int = 3,
                        landmark_frame_chance: float = 0.15,
-                       notch_anchors: dict[int, tuple[tuple[int, int], ...]] | None = None
+                       notch_anchors: dict[int, tuple[tuple[int, int], ...]] | None = None,
+                       traversal_pair_chance: float | None = None
                        ) -> None:
     """Place purposeful, themed furniture in rooms following community-map patterns.
 
@@ -3585,6 +3730,8 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
         free: set[tuple[int, int]] = {cell for cell in interior - reserved
                                       if _at(things, *cell) == 0}
         anchors = _room_anchors(room, tiles)
+        traversal = _room_traversal_frame(room, tiles, anchors)
+        travel_pairs = _traversal_pair_candidates(room, tiles, traversal)
         keep_clear = set(anchors.keep_clear)
         # The outermost floor ring is excluded from `interior` (and thus from
         # every legacy pattern), but wall-flush anchors -- door flanks and
@@ -3692,6 +3839,37 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
         }
         frame_pool = concept_frames.get(
             concept, tuple(item for item in blocking if item in _FRAMEABLE)) or (26,)
+
+        # The primary matched composition follows the route through the room,
+        # not an arbitrary room half. In a two-door hall this places one prop
+        # on each side of the aisle at the same travel depth. Formal and
+        # circulation spaces use the rule strongly; irregular utility rooms
+        # retain more freedom so the result does not become formulaic.
+        formal_concepts = {
+            "corridor", "checkpoint", "guardpost", "war-room",
+            "trophy-hall", "gallery", "dining-hall", "courtyard",
+        }
+        travel_chance = (traversal_pair_chance
+                         if traversal_pair_chance is not None else
+                         0.90 if len(traversal.entries) >= 2
+                         and (tier in ("corridor", "hall")
+                              or concept in formal_concepts)
+                         else 0.45 if len(traversal.entries) >= 2 else 0.20)
+        if (travel_pairs and pairs_placed < pair_budget
+                and rng.random() < travel_chance):
+            pair_items = list(dict.fromkeys(frame_pool))
+            rng.shuffle(pair_items)
+            placed_travel_pair = False
+            for pair in travel_pairs:
+                for item in pair_items:
+                    if item == 39 and not all(_wall_backed(cell) for cell in pair):
+                        continue
+                    if _try_place(list(pair), item):
+                        pairs_placed += 1
+                        placed_travel_pair = True
+                        break
+                if placed_travel_pair:
+                    break
 
         # --- Vignette: frame a landmark wall (portrait, banner, insignia) ---
         # The wall pass hangs its landmarks symmetrically; a matched pair of
@@ -3817,8 +3995,20 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
                             used.append(spot)
             else:
                 signature = signatures.get(concept)
-                if signature and _try_place_items(signature):
-                    pairs_placed += 1
+                if signature:
+                    matched_item = (signature[0][1] if len(signature) == 2
+                                    and signature[0][1] == signature[1][1]
+                                    else None)
+                    if matched_item is not None and travel_pairs:
+                        # A matched signature is still a matched composition:
+                        # it may move to the traversal frame, but may not fall
+                        # back to two pieces stranded on one side of the aisle.
+                        for pair in travel_pairs:
+                            if _try_place(list(pair), matched_item):
+                                pairs_placed += 1
+                                break
+                    elif _try_place_items(signature):
+                        pairs_placed += 1
 
         # --- Vignette: matched pair flanking a doorway ---
         if (doorway_frames_placed < 3 and pairs_placed < pair_budget
@@ -3942,8 +4132,14 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
                            if x < cx and (2 * cx - x, y) in free]
                 y_pairs = [((x, y), (x, 2 * cy - y)) for x, y in band
                            if y < cy and (x, 2 * cy - y) in free]
-                all_pairs = x_pairs + y_pairs
-                rng.shuffle(all_pairs)
+                geometric_pairs = x_pairs + y_pairs
+                rng.shuffle(geometric_pairs)
+                # Travel-aware pairs stay ahead of room-center symmetry. The
+                # latter remains a fallback when doors are absent or the aisle
+                # is occupied by a stronger room signature.
+                all_pairs = travel_pairs + [pair for pair in geometric_pairs
+                                            if pair not in travel_pairs
+                                            and pair[::-1] not in travel_pairs]
                 for (ax, ay), (bx, by) in all_pairs:
                     if pairs_placed >= pair_budget:
                         break
@@ -4217,6 +4413,7 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
                                           room_distances[room] / max_room_distance,
                                           secret_exit and not rewards,
                                           reward_quality=int(config.secret_reward_quality),
+                                          number=number,
                                           protected=secret_protected)
             if placed_secret:
                 host = room
@@ -4229,6 +4426,7 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
                                               room_distances[room] / max_room_distance,
                                               secret_exit and not rewards,
                                               reward_quality=int(config.secret_reward_quality),
+                                              number=number,
                                               protected=secret_protected)
                 if placed_secret:
                     host = room
@@ -4255,6 +4453,7 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
                 tiles, things, px, py, rng, secret_exit and not rewards, variant,
                 min(1.0, approach_distance / max_room_distance),
                 reward_quality=int(config.secret_reward_quality),
+                number=number,
                 protected=secret_protected)
             if reward:
                 break
@@ -4266,6 +4465,7 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
                     tiles, things, px, py, rng, secret_exit and not rewards, variant,
                     min(1.0, approach_distance / max_room_distance),
                     reward_quality=int(config.secret_reward_quality),
+                    number=number,
                     protected=secret_protected)
                 if reward:
                     break
@@ -4798,7 +4998,8 @@ def generate_campaign(config: CampaignConfig, output: Path,
                     "room_concepts": level.room_concepts,
                     "motifs": level.motifs,
                     "secret_variants": level.secret_variants,
-                    "secret_details": [{"shape": shape, "reward_count": 3}
+                    "secret_details": [{"shape": shape,
+                                        "reward_count": 7 if level.number == 9 else 3}
                                        for shape in level.secret_variants],
                     "pickup_compositions": [
                         {"reason": placement.reason,
