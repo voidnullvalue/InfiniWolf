@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections import Counter, deque
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import heapq
 from itertools import combinations
 import json
@@ -458,16 +458,89 @@ def _variant_sequence(config: CampaignConfig) -> tuple[FloorVariant, ...]:
     forced boss/vault identities."""
     picks: list[FloorVariant] = []
     for floor in range(1, 9):
-        rng = random.Random(config.variant_seed(floor))
+        seed = config.variant_seed(floor)
+        if config.say_aardwolf:
+            seed ^= config.aardwolf_seed(floor)
+        rng = random.Random(seed)
         pool = [variant for variant in FLOOR_VARIANT_ROTATION
                 if not picks or variant.name != picks[-1].name]
+        if config.say_aardwolf and len(picks) > 1:
+            distant = [variant for variant in pool
+                       if variant.name != picks[-2].name]
+            if distant:
+                pool = distant
         bias = config.theme_bias.value
         if bias == "mixed":
-            picks.append(rng.choice(pool))
+            weights = ([1.0 + rng.random() * 2.5 for _ in pool]
+                       if config.say_aardwolf else None)
+            picks.append(rng.choices(pool, weights=weights, k=1)[0]
+                         if weights else rng.choice(pool))
         else:
-            weights = [3 if variant.name == bias else 1 for variant in pool]
+            weights = [(3 if variant.name == bias else 1)
+                       * (1.0 + rng.random() * 1.5
+                          if config.say_aardwolf else 1.0)
+                       for variant in pool]
             picks.append(rng.choices(pool, weights=weights, k=1)[0])
     return tuple(picks) + (VARIANT_STRONGHOLD, VARIANT_VAULT)
+
+
+def _aardwolf_variant(config: CampaignConfig, floor: int,
+                      variant: FloorVariant) -> FloorVariant:
+    if not config.say_aardwolf:
+        return variant
+    rng = random.Random(config.aardwolf_seed(floor))
+    phase_rng = random.Random(config.aardwolf_seed(10) ^ config.seed)
+    phase = phase_rng.random() * math.tau
+    pulse = math.sin(phase + floor * (math.tau / 3.7))
+    order = list(range(8))
+    rng.shuffle(order)
+    amplitudes = [0.15] * 8
+    for index in order[:2]:
+        amplitudes[index] = 1.0
+    for index in order[2:5]:
+        amplitudes[index] = 0.45
+    blend = lambda index, value: 1.0 + (value - 1.0) * amplitudes[index]
+    material = list(variant.theme_pool)
+    if len(material) > 3 and amplitudes[6] >= 0.45:
+        shift = rng.randrange(len(material))
+        material = material[shift:] + material[:shift]
+        material = material[:rng.randrange(3, min(5, len(material)) + 1)]
+    motifs = list(("hub", "wings", "gallery"))
+    rng.shuffle(motifs)
+    echo = ("hub", "wings", "gallery")[phase_rng.randrange(3)]
+    if floor in (1, 4, 7, 9):
+        motifs.remove(echo)
+        motifs.insert(0, echo)
+    scale = lambda low, high, value: min(high, max(low, value))
+    return replace(
+        variant,
+        notch_chance=scale(0.07, 0.38, variant.notch_chance
+                           * blend(0, 0.72 + rng.random() * 0.62
+                                   + pulse * 0.08)),
+        pillar_chance=scale(0.04, 0.18, variant.pillar_chance
+                            * blend(1, 0.65 + rng.random() * 0.80
+                                    - pulse * 0.08)),
+        widen_chance=scale(0.48, 1.0, variant.widen_chance
+                           * blend(2, 0.72 + rng.random() * 0.55
+                                   - pulse * 0.08)),
+        hall_chance=scale(0.12, 0.48, variant.hall_chance
+                          * blend(3, 0.62 + rng.random() * 0.95
+                                  + pulse * 0.10)),
+        closet_weight=scale(0.28, 0.72, variant.closet_weight
+                            * blend(4, 0.68 + rng.random() * 0.72
+                                    - pulse * 0.08)),
+        extra_motif_chance=scale(0.18, 0.72, variant.extra_motif_chance
+                                 * blend(5, 0.58 + rng.random() * 1.05)),
+        motif_pref=(tuple(motifs[:2]) if amplitudes[7] >= 0.45
+                    else variant.motif_pref),
+        theme_pool=tuple(material),
+        jail_probability=(0.0 if variant.jail_probability == 0 else
+                          scale(0.08, 0.65, variant.jail_probability
+                                * blend(6, 0.55 + rng.random() * 1.05))),
+        decor_density=scale(0.72, 1.30, variant.decor_density
+                            * blend(7, 0.72 + rng.random() * 0.58
+                                    + pulse * 0.10)),
+    )
 
 
 def _circulation_sequence(config: CampaignConfig) -> tuple[str, ...]:
@@ -484,11 +557,21 @@ def _circulation_sequence(config: CampaignConfig) -> tuple[str, ...]:
     }
     result: list[str] = []
     for floor, variant in enumerate(variants, 1):
-        rng = random.Random(config.circulation_seed(floor))
+        seed = config.circulation_seed(floor)
+        if config.say_aardwolf:
+            seed ^= config.aardwolf_seed(11 - floor)
+        rng = random.Random(seed)
         pool = [name for name in CIRCULATION_SKELETONS
                 if not result or name != result[-1]]
+        if config.say_aardwolf and len(result) > 1:
+            distant = [name for name in pool if name != result[-2]]
+            if distant:
+                pool = distant
         favored = preferences[variant.name]
-        weights = [3 if name in favored else 1 for name in pool]
+        weights = [(3 if name in favored else 1)
+                   * (1.0 + rng.random() * 2.0
+                      if config.say_aardwolf else 1.0)
+                   for name in pool]
         result.append(rng.choices(pool, weights=weights, k=1)[0])
     return tuple(result)
 
@@ -5794,11 +5877,14 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
                  guard_gallery_enabled: bool = False,
                  ) -> GeneratedMap:
     seed = config.floor_seed(number, attempt)
+    if config.say_aardwolf:
+        seed ^= config.aardwolf_seed(number)
     rng = random.Random(seed)
     tiles = [WALL] * (GRID * GRID)
     things = [0] * (GRID * GRID)
     complexity = int(config.layout_complexity)
-    floor_variant = _variant_sequence(config)[number - 1]
+    floor_variant = _aardwolf_variant(
+        config, number, _variant_sequence(config)[number - 1])
     circulation_skeleton = _circulation_sequence(config)[number - 1]
     scheduled_gate = _lock_schedule(config)[number - 1]
     plan = _plan_floor(rng, complexity, number, variant=floor_variant,
@@ -7156,8 +7242,13 @@ def _reproducibility_text(config: CampaignConfig, secret_from: int) -> str:
             lines.append(f"{name} = {value}")
     arguments = [f"--seed {config.seed}"]
     for name, value in settings.items():
-        if name != "seed":
-            arguments.append(f"--{name.replace('_', '-')} {value}")
+        if name == "seed":
+            continue
+        if name == "say_aardwolf":
+            if value:
+                arguments.append("--say-aardwolf")
+            continue
+        arguments.append(f"--{name.replace('_', '-')} {value}")
     lines.extend((
         "",
         "Reproduction command",
@@ -7171,20 +7262,95 @@ def _reproducibility_text(config: CampaignConfig, secret_from: int) -> str:
     return "\n".join(lines)
 
 
+def _set_distance(first: tuple[str, ...], second: tuple[str, ...]) -> float:
+    left, right = set(first), set(second)
+    union = left | right
+    return len(left ^ right) / max(1, len(union))
+
+
+def _candidate_score(level: GeneratedMap, previous: list[GeneratedMap],
+                     config: CampaignConfig) -> float:
+    score = 0.0
+    for offset, other in enumerate(reversed(previous[-4:])):
+        weight = 4.0 / (offset + 1)
+        score += weight * (
+            2.5 * (level.variant != other.variant)
+            + 2.5 * (level.circulation_skeleton != other.circulation_skeleton)
+            + 1.5 * _set_distance(level.layout_signature,
+                                  other.layout_signature)
+            + 1.4 * _set_distance(level.room_concepts,
+                                  other.room_concepts)
+            + 1.2 * _set_distance(level.motifs, other.motifs)
+            + 1.1 * _set_distance(level.room_shapes, other.room_shapes)
+            + 0.9 * _set_distance(level.district_circulation,
+                                  other.district_circulation)
+            + 0.8 * _set_distance(level.secret_variants,
+                                  other.secret_variants)
+            + 0.7 * _set_distance(
+                tuple(encounter.family for encounter in level.encounters),
+                tuple(encounter.family for encounter in other.encounters))
+            + 0.6 * _set_distance(level.lighting_families,
+                                  other.lighting_families)
+            + 0.5 * ((level.arrival.kind if level.arrival else "")
+                     != (other.arrival.kind if other.arrival else ""))
+            + min(1.0, abs(len(level.rooms) - len(other.rooms)) / 5.0)
+            + min(1.0, abs(sum(bool(thing) for thing in level.things)
+                               - sum(bool(thing) for thing in other.things)) / 24.0)
+        )
+    score += _set_distance(level.room_concepts[:-1],
+                           level.room_concepts[1:])
+    score += 0.35 * len(set(level.room_concepts))
+    pairs = {
+        frozenset(("storage", "ready-room")),
+        frozenset(("supply-cache", "checkpoint")),
+        frozenset(("armory", "training-room")),
+        frozenset(("barracks", "mess-kitchen")),
+        frozenset(("officers-quarters", "war-room")),
+        frozenset(("gallery", "trophy-hall")),
+        frozenset(("crypt", "ossuary")),
+        frozenset(("holding-cell", "interrogation-room")),
+    }
+    score += 0.6 * sum(
+        frozenset((level.room_concepts[first], level.room_concepts[second]))
+        in pairs for first, second in level.edges)
+    rhythm = random.Random(config.aardwolf_seed(10) ^ 0xA4D0F)
+    phase = rhythm.random() * math.tau
+    tension = math.sin(phase + level.number * math.tau / 4.5)
+    actor_density = sum(level.enemy_tiers) / max(1, len(level.rooms))
+    target_actors = 0.45 + int(config.guard_density) * 0.20 + tension * 0.18
+    score -= abs(actor_density - target_actors) * 1.8
+    object_density = sum(bool(thing) for thing in level.things) / max(1, len(level.rooms))
+    target_objects = 3.0 + int(config.decoration_amount) * 0.55 - tension * 0.35
+    score -= abs(object_density - target_objects) * 0.20
+    center = sum(room.center[0] for room in level.rooms) / max(1, len(level.rooms))
+    handedness = -1 if config.aardwolf_seed(level.number) & 1 else 1
+    score += 0.5 if (center - level.start[0]) * handedness > 0 else 0.0
+    return score
+
+
 def generate_campaign(config: CampaignConfig, output: Path,
                       progress: Callable[[int, int], None] | None = None,
                       cancelled: Callable[[], bool] | None = None) -> Path:
     levels = []
-    secret_from = 1 + config.floor_seed(10) % 6
+    secret_seed = config.floor_seed(10)
+    if config.say_aardwolf:
+        secret_seed ^= config.aardwolf_seed(1)
+    secret_from = 1 + secret_seed % 6
     variants = _variant_sequence(config)
-    vine_rng = random.Random(config.vine_seed())
+    vine_seed = config.vine_seed()
+    if config.say_aardwolf:
+        vine_seed ^= config.aardwolf_seed(8)
+    vine_rng = random.Random(vine_seed)
     vine_floors = list(range(2, 9))
     vine_weights = [4 if variants[floor - 1].name == "catacombs" else
                     2 if variants[floor - 1].name in ("storehouse", "grand-halls") else 1
                     for floor in vine_floors]
     vine_floor = vine_rng.choices(vine_floors, weights=vine_weights, k=1)[0]
     vine_budget = 2 if vine_rng.random() < 0.28 else 1
-    gallery_rng = random.Random(config.guard_gallery_seed())
+    gallery_seed = config.guard_gallery_seed()
+    if config.say_aardwolf:
+        gallery_seed ^= config.aardwolf_seed(7)
+    gallery_rng = random.Random(gallery_seed)
     gallery_enabled = gallery_rng.random() < 0.22
     gallery_floors = list(range(3, 9))
     gallery_weights = [3 if variants[floor - 1].name in
@@ -7197,6 +7363,7 @@ def generate_campaign(config: CampaignConfig, output: Path,
             raise GenerationCancelled("campaign generation cancelled")
         last_error = None
         candidates: list[GeneratedMap] = []
+        clean: list[GeneratedMap] = []
         for attempt in range(50):
             try:
                 candidate = generate_map(config, number, attempt, number == secret_from,
@@ -7209,14 +7376,36 @@ def generate_campaign(config: CampaignConfig, output: Path,
                 continue
             candidates.append(candidate)
             if not candidate.critique:
-                levels.append(candidate)
+                if not config.say_aardwolf:
+                    levels.append(candidate)
+                    break
+                clean.append(candidate)
+                if len(clean) == 2:
+                    levels.append(max(
+                        clean, key=lambda level: _candidate_score(
+                            level, levels, config)))
+                    break
+            if config.say_aardwolf and len(candidates) == 8:
+                pool = clean or candidates
+                levels.append(max(
+                    pool, key=lambda level: (
+                        -len(level.critique),
+                        _candidate_score(level, levels, config))))
                 break
-            if len(candidates) == 3:
+            if not config.say_aardwolf and len(candidates) == 3:
                 levels.append(min(candidates, key=lambda level: len(level.critique)))
                 break
         else:
             if candidates:
-                levels.append(min(candidates, key=lambda level: len(level.critique)))
+                if config.say_aardwolf:
+                    pool = clean or candidates
+                    levels.append(max(
+                        pool, key=lambda level: (
+                            -len(level.critique),
+                            _candidate_score(level, levels, config))))
+                else:
+                    levels.append(min(candidates,
+                                      key=lambda level: len(level.critique)))
             else:
                 raise RuntimeError(f"floor {number} failed generation: {last_error}")
         if progress:

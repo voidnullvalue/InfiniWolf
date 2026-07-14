@@ -28,6 +28,8 @@ def parser() -> argparse.ArgumentParser:
                             metavar="1..5")
     result.add_argument("--theme-bias", choices=[bias.value for bias in ThemeBias],
                         default=ThemeBias.MIXED.value)
+    result.add_argument("--say-aardwolf", action="store_true",
+                        help=argparse.SUPPRESS)
     return result
 
 
@@ -49,6 +51,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         atmosphere=Intensity(args.atmosphere),
         secret_reward_quality=Intensity(args.secret_reward_quality),
         theme_bias=ThemeBias(args.theme_bias),
+        say_aardwolf=args.say_aardwolf,
     )
     output = generate_campaign(config, args.output)
     print(f"Generated {output}")

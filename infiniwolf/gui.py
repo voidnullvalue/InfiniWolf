@@ -57,6 +57,7 @@ class App(ttk.Frame):
         self.values = {name: tk.IntVar(value=3) for name, _ in CONTROL_LABELS}
         self.value_labels = {name: tk.StringVar(value=INTENSITY_NAMES[3]) for name, _ in CONTROL_LABELS}
         self.theme_bias = tk.StringVar(value=ThemeBias.MIXED.value)
+        self.say_aardwolf = tk.BooleanVar(value=False)
         self.cancel_event = threading.Event()
         self._build()
 
@@ -80,6 +81,10 @@ class App(ttk.Frame):
         theme.bind("<<ComboboxSelected>>",
                    lambda _event: self.theme_bias.set(next(key for key, label in THEME_NAMES.items()
                                                           if label == theme.get())))
+        ttk.Checkbutton(style, text="Say Aardwolf",
+                        variable=self.say_aardwolf).grid(
+                            row=theme_row + 1, column=0, columnspan=3,
+                            sticky="w", pady=(8, 0))
         self._path_row(2, "ECWolf executable", self.ecwolf, self._choose_ecwolf, False)
         self._path_row(3, "Registered WL6 data", self.wl6_data, self._choose_data, True)
         self._path_row(4, "Output PK3", self.output, self._choose_output, False)
@@ -142,6 +147,7 @@ class App(ttk.Frame):
         try:
             settings = {name: Intensity(value.get()) for name, value in self.values.items()}
             settings["theme_bias"] = ThemeBias(self.theme_bias.get())
+            settings["say_aardwolf"] = self.say_aardwolf.get()
             config = CampaignConfig.with_seed(self.seed.get(), **settings)
         except ValueError as error:
             messagebox.showerror("Invalid configuration", str(error), parent=self)

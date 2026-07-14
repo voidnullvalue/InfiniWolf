@@ -27,6 +27,9 @@ class CliTests(unittest.TestCase):
         self.assertEqual(args.layout_complexity, 1)
         self.assertEqual(args.atmosphere, 2)
         self.assertEqual(args.theme_bias, "grand-halls")
+        self.assertFalse(args.say_aardwolf)
+        self.assertTrue(parser().parse_args(["--say-aardwolf"]).say_aardwolf)
+        self.assertNotIn("aardwolf", parser().format_help().lower())
 
     def test_cli_generates_package(self):
         with tempfile.TemporaryDirectory() as directory:

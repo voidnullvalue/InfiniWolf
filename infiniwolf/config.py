@@ -60,6 +60,9 @@ class LittleEntropyMachine:
     def guard_gallery(self) -> int:
         return self._digest(f"infiniwolf:guard-gallery:v1:{self.seed}")
 
+    def aardwolf(self, floor: int) -> int:
+        return self._digest(f"infiniwolf:aardwolf:v1:{self.seed}:{floor}")
+
 
 @dataclass(frozen=True, slots=True)
 class CampaignConfig:
@@ -77,6 +80,7 @@ class CampaignConfig:
     atmosphere: Intensity = Intensity.NORMAL
     secret_reward_quality: Intensity = Intensity.NORMAL
     theme_bias: ThemeBias = ThemeBias.MIXED
+    say_aardwolf: bool = False
 
     @classmethod
     def with_seed(cls, seed: str | int | None = None, **settings: object) -> "CampaignConfig":
@@ -115,6 +119,11 @@ class CampaignConfig:
     def guard_gallery_seed(self) -> int:
         """Campaign-wide stream for the rare inaccessible combat gallery."""
         return LittleEntropyMachine(self.seed).guard_gallery()
+
+    def aardwolf_seed(self, floor: int) -> int:
+        if not 1 <= floor <= 10:
+            raise ValueError("floor must be between 1 and 10")
+        return LittleEntropyMachine(self.seed).aardwolf(floor)
 
     def to_json(self) -> str:
         values = asdict(self)

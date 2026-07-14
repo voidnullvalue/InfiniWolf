@@ -758,6 +758,45 @@ class GeneratorTests(unittest.TestCase):
                     self.assertIn(f"floornumber = {number} ", mapinfo)
             self.assertEqual(validate_package(first)["seed"], config.seed)
 
+    def test_hidden_switch_is_isolated_deterministic_and_reproducible(self):
+        ordinary = _generate_with_retries(CampaignConfig(seed=404), 4)
+        explicit = _generate_with_retries(
+            CampaignConfig(seed=404, say_aardwolf=False), 4)
+        first = _generate_with_retries(
+            CampaignConfig(seed=404, say_aardwolf=True), 4)
+        second = _generate_with_retries(
+            CampaignConfig(seed=404, say_aardwolf=True), 4)
+        self.assertEqual((ordinary.tiles, ordinary.things,
+                          ordinary.layout_signature),
+                         (explicit.tiles, explicit.things,
+                          explicit.layout_signature))
+        self.assertEqual((first.tiles, first.things, first.layout_signature),
+                         (second.tiles, second.things,
+                          second.layout_signature))
+        self.assertNotEqual((ordinary.tiles, ordinary.things),
+                            (first.tiles, first.things))
+        variants = generator._variant_sequence(
+            CampaignConfig(seed=404, say_aardwolf=True))
+        skeletons = generator._circulation_sequence(
+            CampaignConfig(seed=404, say_aardwolf=True))
+        self.assertTrue(all(left.name != right.name
+                            for left, right in zip(variants, variants[1:])))
+        self.assertTrue(all(left != right
+                            for left, right in zip(skeletons, skeletons[1:])))
+        with tempfile.TemporaryDirectory() as directory:
+            package_path = generate_campaign(
+                CampaignConfig(seed=404, say_aardwolf=True),
+                Path(directory) / "campaign.pk3")
+            with zipfile.ZipFile(package_path) as package:
+                manifest = json.loads(package.read(
+                    "infiniwolf-manifest.json"))
+                settings = package.read(
+                    "infiniwolf-settings.txt").decode("utf-8")
+            self.assertIs(manifest["settings"]["say_aardwolf"], True)
+            self.assertIn("say_aardwolf = True", settings)
+            self.assertIn("--say-aardwolf", settings)
+            self.assertNotIn("--say-aardwolf True", settings)
+
     def test_cancellation_preserves_previous_output(self):
         config = CampaignConfig(seed=1001)
         with tempfile.TemporaryDirectory() as directory:
