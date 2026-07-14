@@ -38,6 +38,121 @@ def _generate_with_retries(config: CampaignConfig, floor: int, attempts: int = 5
 
 
 class GeneratorTests(unittest.TestCase):
+    def test_arrival_elevator_is_inert_rock_bounded_and_behind_player(self):
+        room = Room(20, 20, 8, 8)
+        tiles = [WALL] * (GRID * GRID)
+        for y in range(room.y, room.y + room.h):
+            for x in range(room.x, room.x + room.w):
+                tiles[y * GRID + x] = FLOOR
+        arrival = generator._place_arrival_elevator(tiles, room, (40, 24))
+        self.assertEqual(_at(tiles, *arrival.door), generator.DOOR_ELEVATOR)
+        self.assertTrue(_is_floor(_at(tiles, *arrival.cab)))
+        self.assertNotIn(ELEVATOR_TILE,
+                         [_at(tiles, *cell) for cell in arrival.footprint])
+        dx, dy = ((0, -1), (1, 0), (0, 1), (-1, 0))[arrival.facing]
+        self.assertEqual(arrival.door,
+                         (arrival.player[0] - 2 * dx,
+                          arrival.player[1] - 2 * dy))
+        for cell in arrival.footprint:
+            if cell not in (arrival.door, arrival.cab):
+                self.assertFalse(_is_floor(_at(tiles, *cell)))
+
+    def test_generated_floors_record_purposeful_encounters_and_real_patrols(self):
+        level = _generate_with_retries(CampaignConfig(seed=42), 4)
+        self.assertIsNotNone(level.arrival)
+        self.assertGreaterEqual(len({encounter.template
+                                     for encounter in level.encounters}), 3)
+        tracked = {(x, y): item for encounter in level.encounters
+                   for x, y, item in encounter.cells}
+        actual = {(index % GRID, index // GRID): item
+                  for index, item in enumerate(level.things)
+                  if item in generator.ENEMY_CODES and item not in BOSSES}
+        self.assertEqual(tracked, actual)
+        moving = sum(generator._patrol_actor_direction(item) is not None
+                     for item in actual.values())
+        self.assertGreaterEqual(moving / len(actual), 0.06)
+        self.assertTrue(all(encounter.patrol_path
+                            for encounter in level.encounters
+                            if encounter.patrol_kind))
+
+    def test_patrol_planner_uses_varied_engine_valid_route_families(self):
+        kinds = set()
+        for seed in range(6):
+            level = _generate_with_retries(CampaignConfig(seed=seed), 4,
+                                           attempts=10)
+            kinds.update(encounter.patrol_kind for encounter in level.encounters
+                         if encounter.patrol_kind)
+            generator.validate_patrols(level)
+        self.assertGreaterEqual(len(kinds), 3)
+        self.assertTrue(kinds <= {"room-loop", "compact-loop",
+                                  "hall-shuttle", "doorway-shuttle"})
+
+    def test_guard_recesses_are_rare_mirrored_and_own_their_ambusher(self):
+        corridor = Room(20, 20, 12, 4)
+        tiles = [WALL] * (GRID * GRID)
+        things = [0] * len(tiles)
+        for y in range(corridor.y, corridor.y + corridor.h):
+            for x in range(corridor.x, corridor.x + corridor.w):
+                tiles[y * GRID + x] = FLOOR
+        recesses = generator._carve_guard_recesses(
+            tiles, things, [Room(3, 3, 7, 7), corridor],
+            [RoomSpec("start", "standard", 0),
+             RoomSpec("circulation", "corridor", 0)],
+            ["start", "circulation"], set(), random.Random(2), (5, 5),
+            Room(45, 45, 7, 7), chance=1.0)
+        self.assertEqual(len(recesses), 1)
+        first, second = recesses[0].cells
+        self.assertEqual(first[0], second[0])
+        self.assertEqual({first[1], second[1]},
+                         {corridor.y - 1, corridor.y + corridor.h})
+
+        realized = None
+        for seed in range(12):
+            level = _generate_with_retries(CampaignConfig(seed=seed), 1,
+                                           attempts=10)
+            if level.guard_recesses:
+                realized = level
+                break
+        self.assertIsNotNone(realized)
+        recess = realized.guard_recesses[0]
+        self.assertIn(_at(realized.things, *recess.actor_cell),
+                      generator.ENEMY_CODES)
+        self.assertTrue(any(encounter.template == "blind-corner-ambush"
+                            and recess.actor_cell in {
+                                (x, y) for x, y, _ in encounter.cells}
+                            for encounter in realized.encounters))
+
+    def test_flags_are_always_purposefully_wall_backed(self):
+        room = Room(10, 10, 10, 8)
+        identity = generator.RoomIdentity("beat", "standard", "spine", 0,
+                                          "garrison", "checkpoint", "guardpost")
+        found = False
+        for seed in range(12):
+            tiles = [WALL] * (GRID * GRID)
+            for y in range(room.y, room.y + room.h):
+                for x in range(room.x, room.x + room.w):
+                    tiles[y * GRID + x] = FLOOR
+            things = [0] * len(tiles)
+            _place_decorations([room], tiles, things, set(), room.center,
+                               random.Random(seed), identities=[identity])
+            flags = [(index % GRID, index // GRID)
+                     for index, item in enumerate(things) if item == 62]
+            found |= bool(flags)
+            for x, y in flags:
+                outside = []
+                if x == room.x:
+                    outside.append((x - 1, y))
+                if x == room.x + room.w - 1:
+                    outside.append((x + 1, y))
+                if y == room.y:
+                    outside.append((x, y - 1))
+                if y == room.y + room.h - 1:
+                    outside.append((x, y + 1))
+                self.assertTrue(any(not _is_floor(_at(tiles, *cell))
+                                    and _at(tiles, *cell) not in generator.DOORS
+                                    for cell in outside))
+        self.assertTrue(found)
+
     def test_theme_bias_is_strong_but_preserves_campaign_contrast(self):
         mixed = sum(variant.name == "catacombs" for seed in range(64)
                     for variant in generator._variant_sequence(

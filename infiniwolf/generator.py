@@ -24,6 +24,7 @@ FLOOR = 108
 ZONE_MAX = 143
 DOOR_EW, DOOR_NS = 90, 91
 DOOR_ELEVATOR = 100  # unlocked elevator door on an east/west axis
+DOOR_ELEVATOR_NS = 101
 DOOR_GOLD_EW = 92
 DOOR_GOLD_NS = 93
 DOOR_SILVER_EW = 94
@@ -31,8 +32,9 @@ DOOR_SILVER_NS = 95
 GOLD_DOORS = frozenset({DOOR_GOLD_EW, DOOR_GOLD_NS})
 SILVER_DOORS = frozenset({DOOR_SILVER_EW, DOOR_SILVER_NS})
 LOCKED_DOORS = GOLD_DOORS | SILVER_DOORS
-DOORS = {DOOR_EW, DOOR_NS, *LOCKED_DOORS, DOOR_ELEVATOR, 101}
+DOORS = {DOOR_EW, DOOR_NS, *LOCKED_DOORS, DOOR_ELEVATOR, DOOR_ELEVATOR_NS}
 PLAYER_START = 19  # north-facing player start (things 19-22 are N/E/S/W)
+PLAYER_START_CODES = (19, 20, 21, 22)
 PUSHWALL = 98
 # Tile 21 is the real elevator: its north/south faces render as plain
 # elevator paneling and its east/west faces are the exit switch. ECWolf's
@@ -366,7 +368,10 @@ _VARIANT_TITLES = {
 
 DECORATION_MULTIPLIERS = (0.0, 0.70, 0.85, 1.00, 1.15, 1.30)
 SHAPE_MULTIPLIERS = (0.0, 0.65, 0.82, 1.00, 1.10, 1.20)
-PATROL_CHANCES = (0.0, 0.10, 0.22, 0.35, 0.45, 0.55)
+# Target share of ordinary actors that should visibly patrol. The old values
+# were per-room attempt chances and produced only ~3% moving actors at the
+# normal setting because most full-room loops failed geometry reservations.
+PATROL_TARGETS = (0.0, 0.04, 0.09, 0.16, 0.23, 0.30)
 
 # Floor-wide circulation and district-scale organization are separate choices.
 # Themes weight these vocabularies but never own one fixed topology, avoiding
@@ -582,6 +587,44 @@ class SecretDetail:
     return_floor: int = 0
 
 
+@dataclass(frozen=True, slots=True)
+class ArrivalDetail:
+    """The inert elevator bay establishing how the player entered a floor."""
+    door: tuple[int, int]
+    cab: tuple[int, int]
+    player: tuple[int, int]
+    facing: int
+    footprint: tuple[tuple[int, int], ...]
+
+
+@dataclass(frozen=True, slots=True)
+class GuardRecess:
+    """A rare mirrored hallway composition built for a corner sentry."""
+    room_index: int
+    cells: tuple[tuple[int, int], tuple[int, int]]
+    actor_cell: tuple[int, int]
+
+
+@dataclass(frozen=True, slots=True)
+class EncounterPlacement:
+    """Auditable room-owned actor composition and its reveal behavior."""
+    template: str
+    room_index: int
+    cells: tuple[tuple[int, int, int], ...]
+    hidden_cells: tuple[tuple[int, int], ...] = ()
+    patrol_kind: str = ""
+    patrol_path: tuple[tuple[int, int], ...] = ()
+    family: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class PatrolRoute:
+    """Engine-valid path plus fixed direction changes at marker cells."""
+    kind: str
+    cells: tuple[tuple[int, int], ...]
+    turns: tuple[tuple[tuple[int, int], int], ...]
+
+
 @dataclass(slots=True)
 class FloorPlan:
     specs: list[RoomSpec]
@@ -648,6 +691,10 @@ class GeneratedMap:
     premium_room: int = -1
     expedition_rooms: tuple[int, ...] = ()
     secret_source: int = 0
+    arrival: ArrivalDetail | None = None
+    guard_recesses: tuple[GuardRecess, ...] = ()
+    encounters: tuple[EncounterPlacement, ...] = ()
+    patrol_target: float = 0.0
 
 
 def _room_identities(rooms: list[Room], specs: list[RoomSpec], districts: list[int],
@@ -2313,6 +2360,20 @@ def _critique(level: GeneratedMap) -> tuple[str, ...]:
     if (len(level.secret_variants) >= 3
             and set(level.secret_variants) == {"square"}):
         flags.append("secret_monotony")
+    encounter_templates = [encounter.template for encounter in level.encounters
+                           if encounter.template not in
+                           ("novelty", "boss-support", "patrol")]
+    if (len(encounter_templates) >= 5
+            and max(Counter(encounter_templates).values())
+            / len(encounter_templates) > 0.55):
+        flags.append("encounter_repetition")
+    ordinary_actors = [thing for thing in level.things
+                       if thing in ENEMY_CODES and thing not in BOSSES]
+    moving = sum(_patrol_actor_direction(actor) is not None
+                 for actor in ordinary_actors)
+    if (level.patrol_target and len(ordinary_actors) >= 8
+            and moving / len(ordinary_actors) < level.patrol_target * 0.75):
+        flags.append("patrol_sparse")
     return tuple(flags)
 
 
@@ -2820,6 +2881,127 @@ def _place_elevator(tiles: list[int], room: Room, locked: bool = False) -> tuple
     raise ValueError("terminal room has no clear east/west wall for an elevator")
 
 
+def _place_arrival_elevator(tiles: list[int], room: Room,
+                            toward: tuple[int, int]) -> ArrivalDetail:
+    """Build a sealed, inert elevator behind a correctly faced player.
+
+    The ordinary exit shaft cannot be reused here because its tile-21 back
+    panel is a working level-exit switch. An arrival therefore uses the real
+    elevator door graphic in front of a one-cell rock-bounded cab with no
+    switch. The player stands two cells inside the room and faces toward the
+    floor, so the door is visibly and geometrically behind them.
+    """
+    facings = ((0, -1), (1, 0), (0, 1), (-1, 0))
+    tx, ty = toward[0] - room.center[0], toward[1] - room.center[1]
+    if abs(tx) >= abs(ty):
+        preferred = (-1, 0) if tx >= 0 else (1, 0)
+    else:
+        preferred = (0, -1) if ty >= 0 else (0, 1)
+    sides = [preferred, *[side for side in facings if side != preferred]]
+    cx, cy = room.center
+    for dx, dy in sides:
+        if dx:
+            wall = room.x + room.w if dx > 0 else room.x - 1
+            offsets = sorted(range(room.y + 1, room.y + room.h - 1),
+                             key=lambda value: abs(value - cy))
+            doors = [(wall, offset) for offset in offsets]
+        else:
+            wall = room.y + room.h if dy > 0 else room.y - 1
+            offsets = sorted(range(room.x + 1, room.x + room.w - 1),
+                             key=lambda value: abs(value - cx))
+            doors = [(offset, wall) for offset in offsets]
+        px, py = -dy, dx
+        for door in doors:
+            cab = door[0] + dx, door[1] + dy
+            player = door[0] - 2 * dx, door[1] - 2 * dy
+            forward = player[0] - dx, player[1] - dy
+            footprint = {
+                (door[0] + depth * dx + side * px,
+                 door[1] + depth * dy + side * py)
+                for depth in range(3) for side in (-1, 0, 1)}
+            if (not all(1 <= x < GRID - 1 and 1 <= y < GRID - 1
+                        for x, y in footprint)
+                    or any(_at(tiles, x, y) != WALL for x, y in footprint)
+                    or not _is_floor(_at(tiles, *player))
+                    or not _is_floor(_at(tiles, *forward))):
+                continue
+            _set(tiles, *cab, FLOOR)
+            _set(tiles, *door, DOOR_ELEVATOR if dx else DOOR_ELEVATOR_NS)
+            inward = (-dx, -dy)
+            facing = facings.index(inward)
+            return ArrivalDetail(door, cab, player, facing,
+                                 tuple(sorted(footprint)))
+    raise ValueError("start room has no rock-backed wall for an arrival elevator")
+
+
+def _carve_guard_recesses(tiles: list[int], things: list[int], rooms: list[Room],
+                          specs: list[RoomSpec], roles: list[str],
+                          reserved: set[tuple[int, int]], rng: random.Random,
+                          start: tuple[int, int], exit_room: Room,
+                          chance: float = 0.40) -> tuple[GuardRecess, ...]:
+    """Rarely carve one mirrored hallway pair owned by an ambush encounter.
+
+    This is deliberately not the removed generic alcove pass. Both recesses
+    are reflected across the hall's travel axis, only one hides a sentry, and
+    no geometry is committed unless its shoulders remain solid and it stays
+    clear of progression doors and the arrival/exit transitions.
+    """
+    if rng.random() >= chance:
+        return ()
+    doors = {(x, y) for y in range(GRID) for x in range(GRID)
+             if _at(tiles, x, y) in DOORS}
+    candidates = [index for index, (room, spec, role) in
+                  enumerate(zip(rooms, specs, roles))
+                  if index and room != exit_room
+                  and spec.tier in ("corridor", "hall")
+                  and role not in ("arrival", "victory", "recovery", "boss-arena")
+                  and max(room.w, room.h) >= 8]
+    rng.shuffle(candidates)
+    for room_index in candidates:
+        room = rooms[room_index]
+        positions = []
+        if room.w >= room.h:
+            for x in (room.x + room.w // 3, room.x + room.w // 2,
+                      room.x + (2 * room.w) // 3):
+                positions.append(((x, room.y - 1), (x, room.y + room.h),
+                                  ((0, 1), (0, -1))))
+        else:
+            for y in (room.y + room.h // 3, room.y + room.h // 2,
+                      room.y + (2 * room.h) // 3):
+                positions.append(((room.x - 1, y), (room.x + room.w, y),
+                                  ((1, 0), (-1, 0))))
+        rng.shuffle(positions)
+        for first, second, inwards in positions:
+            cells = (first, second)
+            if (any(_at(tiles, *cell) != WALL or _at(things, *cell)
+                    or cell in reserved or
+                    abs(cell[0] - start[0]) + abs(cell[1] - start[1]) < 8
+                    or any(abs(cell[0] - x) + abs(cell[1] - y) <= 3
+                           for x, y in doors) for cell in cells)):
+                continue
+            valid = True
+            for cell, inward in zip(cells, inwards):
+                if not _is_floor(_at(tiles, cell[0] + inward[0],
+                                     cell[1] + inward[1])):
+                    valid = False
+                    break
+                outward = (-inward[0], -inward[1])
+                shoulders = ((cell[0] + outward[0], cell[1] + outward[1]),
+                             (cell[0] + inward[1], cell[1] + inward[0]),
+                             (cell[0] - inward[1], cell[1] - inward[0]))
+                if any(_at(tiles, *neighbor) != WALL for neighbor in shoulders):
+                    valid = False
+                    break
+            if not valid:
+                continue
+            for cell in cells:
+                _set(tiles, *cell, FLOOR)
+            actor_cell = rng.choice(cells)
+            reserved.update(cells)
+            return (GuardRecess(room_index, cells, actor_cell),)
+    return ()
+
+
 def _pick_secret_variant(rng: random.Random, used: list[str]) -> str:
     variants = [("square", 0.25), ("vault", 0.25), ("reliquary", 0.20),
                 ("gallery", 0.18), ("nested", 0.12)]
@@ -3206,14 +3388,25 @@ def _break_long_sightlines(tiles: list[int], things: list[int], rooms: list[Room
 def _place_population(config: CampaignConfig, number: int, rooms: list[Room],
                       tiles: list[int], things: list[int], reserved: set[tuple[int, int]],
                       rng: random.Random, start: tuple[int, int],
-                      exit_room: Room, *, patrol_chance: float = 0.35,
+                      exit_room: Room, *, patrol_chance: float = 0.15,
                       placements: list[SpritePlacement] | None = None,
                       actor_clearance: set[tuple[int, int]] | None = None,
                       progression_number: int | None = None,
                       calm_rooms: frozenset[int] = frozenset(),
                       boss_room: Room | None = None,
-                      optional_rooms: frozenset[int] = frozenset()
+                      optional_rooms: frozenset[int] = frozenset(),
+                      identities: list[RoomIdentity] | None = None,
+                      critical_route: tuple[int, ...] = (),
+                      guard_recesses: tuple[GuardRecess, ...] = (),
+                      key_objectives: tuple[KeyObjective, ...] = (),
+                      encounter_out: list[EncounterPlacement] | None = None
                       ) -> tuple[int, int, int]:
+    """Plan coherent room encounters, then realize their actor slots.
+
+    ``patrol_chance`` is retained as an API name for compatibility, but now
+    means the desired moving-actor share rather than a per-room coin flip.
+    Every actor placed here belongs to one recorded room composition.
+    """
     progression = min(1.0, ((progression_number or number) - 1) / 8)
     per_room = max(1, round(config.guard_density * .7 + progression * 2))
     toughness = int(config.enemy_toughness)
@@ -3229,27 +3422,35 @@ def _place_population(config: CampaignConfig, number: int, rooms: list[Room],
     def near_door(x: int, y: int, radius: int = 3) -> bool:
         return any(abs(x - dx) + abs(y - dy) <= radius for dx, dy in doors)
 
-    def pick_family(depth: float) -> tuple[str, tuple[int, ...]]:
-        # Guards stay the common baseline; officers/SS grow more common as
-        # the campaign progresses, then concentrate where the floor peaks.
+    def pick_family(depth: float, concept: str, template: str
+                    ) -> tuple[str, tuple[int, ...]]:
+        """Choose one primary family for the whole room composition."""
         elite_scale = 0.45 if depth < 0.2 else (1.35 if 0.6 <= depth <= 0.85 else 1.0)
-        weights = [weight * (1 + progression) * elite_scale
-                   if name in ("officer", "ss") else weight
-                   for name, weight in zip(names, base_weights)]
+        weights = []
+        for name, weight in zip(names, base_weights):
+            if name in ("officer", "ss"):
+                weight *= (1 + progression) * elite_scale
+            if template in ("objective-guard", "strongpoint"):
+                weight *= 1.5 if name in ("guard", "officer", "ss") else 0.25
+            if concept in ("barracks", "ready-room", "guardpost") and name == "dog":
+                weight *= 1.35
+            if concept in ("gallery", "lounge", "dining-hall") and name == "dog":
+                weight *= 0.35
+            weights.append(weight)
         index = rng.choices(range(len(families)), weights=weights, k=1)[0]
         return names[index], families[index]
 
     facings = ((0, -1), (1, 0), (0, 1), (-1, 0))
     dog_cells: dict[Room, list[tuple[int, int]]] = {}
 
-    def place_enemy(x: int, y: int, depth: float, tier: int,
-                    room: Room | None = None, patrol_facing: int | None = None) -> None:
-        name, family = pick_family(depth)
+    def place_enemy(x: int, y: int, tier: int, name: str,
+                    family: tuple[int, ...], room: Room | None = None,
+                    forced_facing: int | None = None, patrol: bool = False
+                    ) -> tuple[int, int, int]:
         if name in ("officer", "ss") and near_door(x, y):
             name, family = "guard", GUARDS
-        if patrol_facing is not None:
-            facing = patrol_facing
-            family = PATROLS_BY_FAMILY[family]
+        if forced_facing is not None:
+            facing = forced_facing
         elif room is not None:
             facing = _pick_stationary_facing(x, y, room)
         elif open_facings := [i for i in range(4)
@@ -3258,7 +3459,10 @@ def _place_population(config: CampaignConfig, number: int, rooms: list[Room],
             facing = rng.choice(open_facings)
         else:
             facing = rng.randrange(4)
-        _set(things, x, y, family[facing] + 36 * tier)
+        if patrol:
+            family = PATROLS_BY_FAMILY[family]
+        code = family[facing] + 36 * tier
+        _set(things, x, y, code)
         if name == "dog" and room is not None:
             dog_cells.setdefault(room, []).append((x, y))
         # Decoration placement runs after population and only checks that a
@@ -3270,6 +3474,7 @@ def _place_population(config: CampaignConfig, number: int, rooms: list[Room],
         reserved.add(facing_cell)
         if actor_clearance is not None:
             actor_clearance.add(facing_cell)
+        return x, y, code
 
     distances = _floor_distances(tiles, start)
     room_distances = {room: distances.get(room.center, 0) for room in rooms}
@@ -3331,6 +3536,36 @@ def _place_population(config: CampaignConfig, number: int, rooms: list[Room],
         pool = open_idxs or list(range(4))
         return max(pool, key=lambda i: (pulls[i], clears[i]))
 
+    def _inside_entries(room: Room) -> list[tuple[int, int]]:
+        inside = []
+        for ex, ey in room_entries.get(room, (room.center,)):
+            candidates = [(ex + dx, ey + dy) for dx, dy in facings
+                          if room.x <= ex + dx < room.x + room.w
+                          and room.y <= ey + dy < room.y + room.h
+                          and _is_floor(_at(tiles, ex + dx, ey + dy))]
+            inside.extend(candidates)
+        return list(dict.fromkeys(inside)) or [room.center]
+
+    def _line_visible(origin: tuple[int, int], target: tuple[int, int]) -> bool:
+        """Grid ray used only to classify deliberate doorway reveals."""
+        x0, y0 = origin
+        x1, y1 = target
+        dx, dy = abs(x1 - x0), abs(y1 - y0)
+        sx, sy = (1 if x0 < x1 else -1), (1 if y0 < y1 else -1)
+        error = dx - dy
+        x, y = x0, y0
+        while (x, y) != (x1, y1):
+            twice = 2 * error
+            if twice > -dy:
+                error -= dy; x += sx
+            if twice < dx:
+                error += dx; y += sy
+            if (x, y) != (x1, y1):
+                tile = _at(tiles, x, y)
+                if not _is_floor(tile) and tile not in DOORS:
+                    return False
+        return True
+
     def depth_of(room: Room) -> float:
         return room_distances[room] / max_distance
 
@@ -3345,77 +3580,283 @@ def _place_population(config: CampaignConfig, number: int, rooms: list[Room],
             return 1.5 - (depth - 0.85) * 14
         return 0.8
 
-    def patrol_loop(room: Room) -> tuple[list[tuple[int, int]], dict[tuple[int, int], int]] | None:
-        """Return a clockwise, two-tile-inset loop and its outgoing turn directions.
-
-        PatrolPoint changes an actor's direction only when it reaches the
-        marker tile, so the four corners carry the direction of their
-        outgoing leg.  Reserving the full loop below also keeps other actors
-        and later decoration from turning a valid route into a blockage.
-        """
-        if room.w < 7 or room.h < 7:
+    def _loop_route(left: int, right: int, top: int, bottom: int,
+                    kind: str) -> PatrolRoute | None:
+        if right - left < 2 or bottom - top < 2:
             return None
-        left, right = room.x + 2, room.x + room.w - 3
-        top, bottom = room.y + 2, room.y + room.h - 3
         path = ([(x, top) for x in range(left, right + 1)]
                 + [(right, y) for y in range(top + 1, bottom + 1)]
                 + [(x, bottom) for x in range(right - 1, left - 1, -1)]
                 + [(left, y) for y in range(bottom - 1, top, -1)])
         corners = {(left, top), (right, top), (right, bottom), (left, bottom)}
-        directions = {cell: next(i for i, delta in enumerate(facings)
-                                 if (cell[0] + delta[0], cell[1] + delta[1])
-                                 == path[(index + 1) % len(path)])
-                      for index, cell in enumerate(path) if cell in corners}
-        return path, directions
+        turns = tuple((cell, next(i for i, delta in enumerate(facings)
+                                  if (cell[0] + delta[0], cell[1] + delta[1])
+                                  == path[(index + 1) % len(path)]))
+                      for index, cell in enumerate(path) if cell in corners)
+        return PatrolRoute(kind, tuple(path), turns)
 
-    tier_counts = [0, 0, 0]
+    def _straight_run(cell: tuple[int, int], horizontal: bool) -> list[tuple[int, int]]:
+        axis = (1, 0) if horizontal else (0, 1)
+        allowed_doors = {DOOR_EW if horizontal else DOOR_NS}
+        before = []
+        cursor = cell
+        while True:
+            cursor = cursor[0] - axis[0], cursor[1] - axis[1]
+            tile = _at(tiles, *cursor)
+            if not (_is_floor(tile) or tile in allowed_doors):
+                break
+            before.append(cursor)
+        after = []
+        cursor = cell
+        while True:
+            cursor = cursor[0] + axis[0], cursor[1] + axis[1]
+            tile = _at(tiles, *cursor)
+            if not (_is_floor(tile) or tile in allowed_doors):
+                break
+            after.append(cursor)
+        return list(reversed(before)) + [cell] + after
+
+    def _patrol_routes(room: Room) -> list[PatrolRoute]:
+        routes: list[PatrolRoute] = []
+        if room.w >= 7 and room.h >= 7:
+            for inset, kind in ((2, "room-loop"), (1, "compact-loop")):
+                route = _loop_route(room.x + inset, room.x + room.w - 1 - inset,
+                                    room.y + inset, room.y + room.h - 1 - inset,
+                                    kind)
+                if route is not None:
+                    routes.append(route)
+        horizontal = room.w >= room.h
+        cross_offsets = (0, -1, 1, -2, 2)
+        seen_runs: set[tuple[tuple[int, int], ...]] = set()
+        for offset in cross_offsets:
+            seed = ((room.center[0], room.center[1] + offset) if horizontal else
+                    (room.center[0] + offset, room.center[1]))
+            if not _is_floor(_at(tiles, *seed)):
+                continue
+            run = _straight_run(seed, horizontal)
+            run_key = tuple(run)
+            if len(run) < 6 or run_key in seen_runs:
+                continue
+            seen_runs.add(run_key)
+            axis_facing = 1 if horizontal else 2
+            reverse_facing = 3 if horizontal else 0
+            kind = ("doorway-shuttle" if any(_at(tiles, *cell) in DOORS for cell in run)
+                    else "hall-shuttle")
+            routes.append(PatrolRoute(
+                kind, run_key,
+                ((run[0], axis_facing), (run[-1], reverse_facing))))
+        rng.shuffle(routes)
+        return routes
+
+    def _route_available(route: PatrolRoute) -> bool:
+        turn_cells = {cell for cell, _ in route.turns}
+        return (len(set(route.cells)) > len(turn_cells)
+                and all((_is_floor(_at(tiles, *cell)) or _at(tiles, *cell) in
+                         (DOOR_EW, DOOR_NS))
+                        and _at(things, *cell) == 0 and cell not in reserved
+                        and abs(cell[0] - start[0]) + abs(cell[1] - start[1]) >= 6
+                        for cell in route.cells)
+                and all(_is_floor(_at(tiles, *cell)) for cell in turn_cells))
+
+    identities = identities or [RoomIdentity("beat", "standard", "spine", 0,
+                                              "", "guardpost", "barracks")
+                                  for _ in rooms]
+    critical_positions = {room_index: position
+                          for position, room_index in enumerate(critical_route)}
+    key_hosts = {objective.host_room for objective in key_objectives
+                 if objective.treatment != "boss-drop"}
+    recess_by_room = {recess.room_index: recess for recess in guard_recesses}
+
+    budgets: dict[int, int] = {}
     for ridx, room in enumerate(rooms[1:], 1):
         depth = depth_of(room)
         budget = max(0, round(per_room * (0.4 if room == exit_room else pacing(depth))))
         if ridx in calm_rooms:
             budget = 0
         elif room == boss_room:
-            # Arena support is a deliberate seeded choice: many fights are
-            # pure duels; the remainder receive at most two ordinary guards.
             budget = 0 if rng.random() < 0.55 else min(2, budget)
-        patrol = patrol_loop(room)
-        patrol_count = 0
-        if (budget and patrol is not None and rng.random() < patrol_chance):
-            path, turns = patrol
-            path_cells = set(path)
-            if (all(_is_floor(_at(tiles, x, y)) and _at(things, x, y) == 0
-                    and (x, y) not in reserved for x, y in path)
-                    and len(path_cells) > len(turns)):
-                for cell, direction in turns.items():
-                    _set(things, *cell, PATROL_POINT_CODES[direction])
-                reserved.update(path_cells)
-                spawn = rng.choice([cell for cell in path if cell not in turns])
-                spawn_index = path.index(spawn)
-                successor = path[(spawn_index + 1) % len(path)]
-                facing = next(i for i, delta in enumerate(facings)
-                              if (spawn[0] + delta[0], spawn[1] + delta[1]) == successor)
-                place_enemy(*spawn, depth, 0, room, patrol_facing=facing)
-                tier_counts[0] += 1
-                patrol_count = 1
-        candidates = [(x, y) for y in range(room.y + 2, room.y + room.h - 1)
-                      for x in range(room.x + 2, room.x + room.w - 1)
+        budgets[ridx] = budget
+
+    # Plan routes globally until the requested moving share is met. A route
+    # owns its cells before any stationary actor or later decoration exists.
+    estimated_actors = sum(
+        budget + 2 * max(0, round(budget * (0.20 + progression * 0.12)))
+        for budget in budgets.values())
+    max_routes_per_room = 2 if patrol_chance >= 0.23 else 1
+    patrol_capacity = sum(min(budget, max_routes_per_room)
+                          for budget in budgets.values())
+    patrol_target = min(patrol_capacity, round(estimated_actors * patrol_chance))
+    patrol_rooms = [index for index, budget in budgets.items()
+                    if budget and index not in calm_rooms and rooms[index] != boss_room
+                    and index not in recess_by_room and index not in key_hosts]
+    rng.shuffle(patrol_rooms)
+    patrol_rooms.sort(key=lambda index: (
+        identities[index].tier not in ("corridor", "hall"),
+        -depth_of(rooms[index])))
+    planned_patrols: dict[int, list[PatrolRoute]] = {}
+    for ridx in patrol_rooms:
+        if sum(len(routes) for routes in planned_patrols.values()) >= patrol_target:
+            break
+        routes = _patrol_routes(rooms[ridx])
+        if max_routes_per_room > 1:
+            routes.sort(key=lambda route: route.kind not in
+                        ("hall-shuttle", "doorway-shuttle"))
+        for route in routes:
+            routes_here = len(planned_patrols.get(ridx, ()))
+            if (routes_here >= max_routes_per_room
+                    or routes_here >= budgets[ridx]):
+                break
+            if not _route_available(route):
+                continue
+            planned_patrols.setdefault(ridx, []).append(route)
+            for cell, direction in route.turns:
+                _set(things, *cell, PATROL_POINT_CODES[direction])
+            reserved.update(route.cells)
+            if sum(len(routes) for routes in planned_patrols.values()) >= patrol_target:
+                break
+
+    tier_counts = [0, 0, 0]
+    encounter_counts: Counter[str] = Counter()
+    previous_template = ""
+    ambush_positions: set[int] = set()
+    ambush_budget = max(1, round(sum(bool(value) for value in budgets.values()) * 0.18))
+    for ridx, room in enumerate(rooms[1:], 1):
+        depth = depth_of(room)
+        base_budget = budgets[ridx]
+        budget = base_budget
+        identity = identities[ridx]
+        entries = _inside_entries(room)
+        primary_entry = min(entries, key=lambda cell: distances.get(cell, 10 ** 9))
+        candidates = [(x, y) for y in range(room.y + 1, room.y + room.h - 1)
+                      for x in range(room.x + 1, room.x + room.w - 1)
                       if (x, y) not in reserved and _at(things, x, y) == 0
-                      and _is_floor(_at(tiles, x, y))]
-        rng.shuffle(candidates)
-        cursor = 0
-        for x, y in candidates[cursor:cursor + budget - patrol_count]:
-            place_enemy(x, y, depth, 0, room)
+                      and _is_floor(_at(tiles, x, y))
+                      and abs(x - start[0]) + abs(y - start[1]) >= 6]
+        hidden_candidates = [cell for cell in candidates
+                             if not any(_line_visible(entry, cell) for entry in entries)]
+        critical_position = critical_positions.get(ridx)
+        can_ambush = (hidden_candidates and len(ambush_positions) < ambush_budget
+                      and depth >= 0.25 and room != exit_room and ridx not in calm_rooms
+                      and (critical_position is None
+                           or all(abs(critical_position - other) > 1
+                                  for other in ambush_positions)))
+        if ridx in recess_by_room:
+            template = "blind-corner-ambush"
+        elif ridx in planned_patrols:
+            template = "patrol"
+        elif ridx in key_hosts:
+            template = "objective-guard"
+        elif room == boss_room:
+            template = "boss-support"
+        elif can_ambush and rng.random() < 0.55:
+            template = "blind-corner-ambush"
+        elif identity.concept in ("checkpoint", "guardpost"):
+            template = "visible-sentry"
+        elif identity.concept in ("armory", "war-room", "training-room",
+                                  "interrogation-room"):
+            template = "strongpoint"
+        else:
+            choices = ["visible-sentry", "staggered-flank", "strongpoint"]
+            choices.sort(key=lambda name: (encounter_counts[name], name == previous_template))
+            template = choices[0]
+        if template == "blind-corner-ambush" and critical_position is not None:
+            ambush_positions.add(critical_position)
+
+        name, family = pick_family(depth, identity.concept, template)
+        if ridx in recess_by_room:
+            name, family = "guard", GUARDS
+        placed_cells: list[tuple[int, int, int]] = []
+        hidden_cells: list[tuple[int, int]] = []
+
+        # A mirrored guard recess owns one deliberately hidden guard; the
+        # matching recess stays clear to preserve the architectural pair.
+        if budget and ridx in recess_by_room:
+            recess = recess_by_room[ridx]
+            actor = recess.actor_cell
+            facing = (2 if actor[1] < room.y else 0
+                      if actor[1] >= room.y + room.h else 1
+                      if actor[0] < room.x else 3)
+            record = place_enemy(*actor, 0, "guard", GUARDS, room,
+                                 forced_facing=facing)
+            placed_cells.append(record); hidden_cells.append(actor)
             tier_counts[0] += 1
-        cursor += budget - patrol_count
+            budget -= 1
+
+        for route in planned_patrols.get(ridx, ()):
+            if not budget:
+                break
+            turn_cells = {cell for cell, _ in route.turns}
+            spawn_options = [cell for cell in route.cells
+                             if cell not in turn_cells and _is_floor(_at(tiles, *cell))]
+            spawn = rng.choice(spawn_options)
+            index = route.cells.index(spawn)
+            successor = route.cells[(index + 1) % len(route.cells)]
+            if abs(successor[0] - spawn[0]) + abs(successor[1] - spawn[1]) != 1:
+                successor = route.cells[index - 1]
+            facing = next(i for i, delta in enumerate(facings)
+                          if (spawn[0] + delta[0], spawn[1] + delta[1]) == successor)
+            record = place_enemy(*spawn, 0, name, family, room,
+                                 forced_facing=facing, patrol=True)
+            tier_counts[0] += 1
+            budget -= 1
+            if encounter_out is not None:
+                encounter_out.append(EncounterPlacement(
+                    "patrol", ridx, (record,), (), route.kind, route.cells, name))
+            encounter_counts["patrol"] += 1
+
+        def rank(cell: tuple[int, int]) -> tuple[float, ...]:
+            x, y = cell
+            distance = abs(x - primary_entry[0]) + abs(y - primary_entry[1])
+            route_dx, route_dy = room.center[0] - primary_entry[0], room.center[1] - primary_entry[1]
+            side = abs(route_dy * (x - primary_entry[0])
+                       - route_dx * (y - primary_entry[1]))
+            visible = any(_line_visible(entry, cell) for entry in entries)
+            if template == "blind-corner-ambush":
+                return (visible, -distance, -side, y, x)
+            if template == "visible-sentry":
+                return (not visible, abs(distance - 5), side, y, x)
+            if template == "staggered-flank":
+                return (-side, abs(distance - 5), not visible, y, x)
+            if template == "objective-guard":
+                objectives = [objective.cell for objective in key_objectives
+                              if objective.host_room == ridx]
+                objective_distance = min((abs(x - ox) + abs(y - oy)
+                                          for ox, oy in objectives), default=distance)
+                return (abs(objective_distance - 3), not visible, -distance, y, x)
+            return (-distance, not visible, -side, y, x)
+
+        candidates.sort(key=rank)
+        cursor = 0
+        for x, y in candidates[cursor:cursor + budget]:
+            record = place_enemy(x, y, 0, name, family, room)
+            placed_cells.append(record)
+            if not any(_line_visible(entry, (x, y)) for entry in entries):
+                hidden_cells.append((x, y))
+            tier_counts[0] += 1
+        cursor += budget
         # ECWolf's base translator treats +36 as the next cumulative skill
         # tier: skill 2 actors join the easy population on medium, and skill 3
         # actors join both on hard. They require their own cells in plane 2.
-        extra = max(0, round(budget * (0.20 + progression * 0.12)))
+        extra = max(0, round(base_budget * (0.20 + progression * 0.12)))
         for tier in (1, 2):
             for x, y in candidates[cursor:cursor + extra]:
-                place_enemy(x, y, depth, tier, room)
+                record = place_enemy(x, y, tier, name, family, room)
+                placed_cells.append(record)
+                if not any(_line_visible(entry, (x, y)) for entry in entries):
+                    hidden_cells.append((x, y))
                 tier_counts[tier] += 1
             cursor += extra
+        if placed_cells:
+            if template == "patrol":
+                template = ("strongpoint" if identity.concept in
+                            ("armory", "war-room", "checkpoint") else
+                            "staggered-flank")
+            if encounter_out is not None:
+                encounter_out.append(EncounterPlacement(
+                    template, ridx, tuple(placed_cells), tuple(hidden_cells),
+                    family=name))
+            encounter_counts[template] += 1
+            previous_template = template
     novelty = FAKE_HITLER if number == 9 else rng.choice(GHOSTS) if number == 10 else None
     if novelty is not None and rng.random() < 0.1:
         novelty_rooms = ([rooms[index] for index in sorted(optional_rooms)]
@@ -3430,6 +3871,13 @@ def _place_population(config: CampaignConfig, number: int, rooms: list[Room],
             cell = rng.choice(candidates)
             _set(things, *cell, novelty)
             reserved.add(cell)
+            if encounter_out is not None:
+                owner = next((index for index, room in enumerate(rooms)
+                              if room.x <= cell[0] < room.x + room.w
+                              and room.y <= cell[1] < room.y + room.h), -1)
+                encounter_out.append(EncounterPlacement(
+                    "novelty", owner, ((cell[0], cell[1], novelty),),
+                    family="novelty"))
     # A human kennel has food near its dogs, not randomly elsewhere. Rank
     # dog rooms by pack size and depth and furnish at most three of them.
     ranked_dog_rooms = sorted(dog_cells, key=lambda room: (
@@ -4248,9 +4696,9 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
             if any(item in LIGHTING_ITEMS and item not in allowed_lights
                    for _, item in pieces):
                 return False
-            # Suits of armor and spear racks are wall displays, never
-            # freestanding furniture.
-            if any(item in (39, 69) and not _wall_backed(cell)
+            # Suits of armor, flags, and spear racks are wall displays,
+            # never freestanding furniture.
+            if any(item in (39, 62, 69) and not _wall_backed(cell)
                    for cell, item in pieces):
                 return False
             candidate = blocked_cells | set(cells)
@@ -4381,7 +4829,8 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
             placed_travel_pair = False
             for pair in travel_pairs:
                 for item in pair_items:
-                    if item == 39 and not all(_wall_backed(cell) for cell in pair):
+                    if item in (39, 62, 69) and not all(
+                            _wall_backed(cell) for cell in pair):
                         continue
                     if _try_place(list(pair), item):
                         pairs_placed += 1
@@ -4447,11 +4896,11 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
                             ((room.x + room.w - 1, cy), 69)],
                 "guardpost": [((room.x + 1, room.y + 1), 26),
                                ((room.x + room.w - 2, room.y + 1), 26)],
-                "checkpoint": [((room.x + 1, room.y + 1), 62)],
+                "checkpoint": [((room.x, cy), 62)],
                 "war-room": [((room.x, room.y + 1), 39),
                               ((room.x + room.w - 1, room.y + 1), 39)],
                 "trophy-hall": [((room.x, cy), 39),
-                                ((room.x + room.w - 2, room.y + 1), 62)],
+                                ((room.x + room.w - 1, cy), 62)],
                 "courtyard": [((cx, cy), 59)],
                 "storage": [((room.x + 1, room.y + 1), 58),
                              ((room.x + 2, room.y + 1), 58)],
@@ -4960,8 +5409,11 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
     paths = [_carve_connection(tiles, rooms[a], rooms[b], rng, complexity, door_zones)
              for a, b in edges]
     _widen_corridors(tiles, rooms, paths, rng, widen_chance=floor_variant.widen_chance)
-    start = rooms[0].center
-    _set(things, *start, PLAYER_START)
+    first_neighbor = next((second if first == 0 else first
+                           for first, second in edges if 0 in (first, second)), 1)
+    arrival = _place_arrival_elevator(tiles, rooms[0], rooms[first_neighbor].center)
+    start = arrival.player
+    _set(things, *start, PLAYER_START_CODES[arrival.facing])
     is_boss = number == 9
     exit_room = None
     exit_stand = None
@@ -5014,12 +5466,18 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
         roles[planned_exit_index] = "relief"
         roles[exit_index] = "exit"
     notch_cells = {cell for cells in notch_anchors.values() for cell in cells}
-    reserved = {start, exit_stand, *notch_cells}
+    arrival_delta = ((0, -1), (1, 0), (0, 1), (-1, 0))[arrival.facing]
+    arrival_threshold = (start[0] - arrival_delta[0],
+                         start[1] - arrival_delta[1])
+    arrival_landing = (start[0] + arrival_delta[0],
+                       start[1] + arrival_delta[1])
+    reserved = {start, arrival.cab, arrival_threshold, arrival_landing,
+                exit_stand, *notch_cells}
     rewards: list[tuple[int, int]] = []
     secret_variants: list[str] = []
     secret_details: list[SecretDetail] = []
     shortcut_pushwalls: list[tuple[int, int]] = []
-    secret_protected: set[tuple[int, int]] = set()
+    secret_protected: set[tuple[int, int]] = set(arrival.footprint)
     floor_distances = _floor_distances(tiles, start)
     room_distances = {room: floor_distances.get(room.center, 0) for room in rooms}
     max_room_distance = max(room_distances.values(), default=1) or 1
@@ -5215,6 +5673,8 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
     _limit_theme_merge_size(tiles, rooms, rng, reserved)
     if sum(tile in DOORS for tile in tiles) > 56:
         raise ValueError("door budget exceeded")
+    guard_recesses = _carve_guard_recesses(
+        tiles, things, rooms, specs, roles, reserved, rng, start, exit_room)
     boss_room = None
     preboss_index = None
     pickup_placements: list[SpritePlacement] = []
@@ -5239,19 +5699,9 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
                          0, "boss-drop"),)
         locks += 1
         key_order = key_order + ("gold",)
-    actor_clearance: set[tuple[int, int]] = set()
-    calm_rooms = frozenset(index for index, role in enumerate(roles)
-                           if role in ("arrival", "victory"))
-    optional_rooms = frozenset(index for index in range(len(rooms))
-                               if index not in critical_route
-                               and rooms[index] != exit_room)
-    enemy_tiers = _place_population(
-        config, number, rooms, tiles, things, reserved, rng, start, exit_room,
-        patrol_chance=PATROL_CHANCES[int(config.patrol_activity)],
-        placements=pickup_placements, actor_clearance=actor_clearance,
-        progression_number=(secret_source if number == 10 and secret_source else number),
-        calm_rooms=calm_rooms, boss_room=boss_room,
-        optional_rooms=optional_rooms)
+    # Resolve architecture and room identity before population. Encounters
+    # consume the same role/theme/concept decision as decoration rather than
+    # independently guessing what kind of room they occupy.
     _assign_sound_zones(tiles)
     component_of, group_theme = _assign_area_themes(tiles, rooms, districts, rng, number,
                                                     theme_pool=floor_variant.theme_pool)
@@ -5268,6 +5718,22 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
     identities = _room_identities(rooms, specs, districts, edges, floor_variant, jail_rooms,
                                   component_of, group_theme, exit_room, boss_room,
                                   plan.special_family, key_objectives)
+    actor_clearance: set[tuple[int, int]] = set()
+    calm_rooms = frozenset(index for index, role in enumerate(roles)
+                           if role in ("arrival", "victory"))
+    optional_rooms = frozenset(index for index in range(len(rooms))
+                               if index not in critical_route
+                               and rooms[index] != exit_room)
+    encounters: list[EncounterPlacement] = []
+    enemy_tiers = _place_population(
+        config, number, rooms, tiles, things, reserved, rng, start, exit_room,
+        patrol_chance=PATROL_TARGETS[int(config.patrol_activity)],
+        placements=pickup_placements, actor_clearance=actor_clearance,
+        progression_number=(secret_source if number == 10 and secret_source else number),
+        calm_rooms=calm_rooms, boss_room=boss_room,
+        optional_rooms=optional_rooms, identities=identities,
+        critical_route=tuple(critical_route), guard_recesses=guard_recesses,
+        key_objectives=key_objectives, encounter_out=encounters)
     premium_index = (next((index for index, role in enumerate(roles)
                            if role == "premium-vault"), None)
                      if number == 10 else None)
@@ -5303,6 +5769,8 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
         f"corridors-{sum(spec.tier == 'corridor' for spec in specs)}",
         f"mediated-{round(mediated_ratio, 1):.1f}",
         f"shapes-{','.join(sorted(Counter(realized_shapes).elements()))}",
+        f"recesses-{len(guard_recesses)}",
+        f"patrols-{sum(bool(encounter.patrol_kind) for encounter in encounters)}",
     )
     result = GeneratedMap(number=number, tiles=tiles, things=things, start=start,
                           exit_stand=exit_stand, secret_rewards=rewards, seed=seed,
@@ -5334,7 +5802,10 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
                           preboss_room=preboss_index if preboss_index is not None else -1,
                           premium_room=premium_index if premium_index is not None else -1,
                           expedition_rooms=tuple(dict.fromkeys(expedition_rooms)),
-                          secret_source=secret_source or 0)
+                          secret_source=secret_source or 0,
+                          arrival=arrival, guard_recesses=guard_recesses,
+                          encounters=tuple(encounters),
+                          patrol_target=PATROL_TARGETS[int(config.patrol_activity)])
     validate_map(result)
     result.critique = _critique(result)
     return result
@@ -5345,6 +5816,101 @@ def validate_map(level: GeneratedMap) -> None:
         raise ValueError("invalid plane dimensions")
     if 63 in level.things:
         raise ValueError("Call Apogee decoration is forbidden")
+    if level.arrival is None:
+        raise ValueError("floor has no arrival elevator")
+    arrival = level.arrival
+    facings = ((0, -1), (1, 0), (0, 1), (-1, 0))
+    inward = facings[arrival.facing]
+    if (arrival.player != level.start
+            or arrival.door != (level.start[0] - 2 * inward[0],
+                                level.start[1] - 2 * inward[1])
+            or arrival.cab != (arrival.door[0] - inward[0],
+                               arrival.door[1] - inward[1])
+            or _at(level.things, *level.start) != PLAYER_START_CODES[arrival.facing]
+            or sum(thing in PLAYER_START_CODES for thing in level.things) != 1):
+        raise ValueError("player does not face away from the arrival elevator")
+    expected_door = DOOR_ELEVATOR if inward[0] else DOOR_ELEVATOR_NS
+    threshold = (level.start[0] - inward[0], level.start[1] - inward[1])
+    landing = (level.start[0] + inward[0], level.start[1] + inward[1])
+    if (_at(level.tiles, *arrival.door) != expected_door
+            or not _is_floor(_at(level.tiles, *arrival.cab))
+            or _at(level.tiles, *arrival.cab) == SECRET_EXIT_ZONE
+            or _at(level.things, *arrival.cab) != 0
+            or not all(_is_floor(_at(level.tiles, *cell))
+                       and _at(level.things, *cell) == 0
+                       for cell in (threshold, landing))
+            or any(_at(level.tiles, *cell) == ELEVATOR_TILE
+                   for cell in arrival.footprint)):
+        raise ValueError("arrival elevator is not an inert sealed cab")
+    for cell in arrival.footprint:
+        if cell in (arrival.door, arrival.cab):
+            continue
+        if _is_floor(_at(level.tiles, *cell)) or _at(level.tiles, *cell) in DOORS:
+            raise ValueError("arrival elevator is not rock bounded")
+
+    if len(level.guard_recesses) > 1:
+        raise ValueError("guard recesses dominate the floor")
+    for recess in level.guard_recesses:
+        if (not 0 <= recess.room_index < len(level.rooms)
+                or level.room_tiers[recess.room_index] not in ("corridor", "hall")
+                or recess.actor_cell not in recess.cells
+                or any(not _is_floor(_at(level.tiles, *cell)) for cell in recess.cells)
+                or _at(level.things, *recess.actor_cell) not in ENEMY_CODES):
+            raise ValueError("guard recess lacks its owned hallway ambush")
+        room = level.rooms[recess.room_index]
+        first, second = recess.cells
+        mirrored = ((first[0] == second[0]
+                     and {first[1], second[1]} == {room.y - 1, room.y + room.h})
+                    or (first[1] == second[1]
+                        and {first[0], second[0]} == {room.x - 1,
+                                                      room.x + room.w}))
+        if not mirrored:
+            raise ValueError("hallway guard recesses are not mirrored")
+        if any(sum(_is_floor(_at(level.tiles, cell[0] + dx, cell[1] + dy))
+                   or _at(level.tiles, cell[0] + dx, cell[1] + dy) in DOORS
+                   for dx, dy in facings) != 1 for cell in recess.cells):
+            raise ValueError("guard recess is not a blind one-cell pocket")
+
+    allowed_encounters = {"visible-sentry", "blind-corner-ambush",
+                          "staggered-flank", "strongpoint", "objective-guard",
+                          "patrol", "boss-support", "novelty"}
+    tracked_actors: dict[tuple[int, int], int] = {}
+    for encounter in level.encounters:
+        if (encounter.template not in allowed_encounters or not encounter.cells
+                or encounter.family not in ("guard", "dog", "officer", "ss", "novelty")
+                or not -1 <= encounter.room_index < len(level.rooms)):
+            raise ValueError("actor has invalid encounter provenance")
+        for x, y, actor in encounter.cells:
+            if (actor not in ENEMY_CODES or _at(level.things, x, y) != actor
+                    or (x, y) in tracked_actors):
+                raise ValueError("encounter provenance disagrees with the things plane")
+            tracked_actors[(x, y)] = actor
+        if not set(encounter.hidden_cells) <= {
+                (x, y) for x, y, _ in encounter.cells}:
+            raise ValueError("encounter records a hidden actor it does not own")
+        if bool(encounter.patrol_kind) != bool(encounter.patrol_path):
+            raise ValueError("patrol encounter metadata is incomplete")
+    expected_actors = {(index % GRID, index // GRID): thing
+                       for index, thing in enumerate(level.things)
+                       if thing in ENEMY_CODES and thing not in BOSSES}
+    if tracked_actors != expected_actors:
+        raise ValueError("floor contains an actor outside an encounter composition")
+    critical_ambushes = sorted(
+        level.critical_route.index(encounter.room_index)
+        for encounter in level.encounters
+        if encounter.template == "blind-corner-ambush"
+        and encounter.room_index in level.critical_route)
+    if any(second - first <= 1 for first, second in zip(
+            critical_ambushes, critical_ambushes[1:])):
+        raise ValueError("critical route repeats ambushes without a recovery beat")
+    ordinary_count = len(expected_actors)
+    moving_count = sum(_patrol_actor_direction(actor) is not None
+                       for actor in expected_actors.values())
+    if (level.patrol_target >= 0.08 and ordinary_count >= 8 and moving_count == 0):
+        raise ValueError("patrol setting produced an entirely stationary floor")
+    if (level.patrol_target >= 0.15 and ordinary_count >= 12
+            and moving_count / ordinary_count < level.patrol_target * 0.45):
+        raise ValueError("realized patrol activity is far below its target")
     if level.room_tiers:
         if (len(level.room_tiers) != len(level.rooms)
                 or len(level.room_roles) != len(level.rooms)):
@@ -5420,6 +5986,29 @@ def validate_map(level: GeneratedMap) -> None:
                    and _at(level.tiles, *neighbor) not in DOORS
                    for neighbor in outside):
             raise ValueError("spear display is not purposefully wall backed")
+
+    flag_positions = [(index % GRID, index // GRID)
+                      for index, thing in enumerate(level.things) if thing == 62]
+    for x, y in flag_positions:
+        owners = [room for room in level.rooms
+                  if room.x <= x < room.x + room.w
+                  and room.y <= y < room.y + room.h]
+        if not owners:
+            raise ValueError("flag has no owning room")
+        room = owners[0]
+        outside = []
+        if x == room.x:
+            outside.append((x - 1, y))
+        if x == room.x + room.w - 1:
+            outside.append((x + 1, y))
+        if y == room.y:
+            outside.append((x, y - 1))
+        if y == room.y + room.h - 1:
+            outside.append((x, y + 1))
+        if not any(not _is_floor(_at(level.tiles, *neighbor))
+                   and _at(level.tiles, *neighbor) not in DOORS
+                   for neighbor in outside):
+            raise ValueError("flag is not purposefully wall backed")
 
     vine_positions = {(index % GRID, index // GRID)
                       for index, thing in enumerate(level.things) if thing == 70}
@@ -5984,6 +6573,25 @@ def generate_campaign(config: CampaignConfig, output: Path,
                     "preboss_room": level.preboss_room,
                     "premium_room": level.premium_room,
                     "expedition_rooms": level.expedition_rooms,
+                    "arrival": ({"door": level.arrival.door,
+                                  "cab": level.arrival.cab,
+                                  "player": level.arrival.player,
+                                  "facing": level.arrival.facing}
+                                 if level.arrival else None),
+                    "guard_recesses": [
+                        {"room": recess.room_index, "cells": recess.cells,
+                         "actor_cell": recess.actor_cell}
+                        for recess in level.guard_recesses],
+                    "encounters": [
+                        {"template": encounter.template,
+                         "room": encounter.room_index,
+                         "actors": [item for _, _, item in encounter.cells],
+                         "hidden_cells": encounter.hidden_cells,
+                         "family": encounter.family,
+                         "patrol_kind": encounter.patrol_kind,
+                         "patrol_path": encounter.patrol_path}
+                        for encounter in level.encounters],
+                    "patrol_target": level.patrol_target,
                     "enemy_tiers": level.enemy_tiers,
                     "variant": level.variant,
                     "circulation_skeleton": level.circulation_skeleton,
@@ -6028,7 +6636,9 @@ def generate_campaign(config: CampaignConfig, output: Path,
                                    "dual_key_progression", "key_room_separation",
                                    "pushwall_clearance", "rewarded_secrets",
                                    "secret_hints", "secret_route", "boss",
-                                   "circulation_hierarchy", "pickup_provenance"],
+                                   "circulation_hierarchy", "arrival_elevator",
+                                   "encounter_provenance", "patrol_routes",
+                                   "wall_backed_flags", "pickup_provenance"],
                     }} for level in levels],
     }
     output = output.resolve()
