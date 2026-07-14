@@ -1143,13 +1143,20 @@ class GeneratorTests(unittest.TestCase):
         original = generator._apply_wall_theme
 
         def capture(*args, **kwargs):
-            captured.append((args[4], args[5]))
+            # Retry candidates legitimately reach wall theming before a later
+            # validator rejects them. Preserve the tile-plane identity so the
+            # final level is paired with its own component/theme mapping.
+            captured.append((args[0], args[4], args[5]))
             return original(*args, **kwargs)
 
         with mock.patch.object(generator, "_apply_wall_theme", side_effect=capture):
             levels = [_generate_with_retries(CampaignConfig(seed=seed), 2)
                       for seed in range(6)]
-        for level, (component_of, group_theme) in zip(levels, captured):
+        for level in levels:
+            component_of, group_theme = next(
+                (component_of, group_theme)
+                for tiles, component_of, group_theme in captured
+                if tiles is level.tiles)
             for room in level.rooms:
                 ring = [_at(level.tiles, x, room.y - 1)
                         for x in range(room.x - 1, room.x + room.w + 1)]
