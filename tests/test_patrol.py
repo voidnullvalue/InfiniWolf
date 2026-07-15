@@ -49,6 +49,8 @@ class PatrolTests(unittest.TestCase):
                                      in PATROL_POINT_DIRECTIONS]
                     self.assertEqual(len(route_markers), turn_count)
                     expected_markers += turn_count
+                    actor = route.cells[0]
+                    self.assertIn(actor[:2], route.patrol_path)
                 for index, thing in enumerate(level.things):
                     x, y = index % 64, index // 64
                     if thing in PATROL_POINT_DIRECTIONS:
@@ -57,6 +59,15 @@ class PatrolTests(unittest.TestCase):
                         self.assertNotIn(_at(level.tiles, x, y), DOORS)
         self.assertGreater(patrols, 0)
         self.assertEqual(markers, expected_markers)
+
+    def test_patrol_validator_rejects_unowned_pathing_actor(self):
+        level = _generate_with_retries(CampaignConfig(seed="unowned"), 4)
+        route = next(encounter for encounter in level.encounters
+                     if encounter.patrol_kind)
+        level.encounters = tuple(encounter for encounter in level.encounters
+                                 if encounter is not route)
+        with self.assertRaisesRegex(ValueError, "unowned patrol marker|no declared route"):
+            validate_patrols(level)
 
 
 if __name__ == "__main__":

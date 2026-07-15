@@ -13,7 +13,7 @@
 </p>
 
 </div>
-InfiniWolf generates deterministic ten-map Wolfenstein 3D campaigns for ECWolf, with varied building layouts, coherent room themes, staged progression, and context-aware encounters and rewards. Independent progression grammars, circulation skeletons, district patterns, reconvergence motifs, and asymmetric room profiles prevent one repeated generator silhouette from owning the campaign. Every floor begins at one of four believable, rock-bounded inactive elevator arrivals; every full arrival car has a real working door. District-aware stone, brick, wood, metal, marble, plaster, and damaged wall families give rooms a stronger sense of place, with purple reserved for floors 6–10 as a late-campaign escalation. Room-owned sentries, flanks, ambushes, strongpoints, moving patrols, and rare firing galleries make combat spaces feel purposeful. The goal is simple: make each seed fun to explore and enjoyable to replay, building toward one of five geometry-rich boss strongholds on floor 9 and a secret reward expedition on floor 10. It uses the player's registered WL6 data at runtime and never copies Wolfenstein graphics, sounds, music, or data files into generated packages.
+InfiniWolf generates deterministic ten-map Wolfenstein 3D campaigns for ECWolf, with varied building layouts, coherent room themes, staged progression, and context-aware encounters and rewards. Independent progression grammars, circulation skeletons, district patterns, reconvergence motifs, and asymmetric room profiles prevent one repeated generator silhouette from owning the campaign. Every floor begins at one of three believable, rock-bounded inactive elevator-car arrivals, each with a real working door. District-aware stone, brick, wood, metal, marble, plaster, and damaged wall families give rooms a stronger sense of place, with purple reserved for floors 6–10 as a late-campaign escalation. Room-owned sentries, flanks, ambushes, strongpoints, moving patrols, and rare firing galleries make combat spaces feel purposeful. The goal is simple: make each seed fun to explore and enjoyable to replay, building toward one of five geometry-rich boss strongholds on floor 9 and a secret reward expedition on floor 10. It uses the player's registered WL6 data at runtime and never copies Wolfenstein graphics, sounds, music, or data files into generated packages.
 
 Curious how the generator actually works? Start with the human-readable
 [`GENERATION_FLOW.md`](GENERATION_FLOW.md) flowchart, then use
@@ -22,7 +22,7 @@ actor placement, and validation rules.
 
 ## Prebuilt release (Windows / macOS / Linux)
 
-Every tagged release publishes a self-contained `.zip` per platform on the [Releases page](../../releases) — no Python install required. Each one bundles:
+Every tagged release publishes a self-contained `.zip` per platform on the [Releases page](https://github.com/voidnullvalue/InfiniWolf/releases) — no Python install required. Each one bundles:
 
 - `InfiniWolf` — the desktop generator (double-click to run)
 - `infiniwolf-cli` — the same generator as a command-line tool
@@ -89,6 +89,8 @@ base identities and different circulation skeletons. Layout complexity now
 scales planned room count through 16/18/20/22/24 rooms; saturated optional
 fillers try another nearby host in the same district, increasing the number of
 distinct rooms without enlarging their dimensions or creating remote corridors.
+Floor 10 plans up to four additional expedition destinations within the same
+24-room ceiling to compensate for its larger room footprints.
 
 Using the same version, commit, seed, and settings produces byte-identical output. The named `LittleEntropyMachine` seed source derives independent floor, variant, circulation, progression-grammar, lock, vine-sector, rare-gallery, and rare-motif streams without retry attempts perturbing campaign-scale choices. A manifest inside the PK3 records that seed source, the resolved seed and settings, arrival elevator, wall and room identity, encounter compositions, patrol routes, the single-floor corridor-vine schedule, rare guard galleries, special-floor family, room shapes, lighting families, key objectives, bounded secrets, pickup compositions, and validation results. Every generated PK3 also includes `infiniwolf-settings.txt`: a plain-text record of the exact version, commit, resolved seed, every control value, and a copyable reproduction command.
 
@@ -127,13 +129,17 @@ Generated packages contain only WAD map data, MAPINFO, and reproducibility metad
 
 ## Building a release locally
 
-`.github/workflows/release.yml` builds and publishes the prebuilt packages automatically whenever a `vX.Y.Z` tag is pushed (see `packaging/make_release.py`). To reproduce a package by hand:
+`.github/workflows/release.yml` tests each push to `main`, creates the declared
+`vX.Y.Z` tag when that commit is still current, and then builds and publishes
+the three platform packages. A manually pushed version tag follows the same
+test/build/publish path (see `packaging/make_release.py`). To reproduce a
+package by hand:
 
 ```sh
 pip install pyinstaller .
 pyinstaller --onefile --windowed --name InfiniWolf run.py
 pyinstaller --onefile --name infiniwolf-cli infiniwolf_cli.py
-python3 packaging/make_release.py --platform linux --version 1.6.0   # or windows / macos
+python3 packaging/make_release.py --platform linux --version 1.6.1   # or windows / macos
 ```
 
 The script downloads ECWolf's official prebuilt binary for the target platform from `maniacsvault.net`, checks it against a pinned SHA-256, and packages it alongside the two executables. It never touches Wolfenstein 3D game data.

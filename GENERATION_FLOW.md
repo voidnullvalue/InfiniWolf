@@ -54,10 +54,10 @@ flowchart TD
         G2 --> G3[_carve_connection for every graph edge<br/>safe portal route + protected seam fallback]
         G3 --> G4[_widen_corridors where geometry and traffic allow]
 
-        G4 --> H[_place_arrival_elevator<br/>weighted inert façade or functional-door car arrival<br/>with native bounded elevator geometry]
+        G4 --> H[_place_arrival_elevator<br/>weighted functional-door car arrival<br/>with native bounded elevator geometry]
         H --> H1[Measure graph/tile depth from start]
         H1 --> H2[Select post-climax elevator candidate]
-        H2 --> H3{Route contains ≥55% of rooms,<br/>crosses a district, and reaches ≥75% depth?}
+        H2 --> H3{Route contains ≥90% of the progression spine,<br/>crosses a district, and reaches ≥75% depth?}
         H3 -- no --> X[Reject candidate with ValueError]
         H3 -- yes --> H4[_place_elevator with usable native switch geometry]
 
@@ -173,7 +173,7 @@ flowchart TD
 | Output | Planner responsible | Required explanation |
 |---|---|---|
 | Building circulation | `_plan_floor` + `_place_planned_rooms` | Skeleton, district mode, corridor node, suite/branch role |
-| Floor arrival | `_place_arrival_elevator` | First-route direction, inactive bounded archetype, contextual car item, player position and facing |
+| Floor arrival | `_place_arrival_elevator` | First-route direction, complete working-door car, contextual item, player position and facing |
 | Elevator and keys | exit/gate planners | Mandatory route depth, explicit key states, meaningful physical-key detours |
 | Secret rooms/elevator | `_place_secret` / `_carve_secret_pocket` | Isolated shape, pushwall entrance, reward tier, bounded elevator car |
 | Enemies | `_place_population` | Room identity, encounter template, squad family, reveal slot, facing or patrol route |

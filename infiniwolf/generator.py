@@ -152,7 +152,10 @@ class WallMaterialFamily:
 # special compositions and intentionally remain outside the general roster.
 WALL_MATERIALS = (
     WallMaterialFamily("grey-stone", 1, (2, 27), (), (3, 4, 6, 28)),
-    WallMaterialFamily("damp-grey-stone", 24, (26,), (), (28,)),
+    # SIGN(28) carries a clean grey-stone surround, so it is not compatible
+    # with the mossy/slimy face of SLIME(24).  Damp stone gets only its native
+    # alternate course; signs remain exclusive to clean grey stone.
+    WallMaterialFamily("damp-grey-stone", 24, (26,)),
     WallMaterialFamily("blue-stone", 8, (), (), (7, 41)),
     WallMaterialFamily("blue-panel", 40, (), (), (34, 36)),
     WallMaterialFamily("wood", 12, (), (), (10, 11, 23)),
@@ -188,10 +191,11 @@ DECOR_WALLS = frozenset(tile for material in WALL_MATERIALS
                         for tile in material.landmarks)
 SPECIAL_WALL_TILES = frozenset({13, 16, 33, DUMMY_ELEVATOR_TILE})
 SECRET_HINT_BY_BASE = {
+    24: (26,),   # restrained mossy-stone course, never clean-grey signage
     19: (25,),   # blooded purple panel
     29: (30,),   # first, restrained blooded chipped-stone panel
     44: (45,),   # alternate brown-stone course
-    48: (13,),   # a sealed fake door is the only logical plaster-wall hint
+    48: (48,),   # plain plaster: fake elevator doors are not secret markers
 }
 SECRET_HINT_WALLS = DECOR_WALLS | frozenset(
     tile for hints in SECRET_HINT_BY_BASE.values() for tile in hints)
@@ -3339,8 +3343,9 @@ def _hint_secrets(tiles: list[int], things: list[int],
         if hints:
             hint = rng.choice(hints)
             tiles[index] = hint
-            treatments[(x, y)] = "single-landmark"
-            if (x, y) == special_pushwall:
+            treatments[(x, y)] = ("plain-wall" if hint == base
+                                  else "single-landmark")
+            if (x, y) == special_pushwall and hint != base:
                 # A matching pair around the center hint gives the route to
                 # floor 10 a coherent landmark without borrowing another
                 # material family or spelling out "secret elevator".
@@ -3489,15 +3494,17 @@ def _place_arrival_elevator(tiles: list[int], room: Room,
                             forced_kind: str | None = None) -> ArrivalDetail:
     """Place one bounded, inactive native-elevator arrival composition."""
     facings = ((0, -1), (1, 0), (0, 1), (-1, 0))
-    kinds = ("flush-facade", "outside-empty", "outside-supply",
-             "inside-closed")
+    # A start elevator must always be a complete car behind a working door.
+    # The former single-panel "flush-facade" could render as a bare elevator
+    # rail with no doorway at all, depending on which face the player saw.
+    kinds = ("outside-empty", "outside-supply", "inside-closed")
     if forced_kind is not None and forced_kind not in kinds:
         raise ValueError("unknown arrival elevator kind")
-    weights = [0.35, 0.25, 0.15, 0.25]
+    weights = [0.38, 0.24, 0.38]
     if variant == "storehouse":
-        weights = [0.30, 0.20, 0.25, 0.25]
+        weights = [0.29, 0.36, 0.35]
     elif variant == "quarters":
-        weights = [0.30, 0.30, 0.20, 0.20]
+        weights = [0.43, 0.29, 0.28]
     kind = forced_kind or rng.choices(kinds, weights=weights, k=1)[0]
     tx, ty = toward[0] - room.center[0], toward[1] - room.center[1]
     if abs(tx) >= abs(ty):
@@ -3519,16 +3526,10 @@ def _place_arrival_elevator(tiles: list[int], room: Room,
             panels = [(offset, wall) for offset in offsets]
         px, py = -dy, dx
         for panel in panels:
-            if kind == "flush-facade":
-                footprint = tuple(sorted({
-                    (panel[0] + depth * dx + side * px,
-                     panel[1] + depth * dy + side * py)
-                    for depth in (0, 1) for side in (-1, 0, 1)}))
-            else:
-                footprint = tuple(sorted({
-                    (panel[0] + depth * dx + side * px,
-                     panel[1] + depth * dy + side * py)
-                    for depth in range(5) for side in (-2, -1, 0, 1, 2)}))
+            footprint = tuple(sorted({
+                (panel[0] + depth * dx + side * px,
+                 panel[1] + depth * dy + side * py)
+                for depth in range(5) for side in (-2, -1, 0, 1, 2)}))
             if (not all(1 <= x < GRID - 1 and 1 <= y < GRID - 1
                         for x, y in footprint)
                     or any(_at(tiles, x, y) != WALL for x, y in footprint)
@@ -3538,14 +3539,6 @@ def _place_arrival_elevator(tiles: list[int], room: Room,
                 continue
             inward = (-dx, -dy)
             facing = facings.index(inward)
-            if kind == "flush-facade":
-                _set(tiles, *panel, DUMMY_ELEVATOR_TILE)
-                player = panel[0] - 2 * dx, panel[1] - 2 * dy
-                clearance = ((panel[0] - dx, panel[1] - dy),
-                             (panel[0] - 3 * dx, panel[1] - 3 * dy))
-                return ArrivalDetail(kind, panel, player, facing, footprint,
-                                     clearance=clearance)
-
             car_cells = tuple((panel[0] + depth * dx,
                                panel[1] + depth * dy)
                               for depth in (1, 2))
@@ -3585,10 +3578,7 @@ def _place_arrival_elevator(tiles: list[int], room: Room,
                 item = (*car_cells[-1], supplies.get(variant, AMMO))
             return ArrivalDetail(kind, panel, player, facing, footprint,
                                  car_cells, clearance, item)
-    if forced_kind is None and kind != "flush-facade":
-        return _place_arrival_elevator(
-            tiles, room, toward, rng, variant, forced_kind="flush-facade")
-    raise ValueError("start room has no rock-backed wall for an arrival façade")
+    raise ValueError("start room has no rock-backed wall for a complete arrival car")
 
 
 def _carve_guard_recesses(tiles: list[int], things: list[int], rooms: list[Room],
@@ -5269,6 +5259,15 @@ def _place_zoned(room: Room,
         item = rng.choice(blocking)
         rng.shuffle(corners)
         for cornx, corny in corners:
+            # A pair of identical potted plants packed into one corner reads
+            # like a placement accident.  Plant concepts still own their
+            # intended half of the room, but use one deliberate specimen;
+            # the general mirrored-pair pass remains free to put plants on
+            # opposing sides where a pair reads as composition.
+            if item in (31, 34):
+                if (cornx, corny) in free and try_place([(cornx, corny)], item):
+                    break
+                continue
             nx = cornx + (1 if cornx < cx else -1)
             ny = corny + (1 if corny < cy else -1)
             cluster = [cell for cell in ((cornx, corny), (nx, corny), (cornx, ny))
@@ -6863,8 +6862,7 @@ def validate_map(level: GeneratedMap) -> None:
     inside = arrival.kind.startswith("inside-")
     expected_player = (arrival.portal[0] + 2 * (outward[0] if inside else inward[0]),
                        arrival.portal[1] + 2 * (outward[1] if inside else inward[1]))
-    if (arrival.kind not in {"flush-facade", "outside-empty", "outside-supply",
-                             "inside-closed"}
+    if (arrival.kind not in {"outside-empty", "outside-supply", "inside-closed"}
             or arrival.player != level.start or level.start != expected_player
             or _at(level.things, *level.start) != PLAYER_START_CODES[arrival.facing]
             or sum(thing in PLAYER_START_CODES for thing in level.things) != 1):
@@ -6878,28 +6876,22 @@ def validate_map(level: GeneratedMap) -> None:
     car_cells = tuple((arrival.portal[0] + depth * outward[0],
                        arrival.portal[1] + depth * outward[1])
                       for depth in (1, 2))
-    if arrival.kind == "flush-facade":
-        if (arrival.car_cells
-                or _at(level.tiles, *arrival.portal) != DUMMY_ELEVATOR_TILE):
-            raise ValueError("flush arrival is not an inert elevator façade")
-        dressed = {arrival.portal}
-    else:
-        if (arrival.car_cells != car_cells
-                or any(not _is_floor(_at(level.tiles, *cell)) for cell in car_cells)):
-            raise ValueError("arrival elevator car has invalid floor geometry")
-        expected_portal = DOOR_ELEVATOR if inward[0] else DOOR_ELEVATOR_NS
-        if _at(level.tiles, *arrival.portal) != expected_portal:
-            raise ValueError("arrival car lacks its normal elevator door")
-        px, py = -outward[1], outward[0]
-        dressed = {
-            (arrival.portal[0] + depth * outward[0] + side * px,
-             arrival.portal[1] + depth * outward[1] + side * py)
-            for depth in (1, 2, 3) for side in (-1, 1)}
-        dressed.add((arrival.portal[0] + 3 * outward[0],
-                     arrival.portal[1] + 3 * outward[1]))
-        if any(_at(level.tiles, *cell) != DUMMY_ELEVATOR_TILE
-               for cell in dressed):
-            raise ValueError("arrival car does not use inert native panels")
+    if (arrival.car_cells != car_cells
+            or any(not _is_floor(_at(level.tiles, *cell)) for cell in car_cells)):
+        raise ValueError("arrival elevator car has invalid floor geometry")
+    expected_portal = DOOR_ELEVATOR if inward[0] else DOOR_ELEVATOR_NS
+    if _at(level.tiles, *arrival.portal) != expected_portal:
+        raise ValueError("arrival car lacks its normal elevator door")
+    px, py = -outward[1], outward[0]
+    dressed = {
+        (arrival.portal[0] + depth * outward[0] + side * px,
+         arrival.portal[1] + depth * outward[1] + side * py)
+        for depth in (1, 2, 3) for side in (-1, 1)}
+    dressed.add((arrival.portal[0] + 3 * outward[0],
+                 arrival.portal[1] + 3 * outward[1]))
+    if any(_at(level.tiles, *cell) != DUMMY_ELEVATOR_TILE
+           for cell in dressed):
+        raise ValueError("arrival car does not use inert native panels")
     if arrival.item is not None:
         if (arrival.kind != "outside-supply"
                 or arrival.item[:2] not in arrival.car_cells
@@ -7692,15 +7684,66 @@ def validate_patrols(level: GeneratedMap, steps: int = 512) -> None:
     This deliberately models that limited algorithm rather than a helpful
     path finder, making the historical walking-in-place failure reproducible.
     """
+    route_by_actor: dict[tuple[int, int], EncounterPlacement] = {}
+    claimed_markers: set[tuple[int, int]] = set()
+    allowed_kinds = {"room-loop", "compact-loop",
+                     "hall-shuttle", "doorway-shuttle"}
+    for encounter in level.encounters:
+        if not encounter.patrol_kind:
+            continue
+        if (encounter.template != "patrol" or len(encounter.cells) != 1
+                or encounter.patrol_kind not in allowed_kinds
+                or len(encounter.patrol_path) < 3
+                or len(set(encounter.patrol_path)) != len(encounter.patrol_path)):
+            raise ValueError("patrol route has invalid encounter provenance")
+        x, y, actor = encounter.cells[0]
+        origin = (x, y)
+        if (_patrol_actor_direction(actor) is None
+                or origin not in encounter.patrol_path
+                or origin in route_by_actor):
+            raise ValueError("patrol actor does not own one declared route")
+        route_by_actor[origin] = encounter
+        path = encounter.patrol_path
+        route_markers = {cell for cell in path
+                         if _at(level.things, *cell) in PATROL_POINT_DIRECTIONS}
+        expected_count = (2 if encounter.patrol_kind in
+                          ("hall-shuttle", "doorway-shuttle") else 4)
+        if len(route_markers) != expected_count or claimed_markers & route_markers:
+            raise ValueError("patrol markers are missing, duplicated, or shared")
+        claimed_markers.update(route_markers)
+        for cell in route_markers:
+            index = path.index(cell)
+            if encounter.patrol_kind in ("hall-shuttle", "doorway-shuttle"):
+                next_cell = path[1] if index == 0 else path[-2]
+            else:
+                next_cell = path[(index + 1) % len(path)]
+            delta = next_cell[0] - cell[0], next_cell[1] - cell[1]
+            expected = ((0, -1), (1, 0), (0, 1), (-1, 0)).index(delta)
+            actual = PATROL_POINT_DIRECTIONS[_at(level.things, *cell)]
+            if actual != expected:
+                raise ValueError(f"patrol marker at {cell} points off its route")
+
+    plane_markers = {(index % GRID, index // GRID)
+                     for index, thing in enumerate(level.things)
+                     if thing in PATROL_POINT_DIRECTIONS}
+    if plane_markers != claimed_markers:
+        raise ValueError("things plane contains an unowned patrol marker")
+
     for index, thing in enumerate(level.things):
         direction = _patrol_actor_direction(thing)
         if direction is None:
             continue
         x, y = index % GRID, index // GRID
         origin = (x, y)
+        encounter = route_by_actor.get(origin)
+        if encounter is None:
+            raise ValueError(f"patrol actor at {origin} has no declared route")
+        path_cells = set(encounter.patrol_path)
         for _ in range(steps):
             dx, dy = ((0, -1), (1, 0), (0, 1), (-1, 0))[direction]
             x, y = x + dx, y + dy
+            if (x, y) not in path_cells:
+                raise ValueError(f"patrol actor at {origin} walks off its declared route")
             tile = _at(level.tiles, x, y)
             if not (_is_floor(tile) or tile in DOORS):
                 raise ValueError(f"patrol actor at {origin} dead-ends at {(x, y)}")

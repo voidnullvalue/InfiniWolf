@@ -47,8 +47,7 @@ class GeneratorTests(unittest.TestCase):
         # generator convention instead of agreeing with it.
         engine_facing = {19: (1, 0), 20: (0, -1),
                          21: (-1, 0), 22: (0, 1)}
-        kinds = ("flush-facade", "outside-empty", "outside-supply",
-                 "inside-closed")
+        kinds = ("outside-empty", "outside-supply", "inside-closed")
         for kind in kinds:
             with self.subTest(kind=kind):
                 tiles = [WALL] * (GRID * GRID)
@@ -73,29 +72,33 @@ class GeneratorTests(unittest.TestCase):
                     self.assertEqual(arrival.portal,
                                      (arrival.player[0] - 2 * dx,
                                       arrival.player[1] - 2 * dy))
-                if kind == "flush-facade":
-                    self.assertEqual(_at(tiles, *arrival.portal),
-                                     generator.DUMMY_ELEVATOR_TILE)
-                    self.assertFalse(arrival.car_cells)
-                else:
-                    self.assertTrue(all(_is_floor(_at(tiles, *cell))
-                                        for cell in arrival.car_cells))
-                    self.assertEqual(
-                        _at(tiles, *arrival.portal),
-                        (generator.DOOR_ELEVATOR if dx
-                         else generator.DOOR_ELEVATOR_NS),
-                        "every full arrival car must retain an elevator door")
-                    outward = (-dx, -dy)
-                    px, py = -outward[1], outward[0]
-                    for depth in (1, 2, 3):
-                        for side in (-1, 1):
-                            self.assertEqual(
-                                _at(tiles,
-                                    arrival.portal[0] + depth * outward[0] + side * px,
-                                    arrival.portal[1] + depth * outward[1] + side * py),
-                                generator.DUMMY_ELEVATOR_TILE,
-                                "arrival car exposes a non-elevator side wall")
+                self.assertTrue(all(_is_floor(_at(tiles, *cell))
+                                    for cell in arrival.car_cells))
+                self.assertEqual(
+                    _at(tiles, *arrival.portal),
+                    (generator.DOOR_ELEVATOR if dx
+                     else generator.DOOR_ELEVATOR_NS),
+                    "every arrival car must retain an elevator door")
+                outward = (-dx, -dy)
+                px, py = -outward[1], outward[0]
+                for depth in (1, 2, 3):
+                    for side in (-1, 1):
+                        self.assertEqual(
+                            _at(tiles,
+                                arrival.portal[0] + depth * outward[0] + side * px,
+                                arrival.portal[1] + depth * outward[1] + side * py),
+                            generator.DUMMY_ELEVATOR_TILE,
+                            "arrival car exposes a non-elevator side wall")
                 self.assertEqual(bool(arrival.item), kind == "outside-supply")
+
+        tiles = [WALL] * (GRID * GRID)
+        for y in range(room.y, room.y + room.h):
+            for x in range(room.x, room.x + room.w):
+                tiles[y * GRID + x] = FLOOR
+        with self.assertRaisesRegex(ValueError, "unknown arrival elevator kind"):
+            generator._place_arrival_elevator(
+                tiles, room, (40, 24), random.Random(1),
+                forced_kind="flush-facade")
 
     def test_terminal_elevator_has_no_plain_wall_strip_inside_car(self):
         room = Room(20, 20, 8, 8)
@@ -1133,7 +1136,7 @@ class GeneratorTests(unittest.TestCase):
         whichever one floor number used to select that entry."""
         families = (
             {1, 2, 3, 4, 6, 27, 28},  # grey stone and its signs/landmarks
-            {24, 26, 28},        # damp/slimy grey stone
+            {24, 26},            # damp/slimy grey stone (no clean-grey sign)
             {8, 7, 41},          # blue stone: BSTONEA1, BSTCELB1, BSTSIGN1
             {40, 34, 36},        # blue wall: BLUWALL1, BLUSKUL1, BLUSWAS1
             {9},                 # rare floor-10 masonry: BSTONEB1
@@ -1352,6 +1355,28 @@ class GeneratorTests(unittest.TestCase):
         _place_zoned(room, _DECOR_ZONES["grand"], free, set(), set(), things,
                     random.Random(0), lambda cells, item: False, 0)
         self.assertTrue(any(things))
+
+    def test_zoned_potted_plants_are_not_doubled_in_one_corner(self):
+        room = Room(10, 10, 8, 8)
+        things = [0] * (GRID * GRID)
+        free = {(x, y) for y in range(room.y + 1, room.y + room.h - 1)
+                for x in range(room.x + 1, room.x + room.w - 1)}
+
+        def place(cells, item):
+            for cell in cells:
+                things[cell[1] * GRID + cell[0]] = item
+                free.discard(cell)
+            return True
+
+        plant_zones = (((31,), ()), ((34,), ()))
+        _place_zoned(room, plant_zones, free, set(), set(), things,
+                     random.Random(0), place, 2)
+        plants = [(index % GRID, index // GRID, item)
+                  for index, item in enumerate(things) if item in (31, 34)]
+        self.assertEqual(len(plants), 2)
+        self.assertEqual({item for _, _, item in plants}, {31, 34})
+        self.assertLess(plants[0][0], room.center[0])
+        self.assertGreaterEqual(plants[1][0], room.center[0])
 
     def test_landmark_walls_hang_in_symmetric_arrangements(self):
         room = Room(10, 10, 16, 6)
@@ -1622,6 +1647,27 @@ class GeneratorTests(unittest.TestCase):
         self.assertEqual(_at(tiles, 20, 10), 41)
         self.assertNotIn(_at(tiles, 10, 10), (3, 4))
         self.assertNotIn(_at(tiles, 20, 10), (3, 4))
+
+    def test_damp_stone_and_plaster_keep_foreign_door_signs_out(self):
+        damp = generator.MATERIAL_BY_BASE[24]
+        self.assertEqual(damp.landmarks, ())
+        self.assertNotIn(28, damp.accents)
+        self.assertEqual(generator.SECRET_HINT_BY_BASE[24], (26,))
+        self.assertEqual(generator.SECRET_HINT_BY_BASE[48], (48,))
+
+        tiles = [WALL] * (GRID * GRID)
+        things = [0] * (GRID * GRID)
+        component_of = {(11, 10): 0, (21, 10): 1}
+        group_theme = {0: (24, (26,)), 1: (48, ())}
+        for x in (10, 20):
+            things[10 * GRID + x] = PUSHWALL
+        treatments = _hint_secrets(
+            tiles, things, component_of, group_theme, random.Random(0))
+        self.assertEqual(_at(tiles, 10, 10), 26)
+        self.assertEqual(_at(tiles, 20, 10), 48)
+        self.assertNotIn(28, (_at(tiles, 10, 10), _at(tiles, 20, 10)))
+        self.assertNotIn(13, (_at(tiles, 10, 10), _at(tiles, 20, 10)))
+        self.assertEqual(treatments[(20, 10)], "plain-wall")
 
     def test_blue_insignia_panels_are_single_landmarks_not_room_material(self):
         self.assertTrue({34, 36} <= DECOR_WALLS)

@@ -125,6 +125,9 @@ InfiniWolf {version} ({platform})
 3. Click Generate, then Play. It launches the bundled ECWolf ({ecwolf_version},
    GPL edition) pointed at your WL6 data and the freshly generated campaign.
 
+After generation, View Maps opens a top-down viewer for all ten floors with
+optional route, enemy, pickup, and secret overlays.
+
 {cli_binary} is the same generator as a scriptable command-line tool; run it
 with --help for options.
 
