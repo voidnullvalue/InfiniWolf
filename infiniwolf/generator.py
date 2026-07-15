@@ -506,7 +506,8 @@ def _aardwolf_variant(config: CampaignConfig, floor: int,
     if not config.say_aardwolf:
         return variant
     rng = random.Random(config.aardwolf_seed(floor))
-    phase_rng = random.Random(config.aardwolf_seed(10) ^ config.seed)
+    phase_rng = random.Random(config.aardwolf_seed(10)
+                              ^ config.circulation_seed(10))
     phase = phase_rng.random() * math.tau
     pulse = math.sin(phase + floor * (math.tau / 3.7))
     order = list(range(8))
@@ -576,8 +577,12 @@ def _circulation_sequence(config: CampaignConfig) -> tuple[str, ...]:
     # Keeping floors 9/10 outside this schedule preserves their authored boss
     # and reward-expedition identities while making the new family exactly
     # thirty percent of a ten-map campaign.
-    schedule_rng = random.Random(config.seed ^ 0x48414C4C57415931)
-    hallway_floors = frozenset(schedule_rng.sample(range(1, 9), 3))
+    schedule_rng = random.Random(config.circulation_seed(1)
+                                 ^ 0x48414C4C57415931)
+    rare_floor = _rare_motif_schedule(config)
+    hallway_candidates = [floor for floor in range(1, 9)
+                          if floor != rare_floor]
+    hallway_floors = frozenset(schedule_rng.sample(hallway_candidates, 3))
     result: list[str] = []
     for floor, variant in enumerate(variants, 1):
         seed = config.circulation_seed(floor)
@@ -933,6 +938,8 @@ class GeneratedMap:
     primary_hall_geometry: tuple[tuple[int, int, int, int, int], ...] = ()
     barrel_families: tuple[str, ...] = ()
     sky_vistas: tuple[tuple[tuple[int, int], ...], ...] = ()
+    sky_vista_recesses: tuple[tuple[tuple[int, int], ...], ...] = ()
+    sky_vista_supports: tuple[tuple[tuple[int, int], ...], ...] = ()
 
 
 def _room_identities(rooms: list[Room], specs: list[RoomSpec], districts: list[int],
@@ -990,7 +997,11 @@ def _room_identities(rooms: list[Room], specs: list[RoomSpec], districts: list[i
                    ("officers-quarters", "lounge", "dining-hall")
                    if variant.name == "quarters" else
                    ("lounge", "dining-hall")),
-        "corridor": ("corridor",),
+        # Authored hallway-first scaffolds deliberately connect several
+        # circulation rooms. Give those spaces compatible identities so the
+        # normal neighbor-aware choice can vary an axis and its occupied arm
+        # instead of producing an unavoidable run of identical corridors.
+        "corridor": ("corridor", "checkpoint", "guardpost"),
         "jail": ("jail", "holding-cell", "interrogation-room"),
     }
     neighbors: dict[int, set[int]] = {index: set() for index in range(len(rooms))}
@@ -1228,7 +1239,18 @@ def _plan_floor(rng: random.Random, complexity: int, number: int,
     loops: list[tuple[int, int]] = []
     critical = set(range(spine_count))
     groups: list[tuple[int, ...]] = []
+    arm_count = {
+        "plus-concourse": 2,
+        "t-concourse": 1,
+        "offset-boulevard": 1,
+    }.get(skeleton, 0)
+    reserved_arm_rooms = arm_count * 2
     budget = min(3, 1 + (complexity >= 3) + (rng.random() < variant.extra_motif_chance))
+    if skeleton in HALLWAY_FIRST_SKELETONS:
+        # The hallway scaffold and its occupied arms spend the macro-layout
+        # budget on this floor; stacking extra hub/wing/gallery families over
+        # it would blur the form and exceed the configured room target.
+        budget = 1
     if number == 10:
         budget = max(2, budget)
     loop_realizations = {
@@ -1340,13 +1362,30 @@ def _plan_floor(rng: random.Random, complexity: int, number: int,
         edges.extend(((left, node), (node, right)))
         loops.append((node, right))
 
-    if rare_motif and number in (6, 7, 8, 9):
+    if (rare_motif and number in (6, 7, 8, 9)
+            and len(specs) + 1 + reserved_arm_rooms <= target):
         parent = rng.choice(middle_beats)
         node = len(specs)
         specs.append(RoomSpec("branch", "motif", districts[parent], "swastika"))
         edges.append((parent, node))
         motifs.append("swastika")
         motif_realizations.append("swastika-room-profile")
+
+    # Reserve ordinary room budget for occupied concourse arms. Each corridor
+    # arm is immediately followed by a destination room, so the strong form
+    # is present in realized geometry rather than only in skeleton metadata.
+    hall_parent = corridor_indices[len(corridor_indices) // 2]
+    for _ in range(arm_count):
+        branch = len(specs)
+        district = specs[hall_parent].district
+        specs.append(RoomSpec("branch", "corridor", district,
+                              "hallway-arm"))
+        edges.append((hall_parent, branch))
+        destination = len(specs)
+        specs.append(RoomSpec("branch", "standard", district,
+                              "hallway-destination"))
+        edges.append((branch, destination))
+        critical.update((branch, destination))
 
     filler_tips: list[int] = []
     while len(specs) < target:
@@ -1373,28 +1412,6 @@ def _plan_floor(rng: random.Random, complexity: int, number: int,
         edges.append((parent, node))
         filler_tips.append(node)
 
-    # Turn existing filler budget into occupied concourse arms instead of
-    # adding more rooms beyond the configured target. Each authored corridor
-    # arm owns a destination immediately after it, so no hallway-first form
-    # can terminate as an unexplained strip of floor.
-    arm_count = {
-        "plus-concourse": 2,
-        "t-concourse": 1,
-        "offset-boulevard": 1,
-    }.get(skeleton, 0)
-    arm_nodes = sorted(filler_tips)[-2 * arm_count:] if arm_count else []
-    hall_parent = corridor_indices[len(corridor_indices) // 2]
-    if len(arm_nodes) == 2 * arm_count:
-        for branch, destination in zip(arm_nodes[::2], arm_nodes[1::2]):
-            district = specs[hall_parent].district
-            specs[branch] = RoomSpec("circulation", "corridor", district,
-                                     "hallway-arm")
-            specs[destination] = RoomSpec("branch", "standard", district,
-                                          "hallway-destination")
-            edges = [(hall_parent if child == branch else parent, child)
-                     for parent, child in edges]
-            edges = [(branch if child == destination else parent, child)
-                     for parent, child in edges]
     if sum(spec.tier == "anchor" for spec in specs) != 1:
         raise ValueError("floor plan must have exactly one anchor")
     return FloorPlan(specs, edges, loops, tuple(motifs), frozenset(critical), tuple(groups),
@@ -1436,6 +1453,11 @@ def _place_planned_rooms(rng: random.Random, plan: FloorPlan, number: int = 0) -
     spine_count = next(index for index, spec in enumerate(plan.specs)
                        if spec.role == "exit") + 1
     sizes = [_room_size(rng, spec.tier, number) for spec in plan.specs]
+    for index, spec in enumerate(plan.specs):
+        if spec.motif == "hallway-arm":
+            sizes[index] = ((7, 3) if rng.random() < 0.5 else (3, 7))
+        elif spec.motif == "hallway-destination":
+            sizes[index] = (7, 7)
     for group in plan.size_groups:
         shared = sizes[group[0]]
         for index in group[1:]:
@@ -1452,11 +1474,16 @@ def _place_planned_rooms(rng: random.Random, plan: FloorPlan, number: int = 0) -
     room_by_spec: dict[int, Room] = {}
     dropped: set[int] = set()
     used_sides: dict[int, dict[tuple[int, int], int]] = {}
-    quadrant = rng.randrange(4)
-    heading = ((1, 0), (-1, 0), (0, 1), (0, -1))[quadrant]
+    forced_rooms: dict[int, Room] = {}
+    hallway_arm_sides: list[tuple[int, int]] = []
+    # Native-safe arrival cars have a horizontal axis. Begin from the left or
+    # right building edge so the outward horizontal wall retains guaranteed
+    # rock depth; the spine may still turn immediately and use every broader
+    # circulation form after this first architectural constraint.
+    heading = rng.choice(((1, 0), (-1, 0)))
     w, h = sizes[0]
     hallway_first = plan.skeleton in HALLWAY_FIRST_SKELETONS
-    edge_low, edge_high = ((8, 15) if hallway_first else (4, 10))
+    edge_low, edge_high = ((8, 15) if hallway_first else (6, 11))
     cross_low_x = max(4, GRID // 2 - w - 8) if hallway_first else 4
     cross_high_x = min(GRID - w - 3, GRID // 2 + 8) if hallway_first else GRID - w - 3
     cross_low_y = max(4, GRID // 2 - h - 8) if hallway_first else 4
@@ -1469,6 +1496,31 @@ def _place_planned_rooms(rng: random.Random, plan: FloorPlan, number: int = 0) -
          else rng.randrange(cross_low_y, cross_high_y))
     start = Room(sx, sy, w, h)
     rooms.append(start); kept.append(0); room_by_spec[0] = start
+    protected_elevator_rock: set[tuple[int, int]] = set()
+
+    def elevator_envelopes(room: Room) -> list[set[tuple[int, int]]]:
+        envelopes = []
+        for dx in (-1, 1):
+            wx = room.x - 1 if dx < 0 else room.x + room.w
+            for wy in sorted(range(room.y + 1, room.y + room.h - 1),
+                             key=lambda value: abs(value - room.center[1])):
+                cells = {(wx + dx * depth, wy + side)
+                         for depth in range(5) for side in (-2, -1, 0, 1, 2)}
+                if all(1 <= x < GRID - 1 and 1 <= y < GRID - 1
+                       for x, y in cells):
+                    envelopes.append(cells)
+                    break
+        return envelopes
+
+    # The outward side of the edge-biased start room is owned by its arrival
+    # car. Later rooms may not consume that otherwise invisible rock shell.
+    start_outward = -heading[0]
+    start_envelopes = elevator_envelopes(start)
+    if start_envelopes:
+        protected_elevator_rock.update(min(
+            start_envelopes,
+            key=lambda cells: min(x for x, _ in cells) if start_outward < 0
+            else -max(x for x, _ in cells)))
 
     def adjacent(parent: Room, size: tuple[int, int], side: tuple[int, int],
                  gap: int, jitter: int) -> Room:
@@ -1485,7 +1537,17 @@ def _place_planned_rooms(rng: random.Random, plan: FloorPlan, number: int = 0) -
     def legal(room: Room) -> bool:
         return (3 <= room.x and 3 <= room.y and room.x + room.w < 61
                 and room.y + room.h < 61
+                and not any((x, y) in protected_elevator_rock
+                            for y in range(room.y, room.y + room.h)
+                            for x in range(room.x, room.x + room.w))
                 and not any(_overlaps(room, other) for other in rooms))
+
+    def supports_exit_elevator(room: Room) -> bool:
+        return any(
+            not (cells & protected_elevator_rock)
+            and not any(any(_inside_room([other], *cell) for cell in cells)
+                        for other in rooms)
+            for cells in elevator_envelopes(room))
 
     grouped = {index for group in plan.size_groups for index in group}
     order = list(range(1, spine_count))
@@ -1493,9 +1555,11 @@ def _place_planned_rooms(rng: random.Random, plan: FloorPlan, number: int = 0) -
     while pending:
         available = [index for index in pending if parents[index] not in pending]
         index = min(available, key=lambda item: (
-            0 if plan.specs[item].motif == "swastika" else
-            1 if plan.specs[parents[item]].role == "hub" else
-            2 if item in grouped else 3 if plan.specs[item].role == "ring" else 4,
+            0 if plan.specs[item].motif in {
+                "hallway-arm", "hallway-destination"} else
+            1 if plan.specs[item].motif == "swastika" else
+            2 if plan.specs[parents[item]].role == "hub" else
+            3 if item in grouped else 4 if plan.specs[item].role == "ring" else 5,
             item))
         order.append(index); pending.remove(index)
     for index in order:
@@ -1503,8 +1567,91 @@ def _place_planned_rooms(rng: random.Random, plan: FloorPlan, number: int = 0) -
         while parent_index in dropped:
             parent_index = parents[parent_index]
         parent = room_by_spec[parent_index]
-        room = None
-        for attempt in range(60):
+        room = forced_rooms.pop(index, None)
+        if room is not None:
+            # Hallway destinations are reserved atomically with their arm;
+            # no optional room can consume the terminal footprint between
+            # the two dependent placements.
+            sizes[index] = (room.w, room.h)
+
+        if plan.specs[index].motif == "hallway-arm" and room is None:
+            destination = next(
+                other for a, b in plan.edges
+                for other in ((b,) if a == index else (a,) if b == index else ())
+                if other > index
+                and plan.specs[other].motif == "hallway-destination")
+            scaffold = [
+                candidate for candidate in kept
+                if candidate < spine_count
+                and plan.specs[candidate].tier == "corridor"
+            ]
+            scaffold.sort(key=lambda candidate: (
+                candidate != parents[index], abs(candidate - parents[index])))
+            pair_candidates = []
+            for candidate_parent in scaffold:
+                host = room_by_spec[candidate_parent]
+                sides = ([(0, 1), (0, -1)] if host.w >= host.h
+                         else [(1, 0), (-1, 0)])
+                if hallway_arm_sides:
+                    opposite = (-hallway_arm_sides[0][0],
+                                -hallway_arm_sides[0][1])
+                    sides.sort(key=lambda side: side != opposite)
+                for side_rank, side in enumerate(sides):
+                    for length_rank, length in enumerate((7, 5)):
+                        arm_size = ((length, 3) if side[0]
+                                    else (3, length))
+                        offsets = _snap_offsets(host, *arm_size, side, rng)
+                        offsets.extend(offset for offset in range(-10, 11)
+                                       if offset not in offsets)
+                        for gap_rank, gap in enumerate((2, 3)):
+                            for jitter_rank, jitter in enumerate(offsets):
+                                arm = adjacent(host, arm_size, side, gap, jitter)
+                                if not legal(arm):
+                                    continue
+                                terminal_offsets = _snap_offsets(
+                                    arm, *sizes[destination], side, rng)
+                                terminal_offsets.extend(
+                                    offset for offset in range(-3, 4)
+                                    if offset not in terminal_offsets)
+                                destination_sizes = [sizes[destination]]
+                                destination_sizes.extend(
+                                    ((5, 7), (5, 5)) if side[0]
+                                    else ((7, 5), (5, 5)))
+                                for size_rank, terminal_size in enumerate(
+                                        destination_sizes):
+                                    terminal_offsets = _snap_offsets(
+                                        arm, *terminal_size, side, rng)
+                                    terminal_offsets.extend(
+                                        offset for offset in range(-3, 4)
+                                        if offset not in terminal_offsets)
+                                    for destination_gap in (2, 3):
+                                        for terminal_rank, terminal_jitter in enumerate(
+                                                terminal_offsets):
+                                            terminal = adjacent(
+                                                arm, terminal_size, side,
+                                                destination_gap, terminal_jitter)
+                                            if (legal(terminal)
+                                                    and not _overlaps(terminal, arm)):
+                                                pair_candidates.append((
+                                                    candidate_parent != parents[index],
+                                                    side_rank, length_rank, size_rank,
+                                                    gap_rank, jitter_rank,
+                                                    destination_gap, terminal_rank,
+                                                    candidate_parent, side, arm,
+                                                    terminal))
+            if pair_candidates:
+                (*_, candidate_parent, side, room, terminal) = min(
+                    pair_candidates, key=lambda candidate: candidate[:8])
+                if candidate_parent != parent_index:
+                    parents[index] = candidate_parent
+                    reparented[index] = candidate_parent
+                    parent_index = candidate_parent
+                    parent = room_by_spec[parent_index]
+                sizes[index] = (room.w, room.h)
+                forced_rooms[destination] = terminal
+                hallway_arm_sides.append(side)
+
+        for attempt in range(60 if room is None else 0):
             if index < spine_count:
                 dx, dy = heading
                 sides = [(dx, dy), (-dy, dx), (dy, -dx)]
@@ -1566,8 +1713,19 @@ def _place_planned_rooms(rng: random.Random, plan: FloorPlan, number: int = 0) -
                 sides = ((1, 0), (-1, 0), (0, 1), (0, -1))
                 mode = (plan.district_circulation[plan.specs[parent_index].district]
                         if plan.district_circulation else "suite")
-                if plan.specs[parent_index].tier == "corridor" and mode in (
-                        "double-loaded", "single-loaded", "service-bays", "formal-axis"):
+                if plan.specs[index].motif == "hallway-destination":
+                    # Continue to the occupied room at the far end of its
+                    # concourse arm. Side-loading here folds the destination
+                    # back toward the central hall and makes the arm much
+                    # harder to realize cleanly.
+                    favored = ({(1, 0), (-1, 0)} if parent.w >= parent.h
+                               else {(0, 1), (0, -1)})
+                elif plan.specs[index].motif == "hallway-arm":
+                    cross = ((0, 1), (0, -1)) if parent.w >= parent.h else ((1, 0), (-1, 0))
+                    favored = set(cross)
+                elif (plan.specs[parent_index].tier == "corridor"
+                      and mode in ("double-loaded", "single-loaded",
+                                   "service-bays", "formal-axis")):
                     cross = ((0, 1), (0, -1)) if parent.w >= parent.h else ((1, 0), (-1, 0))
                     favored = ({cross[0]} if mode == "single-loaded" else set(cross))
                 else:
@@ -1575,7 +1733,8 @@ def _place_planned_rooms(rng: random.Random, plan: FloorPlan, number: int = 0) -
                 side = rng.choices(
                     sides, weights=[(3 if s in favored else 0.5)
                                     / (1 + 5 * counts.get(s, 0)) for s in sides], k=1)[0]
-                gap = rng.randrange(1, 4)
+                gap = (2 if plan.specs[index].motif in {
+                    "hallway-arm", "hallway-destination"} else rng.randrange(1, 4))
             candidate_size = sizes[index]
             if plan.specs[index].tier == "corridor":
                 rw, rh = candidate_size
@@ -1600,7 +1759,9 @@ def _place_planned_rooms(rng: random.Random, plan: FloorPlan, number: int = 0) -
                        [rng.randrange(-6, 7) if index < spine_count else rng.randrange(-11, 12)])
             for jitter in jitters:
                 candidate = adjacent(parent, candidate_size, side, gap, jitter)
-                if legal(candidate):
+                if (legal(candidate)
+                        and (plan.specs[index].role != "exit"
+                             or supports_exit_elevator(candidate))):
                     room = candidate
                     sizes[index] = candidate_size
                     if index < spine_count:
@@ -1684,7 +1845,9 @@ def _place_planned_rooms(rng: random.Random, plan: FloorPlan, number: int = 0) -
                 side = rng.choice(((1, 0), (-1, 0), (0, 1), (0, -1)))
                 candidate = adjacent(parent, sizes[index], side, rng.randrange(3, 8),
                                      rng.randrange(-10, 11))
-                if legal(candidate):
+                if (legal(candidate)
+                        and (plan.specs[index].role != "exit"
+                             or supports_exit_elevator(candidate))):
                     room = candidate
                     break
         if room is None:
@@ -1697,7 +1860,9 @@ def _place_planned_rooms(rng: random.Random, plan: FloorPlan, number: int = 0) -
                 for _ in range(200):
                     candidate = Room(rng.randrange(3, 61 - rw),
                                      rng.randrange(3, 61 - rh), rw, rh)
-                    if legal(candidate):
+                    if (legal(candidate)
+                            and (plan.specs[index].role != "exit"
+                                 or supports_exit_elevator(candidate))):
                         room = candidate
                         break
         if room is None:
@@ -1706,6 +1871,22 @@ def _place_planned_rooms(rng: random.Random, plan: FloorPlan, number: int = 0) -
             dropped.add(index)
             continue
         rooms.append(room); kept.append(index); room_by_spec[index] = room
+        if plan.specs[index].role == "exit":
+            clear_envelopes = [
+                cells for cells in elevator_envelopes(room)
+                if not (cells & protected_elevator_rock)
+                and not any(any(_inside_room([other], *cell) for cell in cells)
+                            for other in rooms[:-1])]
+            if not clear_envelopes:
+                raise ValueError("planned exit room lacks a horizontal elevator envelope")
+            # Prefer the side pointing away from its parent; either legal
+            # envelope remains an acceptable native shaft fallback.
+            parent_room = room_by_spec[parent_index]
+            away = 1 if room.center[0] >= parent_room.center[0] else -1
+            chosen = max(clear_envelopes, key=lambda cells: (
+                max(x for x, _ in cells) if away > 0
+                else -min(x for x, _ in cells)))
+            protected_elevator_rock.update(chosen)
 
     remap = {spec_index: room_index for room_index, spec_index in enumerate(kept)}
 
@@ -2008,9 +2189,11 @@ def _far_from_doors(cell: tuple[int, int], avoid: set[tuple[int, int]],
 def _carve_connection(tiles: list[int], a: Room, b: Room,
                       rng: random.Random, complexity: int,
                       avoid: set[tuple[int, int]] | None = None,
+                      protected: set[tuple[int, int]] | None = None,
                       *, turn_penalty: int = 4) -> list[tuple[int, int]]:
     """Carve the shortest rock-backed route between two clean thresholds."""
     avoid = set() if avoid is None else avoid
+    protected = set() if protected is None else protected
 
     def portals(room: Room) -> list[tuple[tuple[int, int], tuple[int, int],
                                            tuple[int, int], tuple[int, int]]]:
@@ -2102,7 +2285,7 @@ def _carve_connection(tiles: list[int], a: Room, b: Room,
                 nxt = x + dx, y + dy
                 if not (2 <= nxt[0] < GRID - 2 and 2 <= nxt[1] < GRID - 2):
                     continue
-                if _at(tiles, *nxt) != WALL:
+                if nxt in protected or _at(tiles, *nxt) != WALL:
                     continue
                 # A one-rock buffer stops unrelated routes and rooms from
                 # silently fusing before their planned door can separate them.
@@ -2157,7 +2340,7 @@ def _carve_connection(tiles: list[int], a: Room, b: Room,
     thresholds = []
     for y in range(2, GRID - 2):
         for x in range(2, GRID - 2):
-            if _at(tiles, x, y) != WALL:
+            if (x, y) in protected or _at(tiles, x, y) != WALL:
                 continue
             contacts = [(dx, dy) for dx, dy in directions
                         if (x + dx, y + dy) in source]
@@ -2185,7 +2368,8 @@ def _carve_connection(tiles: list[int], a: Room, b: Room,
                                                         -source_side[1]):
                     continue
                 nxt = x + dx, y + dy
-                if (nxt in previous or not (2 <= nxt[0] < GRID - 2
+                if (nxt in previous or nxt in protected
+                        or not (2 <= nxt[0] < GRID - 2
                                              and 2 <= nxt[1] < GRID - 2)
                         or _at(tiles, *nxt) != WALL):
                     continue
@@ -2253,7 +2437,8 @@ def _carve_connection(tiles: list[int], a: Room, b: Room,
             if not (2 <= nxt[0] < GRID - 2 and 2 <= nxt[1] < GRID - 2):
                 continue
             nxt_open = open_cell(nxt)
-            if not nxt_open and _at(tiles, *nxt) != WALL:
+            if (not nxt_open and (nxt in protected
+                                  or _at(tiles, *nxt) != WALL)):
                 continue
             contacts = {(nxt[0] + sx, nxt[1] + sy) for sx, sy in directions
                         if open_cell((nxt[0] + sx, nxt[1] + sy))}
@@ -2324,12 +2509,14 @@ def _adjacent_to_room(rooms: list[Room], x: int, y: int) -> bool:
 
 
 def _widen_corridors(tiles: list[int], rooms: list[Room], paths: list[list[tuple[int, int]]],
-                     rng: random.Random, widen_chance: float = 0.8) -> None:
+                     rng: random.Random, widen_chance: float = 0.8,
+                     protected: set[tuple[int, int]] | None = None) -> None:
     """A map built entirely from 1-tile halls reads as door-camping and rush
     traps. Widen eligible straight runs symmetrically from one tile to three,
     but leave doorway thresholds, bends, constrained runs, and short service
     connectors pinched to one tile. A failed symmetric widening leaves both
     sides untouched, so the generator never emits accidental 2-wide halls."""
+    protected = set() if protected is None else protected
     for path in paths:
         if len(path) < 6 or rng.random() > widen_chance:
             continue
@@ -2357,7 +2544,8 @@ def _widen_corridors(tiles: list[int], rooms: list[Room], paths: list[list[tuple
                    for wx, wy in wings
                    for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1))):
                 continue
-            if all(_at(tiles, wx, wy) == WALL for wx, wy in wings):
+            if (not any(cell in protected for cell in wings)
+                    and all(_at(tiles, wx, wy) == WALL for wx, wy in wings)):
                 for wx, wy in wings:
                     _set(tiles, wx, wy, FLOOR)
 
@@ -5548,8 +5736,13 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
             barrel_item = 24
         elif concept in blue_barrel_concepts or theme in {"grand", "barracks"}:
             barrel_item = 58
-        else:
+        elif any(item in (24, 58) for item in blocking):
             barrel_item = rng.choices((58, 24), weights=(3, 2), k=1)[0]
+        else:
+            # Preserve the established decoration RNG stream for concepts
+            # that cannot place a barrel.  Choosing an unused material here
+            # used to perturb unrelated optional signatures such as sinks.
+            barrel_item = 58
         blocking = tuple(dict.fromkeys(
             barrel_item if item in (24, 58) else item for item in blocking))
         wants_vase = 35 in blocking
@@ -5750,10 +5943,15 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
                         for interior_cell, wall_cell, sky_cell in geometry:
                             _set(tiles, *wall_cell, _at(tiles, *interior_cell))
                             _set(tiles, *sky_cell, 16)
+                            # The complete original wall plane belongs to the
+                            # vista, including its open gaps. Reserving it
+                            # prevents the later tiny-alcove fallback from
+                            # scattering an unrelated skeleton/plant between
+                            # the architectural supports.
+                            reserved.add(wall_cell)
                         for support in supports:
                             cell = geometry[support][1]
                             _set(things, *cell, 30)
-                            reserved.add(cell)
                             blocked_cells.add(cell)
                             room_blocked.append(cell)
                         static_headroom -= len(supports)
@@ -6544,65 +6742,99 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
                       or (floor_variant.name == "catacombs" and spec.tier == "anchor"))
         if structural:
             _add_pillars(tiles, room, rng, chance=floor_variant.pillar_chance)
-    door_zones: set[tuple[int, int]] = set()
-    paths = [_carve_connection(tiles, rooms[a], rooms[b], rng, complexity, door_zones)
-             for a, b in edges]
-    _widen_corridors(tiles, rooms, paths, rng, widen_chance=floor_variant.widen_chance)
+    is_boss = number == 9
+    planned_exit_index = roles.index("exit")
+    anchor_index = next(index for index, spec in enumerate(specs)
+                        if spec.tier == "anchor")
+    minimum_route_rooms = _minimum_critical_route_rooms(roles)
+    required_post_anchor = next((index for index, role in enumerate(roles)
+                                 if role in ("victory", "recovery")), None)
+
+    # Claim the complete native-safe arrival car before carving corridors.
+    # Later routers treat its floor, panels, and real door as occupied
+    # architecture and naturally route around it, rather than consuming the
+    # rock backing and forcing an otherwise valid floor to retry.
     first_neighbor = next((second if first == 0 else first
                            for first, second in edges if 0 in (first, second)), 1)
     arrival = _place_arrival_elevator(
         tiles, rooms[0], rooms[first_neighbor].center, rng, floor_variant.name)
-    start = arrival.player
-    _set(things, *start, PLAYER_START_CODES[arrival.facing])
-    if arrival.item is not None:
-        _set(things, *arrival.item)
-    is_boss = number == 9
-    exit_room = None
-    exit_stand = None
-    # The elevator belongs near the deepest authored frontier, after the
-    # anchor/climax room and at the end of a route containing most of the
-    # mandatory spine. The old behavior always tried the nominal exit first,
-    # even when a much deeper wing made it a trivial early solution.
-    planned_exit_index = roles.index("exit")
-    anchor_index = next(index for index, spec in enumerate(specs) if spec.tier == "anchor")
-    preliminary_distances = _floor_distances(tiles, start)
-    center_distances = {index: preliminary_distances.get(room.center, 0)
-                        for index, room in enumerate(rooms)}
-    deepest_center = max(center_distances.values(), default=1) or 1
-    minimum_route_rooms = _minimum_critical_route_rooms(roles)
-    required_post_anchor = next((index for index, role in enumerate(roles)
-                                 if role in ("victory", "recovery")), None)
-    exit_candidates = []
+    # Reserve the terminal car at the same architectural stage. Prefer the
+    # planned final spine room, then another sufficiently deep post-anchor
+    # route when its horizontal exterior wall is the one that remains clean.
+    exit_geometry_candidates: list[tuple[int, list[int]]] = []
     for room_index in range(1, len(rooms)):
         route = _room_graph_path(len(rooms), edges, room_index)
         if (anchor_index not in route[:-1] or room_index == anchor_index
                 or len(route) < minimum_route_rooms
-                or center_distances[room_index] / deepest_center < 0.75):
+                or (required_post_anchor is not None
+                    and required_post_anchor not in route[:-1])):
             continue
-        if required_post_anchor is not None and required_post_anchor not in route[:-1]:
-            continue
-        exit_candidates.append((room_index, route))
-    exit_candidates.sort(key=lambda item: (
-        center_distances[item[0]], item[0] == planned_exit_index, len(item[1])),
+        exit_geometry_candidates.append((room_index, route))
+    exit_geometry_candidates.sort(
+        key=lambda item: (item[0] == planned_exit_index, len(item[1])),
         reverse=True)
-    critical_route: list[int] = []
-    exit_index = -1
-    for room_index, route in exit_candidates:
+    preplaced_exit_index = -1
+    preplaced_exit_route: list[int] = []
+    exit_stand = None
+    for room_index, route in exit_geometry_candidates:
+        trial_tiles = tiles.copy()
         try:
-            trial_tiles = tiles.copy()
-            trial_stand = _place_elevator(trial_tiles, rooms[room_index], locked=is_boss)
-            trial_distances = _floor_distances(trial_tiles, start)
-            if trial_distances.get(trial_stand, 0) / deepest_center < 0.75:
-                continue
-            tiles[:] = trial_tiles
-            exit_stand = trial_stand
-            exit_room = rooms[room_index]
-            exit_index = room_index
-            critical_route = route
-            break
+            trial_stand = _place_elevator(
+                trial_tiles, rooms[room_index], locked=is_boss)
         except ValueError:
             continue
-    if exit_room is None:
+        tiles[:] = trial_tiles
+        preplaced_exit_index = room_index
+        preplaced_exit_route = route
+        exit_stand = trial_stand
+        break
+    if exit_stand is None:
+        raise ValueError("no post-climax room has a rock-backed horizontal elevator wall")
+
+    switch_dx = next(dx for dx in (-1, 1)
+                     if _at(tiles, exit_stand[0] + dx, exit_stand[1])
+                     == ELEVATOR_TILE)
+    exit_portal = (exit_stand[0] - 2 * switch_dx, exit_stand[1])
+    terminal_footprint = {
+        (exit_portal[0] + switch_dx * depth, exit_portal[1] + side)
+        for depth in range(5) for side in (-2, -1, 0, 1, 2)}
+    protected_elevators = set(arrival.footprint) | terminal_footprint
+    door_zones: set[tuple[int, int]] = {arrival.portal}
+    paths = [_carve_connection(tiles, rooms[a], rooms[b], rng, complexity,
+                               door_zones, protected_elevators)
+             for a, b in edges]
+    _widen_corridors(tiles, rooms, paths, rng,
+                     widen_chance=floor_variant.widen_chance,
+                     protected=protected_elevators)
+    start = arrival.player
+    _set(things, *start, PLAYER_START_CODES[arrival.facing])
+    if arrival.item is not None:
+        _set(things, *arrival.item)
+    exit_room = rooms[preplaced_exit_index]
+    # The elevator belongs near the deepest authored frontier, after the
+    # anchor/climax room and at the end of a route containing most of the
+    # mandatory spine. The old behavior always tried the nominal exit first,
+    # even when a much deeper wing made it a trivial early solution.
+    preliminary_distances = _floor_distances(tiles, start)
+    center_distances = {index: preliminary_distances.get(room.center, 0)
+                        for index, room in enumerate(rooms)}
+    room_routes = {index: _room_graph_path(len(rooms), edges, index)
+                   for index in range(1, len(rooms))}
+    post_anchor_frontier = [
+        index for index, route in room_routes.items()
+        if anchor_index in route[:-1] and len(route) >= minimum_route_rooms
+        and (required_post_anchor is None
+             or required_post_anchor in route[:-1])]
+    # Side destinations on a strong central hall may be physically farther
+    # from the start while branching before the climax. They should enrich
+    # exploration, not make every legitimate post-climax elevator look
+    # artificially shallow. Compare exit depth only with the eligible
+    # post-anchor frontier that an exit is actually allowed to occupy.
+    deepest_center = max((center_distances[index]
+                          for index in post_anchor_frontier), default=1) or 1
+    exit_index = preplaced_exit_index
+    critical_route = preplaced_exit_route
+    if preliminary_distances.get(exit_stand, 0) / deepest_center < 0.75:
         raise ValueError("no post-climax room satisfies the deep-exit route")
     if exit_index != planned_exit_index:
         roles[planned_exit_index] = "relief"
@@ -6963,6 +7195,8 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
     sky_cells = {(index % GRID, index // GRID)
                  for index, tile in enumerate(tiles) if tile == 16}
     sky_vistas: list[tuple[tuple[int, int], ...]] = []
+    sky_vista_recesses: list[tuple[tuple[int, int], ...]] = []
+    sky_vista_supports: list[tuple[tuple[int, int], ...]] = []
     while sky_cells:
         component = {sky_cells.pop()}
         queue = deque(component)
@@ -6974,7 +7208,16 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
                     sky_cells.remove(neighbor)
                     component.add(neighbor)
                     queue.append(neighbor)
-        sky_vistas.append(tuple(sorted(component)))
+        ordered_component = tuple(sorted(component))
+        recess = tuple(next(
+            (neighbor for neighbor in ((x + 1, y), (x - 1, y),
+                                       (x, y + 1), (x, y - 1))
+             if _is_floor(_at(tiles, *neighbor))))
+            for x, y in ordered_component)
+        sky_vistas.append(ordered_component)
+        sky_vista_recesses.append(recess)
+        sky_vista_supports.append(tuple(
+            cell for cell in recess if _at(things, *cell) == 30))
     final_distances = _floor_distances(tiles, start)
     deepest_room_distance = max((final_distances.get(room.center, 0) for room in rooms),
                                 default=1) or 1
@@ -7033,7 +7276,9 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
                           shape_target=shape_target,
                           primary_hall_geometry=primary_hall_geometry,
                           barrel_families=barrel_families,
-                          sky_vistas=tuple(sky_vistas))
+                          sky_vistas=tuple(sky_vistas),
+                          sky_vista_recesses=tuple(sky_vista_recesses),
+                          sky_vista_supports=tuple(sky_vista_supports))
     validate_map(result)
     result.critique = _critique(result)
     return result
@@ -7056,6 +7301,11 @@ def validate_map(level: GeneratedMap) -> None:
         if len(corridor_indices) < 3 or recorded != corridor_indices:
             raise ValueError("hallway-first floor lacks its recorded primary scaffold")
         degrees = Counter(index for edge in level.edges for index in edge)
+        expected_arms = {"plus-concourse": 2, "t-concourse": 1,
+                         "offset-boulevard": 1}.get(
+                             level.circulation_skeleton, 0)
+        if level.motif_rooms.count("hallway-arm") != expected_arms:
+            raise ValueError("hallway-first floor lost an authored concourse arm")
         for index, motif in enumerate(level.motif_rooms):
             if motif == "hallway-arm" and degrees[index] < 2:
                 raise ValueError("hallway-first floor contains an empty terminal arm")
@@ -7390,9 +7640,17 @@ def validate_map(level: GeneratedMap) -> None:
                     else [0, len(recess_cells) // 2, len(recess_cells) - 1])
         if supports != expected:
             raise ValueError("sky vista lacks balanced original-plane supports")
+        if any(_at(level.things, *cell) not in ({30} if index in expected else {0})
+               for index, cell in enumerate(recess_cells)):
+            raise ValueError("sky vista recess contains unrelated decoration")
         if level.sky_vistas != (tuple(sorted(sky_walls)),):
             raise ValueError("sky vista metadata does not match realized geometry")
-    elif level.sky_vistas:
+        if (level.sky_vista_recesses != (tuple(recess_cells),)
+                or level.sky_vista_supports != (
+                    tuple(recess_cells[index] for index in expected),)):
+            raise ValueError("sky vista metadata omits its recess composition")
+    elif (level.sky_vistas or level.sky_vista_recesses
+          or level.sky_vista_supports):
         raise ValueError("sky vista metadata records absent geometry")
 
     glass_walls = {(index % GRID, index // GRID)
@@ -7565,11 +7823,24 @@ def validate_map(level: GeneratedMap) -> None:
         raise ValueError("elevator exposes a non-elevator wall inside the doorway")
     if level.rooms and level.critical_route:
         distances = _floor_distances(level.tiles, level.start)
-        deepest_room = max((distances.get(room.center, 0) for room in level.rooms),
-                           default=1) or 1
+        anchor_index = next((index for index, tier in enumerate(level.room_tiers)
+                             if tier == "anchor"), -1)
+        minimum_route_rooms = _minimum_critical_route_rooms(level.room_roles)
+        required_post_anchor = next(
+            (index for index, role in enumerate(level.room_roles)
+             if role in ("victory", "recovery")), None)
+        eligible_frontier = []
+        for index in range(1, len(level.rooms)):
+            room_route = _room_graph_path(len(level.rooms), list(level.edges), index)
+            if (anchor_index in room_route[:-1]
+                    and len(room_route) >= minimum_route_rooms
+                    and (required_post_anchor is None
+                         or required_post_anchor in room_route[:-1])):
+                eligible_frontier.append(index)
+        deepest_room = max((distances.get(level.rooms[index].center, 0)
+                            for index in eligible_frontier), default=1) or 1
         if distances.get(level.exit_stand, 0) / deepest_room < 0.75:
             raise ValueError("elevator route is shallower than 75% of the floor")
-        minimum_route_rooms = _minimum_critical_route_rooms(level.room_roles)
         if len(level.critical_route) < minimum_route_rooms:
             raise ValueError("critical route visits too few authored rooms")
         edge_sets = [{first, second} for first, second in level.edges]
@@ -8219,7 +8490,8 @@ def generate_campaign(config: CampaignConfig, output: Path,
     # Only one parity of floors may request a vista in a campaign. This keeps
     # the rare motif from appearing on consecutive maps without changing
     # standalone-map generation or tying it to a specific theme.
-    vista_parity = random.Random(config.seed ^ 0x564953544131).randrange(2)
+    vista_parity = random.Random(config.circulation_seed(10)
+                                 ^ 0x564953544131).randrange(2)
     for number in range(1, 11):
         if cancelled and cancelled():
             raise GenerationCancelled("campaign generation cancelled")
@@ -8384,6 +8656,8 @@ def generate_campaign(config: CampaignConfig, output: Path,
                     "primary_hall_geometry": level.primary_hall_geometry,
                     "barrel_families": level.barrel_families,
                     "sky_vistas": level.sky_vistas,
+                    "sky_vista_recesses": level.sky_vista_recesses,
+                    "sky_vista_supports": level.sky_vista_supports,
                     "door_axis_parity": [
                         {"room": index, "width": room.w,
                          "height": room.h,

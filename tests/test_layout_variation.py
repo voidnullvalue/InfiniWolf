@@ -25,14 +25,35 @@ class LayoutVariationTests(unittest.TestCase):
         }
         observed = set()
         for seed in range(48):
-            sequence = generator._circulation_sequence(
-                CampaignConfig(seed=seed))
+            config = CampaignConfig(seed=seed)
+            sequence = generator._circulation_sequence(config)
             selected = [index for index, skeleton in enumerate(sequence, 1)
                         if skeleton in hallway_first]
             self.assertEqual(len(selected), 3)
             self.assertTrue(all(floor <= 8 for floor in selected))
+            rare_floor = generator._rare_motif_schedule(config)
+            if rare_floor:
+                self.assertNotIn(rare_floor, selected)
             observed.update(sequence[index - 1] for index in selected)
         self.assertEqual(observed, hallway_first)
+
+    def test_hallway_arms_preserve_exact_room_targets(self):
+        expected = {1: 16, 2: 18, 3: 20, 4: 22, 5: 24}
+        arm_counts = {"central-axis": 0, "plus-concourse": 2,
+                      "t-concourse": 1, "offset-boulevard": 1}
+        for complexity, target in expected.items():
+            for skeleton, arm_count in arm_counts.items():
+                plan = generator._plan_floor(
+                    random.Random(4000 + complexity * 10 + arm_count),
+                    complexity, 7, skeleton=skeleton,
+                    progression_grammar="hub-relay", rare_motif=True)
+                self.assertEqual(len(plan.specs), target)
+                self.assertEqual(
+                    sum(spec.motif == "hallway-arm" for spec in plan.specs),
+                    arm_count)
+                self.assertEqual(
+                    sum(spec.motif == "hallway-destination"
+                        for spec in plan.specs), arm_count)
 
     def test_hallway_first_skeletons_own_distinct_spine_geometry(self):
         signatures = {}

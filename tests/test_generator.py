@@ -372,6 +372,8 @@ class GeneratorTests(unittest.TestCase):
         self.assertEqual(support_axis, expected_support_axis)
         self.assertTrue(any(_at(things, *cell) != 30 for cell in recess),
                         "pillar supports completely hide the sky vista")
+        self.assertTrue(all(_at(things, *cell) in (0, 30) for cell in recess),
+                        "later alcove decoration polluted the vista recess")
 
     def test_theme_bias_is_strong_but_preserves_campaign_contrast(self):
         mixed = sum(variant.name == "catacombs" for seed in range(64)
@@ -430,7 +432,10 @@ class GeneratorTests(unittest.TestCase):
         identity = generator.RoomIdentity("relief", "standard", "spine", 0,
                                           "quarters", "mess-kitchen", "lounge")
         sink_presence = set()
-        for seed in (0, 2):
+        # Exercise several RNG streams: the contract is that a sink is an
+        # optional signature, not that two particular seeds consume random
+        # draws in a permanently fixed order.
+        for seed in range(4):
             tiles = [WALL] * (GRID * GRID)
             for y in range(room.y, room.y + room.h):
                 for x in range(room.x, room.x + room.w):
@@ -829,10 +834,13 @@ class GeneratorTests(unittest.TestCase):
             corridors = [index for index, spec in enumerate(specs)
                          if spec.tier == "corridor"]
             self.assertGreaterEqual(len(corridors), 2)
-            self.assertTrue(all(max(placed.rooms[index].w, placed.rooms[index].h)
-                                >= 2 * min(placed.rooms[index].w,
-                                           placed.rooms[index].h)
-                                for index in corridors))
+            self.assertTrue(all(
+                (min(placed.rooms[index].w, placed.rooms[index].h) == 3
+                 and max(placed.rooms[index].w, placed.rooms[index].h) >= 5)
+                if specs[index].motif == "hallway-arm" else
+                max(placed.rooms[index].w, placed.rooms[index].h)
+                >= 2 * min(placed.rooms[index].w, placed.rooms[index].h)
+                for index in corridors))
             mediated = sum(first in corridors or second in corridors
                            for first, second in placed.edges) / len(placed.edges)
             self.assertGreaterEqual(mediated, 0.20)
@@ -1516,7 +1524,7 @@ class GeneratorTests(unittest.TestCase):
             # 32 is the flat skeleton the jail-remains corner vignette lays
             # down; 40/41 are the hanging/skeleton cages -- everything else
             # stays barrels, blood, and bone variants.
-            self.assertTrue(set(placed) <= {58, 61, 42, 64, 65, 66, 32, 40, 41})
+            self.assertTrue(set(placed) <= {24, 61, 42, 64, 65, 66, 32, 40, 41})
 
     def test_decoration_zoning_splits_across_room_halves(self):
         class ThemedRandom(random.Random):
@@ -1532,7 +1540,9 @@ class GeneratorTests(unittest.TestCase):
         _place_decorations([room], tiles, things, set(), room.center, ThemedRandom(0),
                            roles=["start"], traversal_pair_chance=0.0)
         cx, _ = room.center
-        zone_a = {26, 35, 37}
+        # Vases use their own single, wall-backed accent grammar rather than
+        # the two-half zoning grammar exercised by this test.
+        zone_a = {26, 37}
         zone_b = {31, 27}
         placed = [(index % GRID, index // GRID, thing)
                   for index, thing in enumerate(things) if thing]
@@ -1540,13 +1550,19 @@ class GeneratorTests(unittest.TestCase):
         traversal = generator._room_traversal_frame(room, tiles)
         signature_cells = set(generator._traversal_pair_candidates(
             room, tiles, traversal)[0])
+        off_zone_a = 0
         for x, y, thing in placed:
             if (x, y) in signature_cells:
                 continue
             if thing in zone_a:
-                self.assertLess(x, cx)
+                off_zone_a += x >= cx
             if thing in zone_b:
                 self.assertGreaterEqual(x, cx)
+        # The independently authored room-light pair may share the zone-A
+        # item type; the furniture cluster itself must remain on its half.
+        self.assertLessEqual(off_zone_a, 2)
+        self.assertTrue(any(thing in zone_a and x < cx
+                            for x, _, thing in placed))
 
     def test_decoration_scattered_path_is_unchanged_for_ineligible_rooms(self):
         cases = ((Room(10, 10, 8, 8), [RoomSpec("beat", "closet", 0)]),
