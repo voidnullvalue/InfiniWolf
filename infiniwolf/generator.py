@@ -5147,7 +5147,7 @@ def _traversal_pair_candidates(room: Room, tiles: list[int], frame: TraversalFra
 AUTHORED_PICKUP_TEMPLATES = frozenset({
     "wall-cache", "entry-staging", "recovery-station",
     "treasure-display", "corner-cache", "center-dais",
-    "kennel-wall", "boss-arena-cross",
+    "kennel-wall", "boss-arena-cross", "secret-cache",
 })
 
 
@@ -5937,6 +5937,41 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
                             if not valid:
                                 break
                             geometry.append((interior_cell, wall_cell, sky_cell))
+                        # Recessing the original wall makes the two end-cap
+                        # cells newly visible from this floor component. A
+                        # bay at a district seam can therefore expose the
+                        # neighboring district's material even though it
+                        # does not connect to that district's floor. Keep the
+                        # complete reveal in the aperture wall's family.
+                        if valid and len(geometry) >= 2:
+                            wall_tiles = {
+                                _at(tiles, *wall_cell)
+                                for _, wall_cell, _ in geometry
+                            }
+                            material_family = next((
+                                {material.base, *material.accents}
+                                for material in WALL_MATERIALS
+                                if wall_tiles <= {
+                                    material.base, *material.accents}
+                            ), None)
+                            tx = geometry[1][1][0] - geometry[0][1][0]
+                            ty = geometry[1][1][1] - geometry[0][1][1]
+                            flanks = (
+                                (geometry[0][1][0] - tx,
+                                 geometry[0][1][1] - ty),
+                                (geometry[-1][1][0] + tx,
+                                 geometry[-1][1][1] + ty),
+                            )
+                            theme_tiles = {
+                                tile for material in WALL_MATERIALS
+                                for tile in (material.base, *material.accents)
+                            }
+                            if (material_family is None
+                                    or any(_at(tiles, *cell) in theme_tiles
+                                           and _at(tiles, *cell)
+                                           not in material_family
+                                           for cell in flanks)):
+                                valid = False
                         supports = (0, span - 1) if span < 9 else (0, span // 2, span - 1)
                         if not valid or static_headroom < len(supports):
                             continue
@@ -7075,7 +7110,17 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
     boss_room = None
     boss_arena_detail = None
     preboss_index = None
-    pickup_placements: list[SpritePlacement] = []
+    # Secret pockets are authored pickup compositions too. Record every
+    # reward sprite, not only the focal cell exposed in secret metadata, so a
+    # pocket that happens to overlap another room's rectangular bookkeeping
+    # boundary cannot be mistaken for loose, untracked room loot.
+    secret_pickups = tuple(
+        (x, y, _at(things, x, y))
+        for x, y in sorted(secret_protected)
+        if _at(things, x, y) in PICKUP_CODES)
+    pickup_placements: list[SpritePlacement] = (
+        [SpritePlacement("secret-reward", "secret-cache", -1,
+                         secret_pickups)] if secret_pickups else [])
     if is_boss:
         boss_index = anchor_index
         boss_room = rooms[boss_index]
@@ -7775,16 +7820,19 @@ def validate_map(level: GeneratedMap) -> None:
     if level.pickup_placements:
         tracked: dict[tuple[int, int], int] = {}
         for placement in level.pickup_placements:
+            secret_cache = placement.template == "secret-cache"
             if (placement.template not in AUTHORED_PICKUP_TEMPLATES
-                    or not 0 <= placement.room_index < len(level.rooms)
+                    or (placement.room_index != -1 if secret_cache else
+                        not 0 <= placement.room_index < len(level.rooms))
                     or not placement.cells):
                 raise ValueError("pickup has invalid placement provenance")
-            room = level.rooms[placement.room_index]
+            room = None if secret_cache else level.rooms[placement.room_index]
             for x, y, item in placement.cells:
                 if item not in PICKUP_CODES or _at(level.things, x, y) != item:
                     raise ValueError("pickup provenance disagrees with the things plane")
-                if not (room.x <= x < room.x + room.w
-                        and room.y <= y < room.y + room.h):
+                if (room is not None
+                        and not (room.x <= x < room.x + room.w
+                                 and room.y <= y < room.y + room.h)):
                     raise ValueError("authored pickup escaped its owning room")
                 if (x, y) in tracked:
                     raise ValueError("pickup belongs to multiple authored compositions")
@@ -7793,7 +7841,7 @@ def validate_map(level: GeneratedMap) -> None:
                     for index, item in enumerate(level.things)
                     if item in PICKUP_CODES
                     and _inside_room(list(level.rooms), index % GRID, index // GRID)}
-        if tracked != expected:
+        if expected.items() - tracked.items():
             raise ValueError("room contains an untracked pickup sprite")
     seen = {level.start}
     queue = deque([level.start])

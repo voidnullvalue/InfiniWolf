@@ -653,7 +653,10 @@ class GeneratorTests(unittest.TestCase):
     def test_every_in_room_pickup_has_authored_provenance(self):
         level = _generate_with_retries(CampaignConfig(seed=3332), 1, attempts=3)
         tracked = {(x, y): item for placement in level.pickup_placements
-                   for x, y, item in placement.cells}
+                   for x, y, item in placement.cells
+                   if any(room.x <= x < room.x + room.w
+                          and room.y <= y < room.y + room.h
+                          for room in level.rooms)}
         expected = {(index % GRID, index // GRID): item
                     for index, item in enumerate(level.things)
                     if item in generator.PICKUP_CODES
@@ -668,10 +671,20 @@ class GeneratorTests(unittest.TestCase):
         self.assertTrue(all(placement.room_index in route
                             for placement in level.pickup_placements
                             if placement.reason == "route-ammo"))
-        self.assertTrue(all(placement.reason == "exploration-treasure"
+        self.assertTrue(all(placement.reason in
+                            {"exploration-treasure", "secret-reward"}
                             for placement in level.pickup_placements
                             if any(item in generator.TREASURE
                                    for _, _, item in placement.cells)))
+
+    def test_secret_pickups_have_explicit_cache_provenance(self):
+        level = generate_map(CampaignConfig(seed=0), 4)
+        caches = [placement for placement in level.pickup_placements
+                  if placement.template == "secret-cache"]
+        self.assertEqual(len(caches), 1)
+        self.assertEqual(caches[0].room_index, -1)
+        self.assertEqual(sum(detail.reward_count for detail in level.secret_details),
+                         len(caches[0].cells))
 
     def test_wall_pickup_templates_are_actually_wall_backed(self):
         level = _generate_with_retries(CampaignConfig(seed=3332), 1, attempts=3)
