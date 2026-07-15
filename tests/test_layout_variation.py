@@ -6,6 +6,61 @@ from infiniwolf.config import CampaignConfig
 
 
 class LayoutVariationTests(unittest.TestCase):
+    def test_hallway_first_skeleton_vocabulary_is_available(self):
+        hallway_first = {
+            "central-axis", "plus-concourse",
+            "t-concourse", "offset-boulevard",
+        }
+        legacy = {
+            "bent-spine", "parallel-cross", "central-wings",
+            "forked", "perimeter-loop", "staggered-grid",
+        }
+        self.assertEqual(set(generator.CIRCULATION_SKELETONS),
+                         legacy | hallway_first)
+
+    def test_hallway_first_skeletons_are_scheduled_on_three_ordinary_floors(self):
+        hallway_first = {
+            "central-axis", "plus-concourse",
+            "t-concourse", "offset-boulevard",
+        }
+        observed = set()
+        for seed in range(48):
+            sequence = generator._circulation_sequence(
+                CampaignConfig(seed=seed))
+            selected = [index for index, skeleton in enumerate(sequence, 1)
+                        if skeleton in hallway_first]
+            self.assertEqual(len(selected), 3)
+            self.assertTrue(all(floor <= 8 for floor in selected))
+            observed.update(sequence[index - 1] for index in selected)
+        self.assertEqual(observed, hallway_first)
+
+    def test_hallway_first_skeletons_own_distinct_spine_geometry(self):
+        signatures = {}
+        for skeleton in ("central-axis", "plus-concourse",
+                         "t-concourse", "offset-boulevard"):
+            samples = []
+            for seed in range(1700, 1704):
+                rng = random.Random(seed)
+                plan = generator._plan_floor(
+                    rng, 3, 5, skeleton=skeleton,
+                    progression_grammar="hub-relay")
+                placed = generator._place_planned_rooms(rng, plan, 5)
+                spine_count = next(
+                    index for index, spec in enumerate(plan.specs)
+                    if spec.role == "exit") + 1
+                spine_rooms = [
+                    placed.rooms[index]
+                    for index, spec_index in enumerate(placed.spec_indices)
+                    if spec_index < spine_count
+                ]
+                self.assertEqual(len(spine_rooms), spine_count)
+                samples.append(tuple(
+                    (room.center, room.w, room.h) for room in spine_rooms))
+            signatures[skeleton] = tuple(samples)
+
+        self.assertEqual(len(set(signatures.values())), len(signatures),
+                         "new skeleton labels do not alter realized geometry")
+
     def test_progression_grammars_are_seeded_and_do_not_repeat_adjacent(self):
         sequence = generator._progression_sequence(CampaignConfig(seed=42))
         self.assertEqual(sequence, generator._progression_sequence(CampaignConfig(seed=42)))

@@ -10,6 +10,17 @@ PUBLIC_DOCS = ("README.md", "DESIGN.md", "GENERATION_FLOW.md")
 
 
 class DocumentationTests(unittest.TestCase):
+    def test_readme_has_exact_1_7_release_version_and_unicode_credit_footer(self):
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        self.assertEqual(__version__, "1.7.0")
+        self.assertIn(
+            "python3 packaging/make_release.py --platform linux --version 1.7.0",
+            readme)
+        self.assertTrue(
+            readme.rstrip().endswith(
+                "## Credits\n\nSeñor Frijole — testing and map-design feedback."),
+            "README credit footer lost its exact Unicode spelling or punctuation")
+
     def test_public_docs_match_current_release_and_layout_rules(self):
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
         design = (ROOT / "DESIGN.md").read_text(encoding="utf-8")

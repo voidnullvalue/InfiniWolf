@@ -100,6 +100,27 @@ class GeneratorTests(unittest.TestCase):
                 tiles, room, (40, 24), random.Random(1),
                 forced_kind="flush-facade")
 
+    def test_arrival_elevators_only_use_horizontal_door_axes(self):
+        """Vertical elevator doors use a different native tile and are easy
+        to misread as exposed track.  Arrival cars deliberately use only the
+        engine's horizontal elevator-door composition, regardless of where
+        the next room lies relative to the start room."""
+        room = Room(20, 20, 8, 8)
+        toward_points = ((24, 4), (24, 55), (4, 24), (55, 24))
+        for kind in ("outside-empty", "outside-supply", "inside-closed"):
+            for toward in toward_points:
+                with self.subTest(kind=kind, toward=toward):
+                    tiles = [WALL] * (GRID * GRID)
+                    for y in range(room.y, room.y + room.h):
+                        for x in range(room.x, room.x + room.w):
+                            tiles[y * GRID + x] = FLOOR
+                    arrival = generator._place_arrival_elevator(
+                        tiles, room, toward, random.Random(7),
+                        forced_kind=kind)
+                    self.assertIn(arrival.facing, (1, 3))
+                    self.assertEqual(_at(tiles, *arrival.portal),
+                                     generator.DOOR_ELEVATOR)
+
     def test_terminal_elevator_has_no_plain_wall_strip_inside_car(self):
         room = Room(20, 20, 8, 8)
         tiles = [WALL] * (GRID * GRID)
@@ -212,6 +233,145 @@ class GeneratorTests(unittest.TestCase):
                                     and _at(tiles, *cell) not in generator.DOORS
                                     for cell in outside))
         self.assertTrue(found)
+
+    def test_rooms_never_mix_green_and_standard_barrels(self):
+        """The two native barrel actors are alternate prop languages, not a
+        matched set.  A storage room may repeat either family but must not
+        scatter both old-num 24 and 58 into the same composition."""
+        observed = set()
+        for concept in ("storage", "supply-cache"):
+            for seed in range(48):
+                room = Room(20, 20, 12, 10)
+                tiles = [WALL] * (GRID * GRID)
+                things = [0] * len(tiles)
+                for y in range(room.y, room.y + room.h):
+                    for x in range(room.x, room.x + room.w):
+                        generator._set(tiles, x, y, FLOOR)
+                identity = generator.RoomIdentity(
+                    "beat", "standard", "spine", 0,
+                    "storehouse", concept, "storage")
+                _place_decorations(
+                    [room], tiles, things, set(), room.center,
+                    random.Random(seed), identities=[identity], density=1.3,
+                    traversal_pair_chance=1.0)
+                room_items = {
+                    _at(things, x, y)
+                    for y in range(room.y, room.y + room.h)
+                    for x in range(room.x, room.x + room.w)
+                }
+                observed.update(room_items & {24, 58})
+                self.assertFalse(
+                    {24, 58} <= room_items,
+                    f"{concept} seed={seed} mixed both barrel families")
+        self.assertEqual(observed, {24, 58})
+
+    def test_vases_are_singular_wall_backed_accents(self):
+        """Vase 35 is a single wall-side accent, never a freestanding pair
+        or room-filling furniture family."""
+        found = False
+        for concept in ("guardpost", "grand", "lounge",
+                        "burial-chamber", "dining-hall"):
+            for seed in range(40):
+                room = Room(20, 20, 12, 10)
+                tiles = [WALL] * (GRID * GRID)
+                things = [0] * len(tiles)
+                for y in range(room.y, room.y + room.h):
+                    for x in range(room.x, room.x + room.w):
+                        generator._set(tiles, x, y, FLOOR)
+                identity = generator.RoomIdentity(
+                    "beat", "standard", "spine", 0,
+                    "garrison", concept, concept)
+                _place_decorations(
+                    [room], tiles, things, set(), room.center,
+                    random.Random(seed), identities=[identity], density=1.3,
+                    traversal_pair_chance=1.0)
+                vases = [
+                    (x, y)
+                    for y in range(room.y, room.y + room.h)
+                    for x in range(room.x, room.x + room.w)
+                    if _at(things, x, y) == 35
+                ]
+                found |= bool(vases)
+                self.assertLessEqual(
+                    len(vases), 1,
+                    f"{concept} seed={seed} placed {len(vases)} vases")
+                for x, y in vases:
+                    outward = []
+                    if x == room.x:
+                        outward.append((x - 1, y))
+                    if x == room.x + room.w - 1:
+                        outward.append((x + 1, y))
+                    if y == room.y:
+                        outward.append((x, y - 1))
+                    if y == room.y + room.h - 1:
+                        outward.append((x, y + 1))
+                    self.assertTrue(
+                        any(not _is_floor(_at(tiles, *cell))
+                            and _at(tiles, *cell) not in generator.DOORS
+                            for cell in outward),
+                        f"{concept} seed={seed} vase at {(x, y)} is not wall-backed")
+        self.assertTrue(found, "test never exercised vase decoration")
+
+    def test_sky_vistas_are_visible_in_one_tile_recesses(self):
+        """A vista occupies a shallow exterior bay: the old wall plane is
+        walkable recess floor, the next plane is one contiguous SKY run, and
+        a balanced pillar pair frames rather than completely hides the view."""
+        room = Room(20, 20, 12, 10)
+        realized = None
+        for seed in range(160):
+            tiles = [WALL] * (GRID * GRID)
+            things = [0] * len(tiles)
+            for y in range(room.y, room.y + room.h):
+                for x in range(room.x, room.x + room.w):
+                    generator._set(tiles, x, y, FLOOR)
+            identity = generator.RoomIdentity(
+                "hub", "anchor", "courtyard", 0,
+                "grand-halls", "courtyard", "grand")
+            _place_decorations(
+                [room], tiles, things, set(), room.center,
+                random.Random(seed), identities=[identity], density=1.0,
+                landmark_frame_chance=0.0, traversal_pair_chance=0.0)
+            sky = {(index % GRID, index // GRID)
+                   for index, tile in enumerate(tiles) if tile == 16}
+            if sky:
+                realized = tiles, things, sky, seed
+                break
+        self.assertIsNotNone(realized, "test never exercised a sky vista")
+        tiles, things, sky, seed = realized
+
+        side_options = (
+            ((0, -1), {(x, room.y - 2)
+                       for x in range(room.x, room.x + room.w)}),
+            ((0, 1), {(x, room.y + room.h + 1)
+                      for x in range(room.x, room.x + room.w)}),
+            ((-1, 0), {(room.x - 2, y)
+                       for y in range(room.y, room.y + room.h)}),
+            ((1, 0), {(room.x + room.w + 1, y)
+                      for y in range(room.y, room.y + room.h)}),
+        )
+        matches = [(outward, plane) for outward, plane in side_options
+                   if sky <= plane]
+        self.assertEqual(len(matches), 1,
+                         f"seed={seed} SKY is not on the recessed outer plane")
+        outward, _ = matches[0]
+        dx, dy = outward
+        varying = sorted(x if dy else y for x, y in sky)
+        self.assertGreaterEqual(len(varying), 3)
+        self.assertEqual(varying, list(range(varying[0], varying[-1] + 1)))
+
+        recess = {(x - dx, y - dy) for x, y in sky}
+        room_edge = {(x - 2 * dx, y - 2 * dy) for x, y in sky}
+        self.assertTrue(all(_is_floor(_at(tiles, *cell)) for cell in recess))
+        self.assertTrue(all(_is_floor(_at(tiles, *cell)) for cell in room_edge))
+        supports = [cell for cell in recess if _at(things, *cell) == 30]
+        support_axis = sorted(x if dy else y for x, y in supports)
+        expected_support_axis = ([varying[0], varying[-1]]
+                                 if len(varying) < 9
+                                 else [varying[0], varying[len(varying) // 2],
+                                       varying[-1]])
+        self.assertEqual(support_axis, expected_support_axis)
+        self.assertTrue(any(_at(things, *cell) != 30 for cell in recess),
+                        "pillar supports completely hide the sky vista")
 
     def test_theme_bias_is_strong_but_preserves_campaign_contrast(self):
         mixed = sum(variant.name == "catacombs" for seed in range(64)
@@ -698,6 +858,64 @@ class GeneratorTests(unittest.TestCase):
             width, height = generator._room_size(random.Random(seed), "standard", 5)
             self.assertIn(width, range(6, 10))
             self.assertIn(height, range(6, 10))
+
+    def test_authored_corridor_rooms_are_three_tiles_wide(self):
+        """Authored hallway nodes use a three-tile minor axis so their
+        centered doorways and fixtures have a real centerline."""
+        for seed in range(128):
+            width, height = generator._room_size(
+                random.Random(seed), "corridor", 5)
+            major, minor = max(width, height), min(width, height)
+            self.assertGreaterEqual(major, 8)
+            self.assertEqual(minor, 3)
+
+    def test_carved_connectors_are_either_one_or_three_tiles_wide(self):
+        """Optional widening adds both shoulders atomically.  This preserves
+        a deliberate 1/3-tile corridor vocabulary instead of producing the
+        generator-looking two-tile strips used by older releases."""
+        path = [(x, 20) for x in range(8, 24)]
+        for widen_chance, expected_width in ((0.0, 1), (1.0, 3)):
+            with self.subTest(widen_chance=widen_chance):
+                tiles = [WALL] * (GRID * GRID)
+                for cell in path:
+                    generator._set(tiles, *cell, FLOOR)
+                generator._widen_corridors(
+                    tiles, [], [path], random.Random(4),
+                    widen_chance=widen_chance)
+                for x, y in path[2:-2]:
+                    width = sum(_is_floor(_at(tiles, x, y + offset))
+                                for offset in (-1, 0, 1))
+                    self.assertEqual(width, expected_width)
+
+    def test_door_facing_room_dimensions_prefer_odd_sizes(self):
+        """The dimension parallel to a room's connecting wall should usually
+        be odd, giving the doorway a centered architectural axis without
+        forcing every room into the same rectangular proportions."""
+        odd = total = 0
+        for seed in range(48):
+            rng = random.Random(1700 + seed)
+            plan = _plan_floor(rng, int(Intensity.NORMAL), 5,
+                               skeleton="central-axis")
+            placed = _place_planned_rooms(rng, plan, 5)
+            for first, second in placed.edges:
+                # The later authored spec is the child whose size was oriented
+                # against this attachment during room realization.
+                child = max((first, second),
+                            key=lambda index: placed.spec_indices[index])
+                parent = second if child == first else first
+                child_spec = plan.specs[placed.spec_indices[child]]
+                if child_spec.tier in ("corridor", "motif"):
+                    continue
+                parent_room = placed.rooms[parent]
+                child_room = placed.rooms[child]
+                dx = child_room.center[0] - parent_room.center[0]
+                dy = child_room.center[1] - parent_room.center[1]
+                door_facing_dimension = (child_room.h if abs(dx) >= abs(dy)
+                                         else child_room.w)
+                odd += door_facing_dimension % 2
+                total += 1
+        self.assertGreater(total, 300)
+        self.assertGreater(odd / total, 0.62)
 
     def test_normal_layouts_recover_local_fillers_instead_of_staying_sparse(self):
         realized_counts = []

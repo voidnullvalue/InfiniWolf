@@ -22,6 +22,7 @@ flowchart TD
     B --> B6[Rarely nominate one possible guard-gallery floor]
     B --> B7[_progression_sequence<br/>non-repeating macro layout grammars]
     B --> B8[3% chance: nominate one late optional<br/>hooked-cross room motif]
+    B --> B9[Schedule roughly three hallway-first floors<br/>central axis, plus, T, or offset boulevard]
 
     B1 --> C{{For floors 1 through 10}}
     B2 --> C
@@ -31,6 +32,7 @@ flowchart TD
     B6 --> C
     B7 --> C
     B8 --> C
+    B9 --> C
 
     C --> D[Derive floor_seed number + attempt<br/>create isolated floor RNG]
 
@@ -43,18 +45,18 @@ flowchart TD
         E3 --> E4[Add filler through district rules<br/>rooms prefer shared corridor nodes]
 
         E4 --> F[_place_planned_rooms]
-        F --> F1[Draw tier-aware sizes<br/>corridors stay narrow and elongated]
-        F1 --> F2[Place critical spine first<br/>apply skeleton turn rhythm]
+        F --> F1[Draw tier-aware sizes<br/>prefer odd doorway-axis dimensions]
+        F1 --> F2[Place critical spine or centered hallway footprint<br/>apply skeleton rhythm and soft map-center pull]
         F2 --> F3[Attach suites/bays/branches to compatible circulation<br/>rehome saturated filler locally by minimum bbox growth]
-        F3 --> F4[Drop optional rooms that cannot remain local<br/>remap surviving rooms and graph edges]
+        F3 --> F4[Balance asymmetric room loading; remove empty arms;<br/>drop optional rooms that cannot remain local]
 
         F4 --> G[Paint room floors into 64×64 tiles plane]
         G --> G1[_carve_notches + _carve_symmetric_profiles<br/>normal target 40%; chamfer, L, T, offset,<br/>stepped, and paired-bay families]
         G1 --> G2[_add_pillars<br/>rare symmetric structural pairs]
         G2 --> G3[_carve_connection for every graph edge<br/>safe portal route + protected seam fallback]
-        G3 --> G4[_widen_corridors where geometry and traffic allow]
+        G3 --> G4[Prefer 3-wide major halls and 1-wide connectors;<br/>otherwise widen where geometry and traffic allow]
 
-        G4 --> H[_place_arrival_elevator<br/>weighted functional-door car arrival<br/>with native bounded elevator geometry]
+        G4 --> H[_place_arrival_elevator<br/>one of three horizontal functional-door car arrivals<br/>with native bounded elevator geometry]
         H --> H1[Measure graph/tile depth from start]
         H1 --> H2[Select post-climax elevator candidate]
         H2 --> H3{Route contains ≥90% of the progression spine,<br/>crosses a district, and reaches ≥75% depth?}
@@ -87,7 +89,7 @@ flowchart TD
         M --> M1[Assign sound zones and district wall-material groups]
         M1 --> M2[Select jail rooms and apply explicit material families<br/>plain variants, gated damage, sparse landmarks]
         M2 --> M3[Combine role, tier, motif, district, variant,<br/>special family, material, and balanced room concept]
-        M3 --> M4[Compose rare sealed fake door, matched stained glass,<br/>or outside-most pillar-hidden sky vista]
+        M3 --> M4[Compose rare sealed fake door, matched stained glass,<br/>or recessed 5–9 tile pier-framed exterior vista]
         M4 --> M5{Guard-gallery floor and safe optional formal room?}
         M5 -- yes --> M6[Reserve inaccessible rear chamber<br/>seal its full visible face with matched pillars]
         M5 -- no --> L
@@ -112,20 +114,20 @@ flowchart TD
         O --> O1[Populate mirrored shape anchors with matching accents]
         O1 --> O2[Attempt room-concept signature]
         O2 --> O3[Choose one room lighting family<br/>compose traversal-balanced pairs and restrained frames]
-        O3 --> O4[Place wall-backed appliances, armor, flags, and spears;<br/>complete cross-room vine screens only]
+        O3 --> O4[Place wall-backed appliances, armor, flags, and spears;<br/>one barrel family per room and singular blue urns]
         O4 --> O5[Check doorway clearance, statics headroom,<br/>full-map reachability, spacing, and reservations]
         O5 --> O6[On the nominated floor only, optionally fill<br/>1–2 safe hallway lengths with vines; prefer an existing ambush]
         O6 --> O7[Add corridor rhythm lights and valid niche accents]
 
-        O7 --> P[Build GeneratedMap metadata<br/>arrival, encounters, patrols, guard recesses/galleries,<br/>special rooms, walls, vines, shapes, secrets, keys, and pickups]
+        O7 --> P[Build GeneratedMap metadata<br/>arrival, hallway form, vista, semantic props, encounters,<br/>special rooms, walls, vines, shapes, secrets, keys, and pickups]
         P --> Q[validate_map]
         Q --> Q1[Arrival cab/player facing, connectivity, elevator,<br/>depth, bends, continuous multi-district critical route]
         Q1 --> Q2[Door axes, every gold/silver key state,<br/>physical-key detours and distinct hosts]
         Q2 --> Q3[Secret shell, push distance, no bypass;<br/>bounded car and symmetric hint for secret elevator]
         Q3 --> Q4[Encounter provenance, ambush spacing, patrol target/routes,<br/>guard-recess/gallery symmetry, ownership, and no trapped pickups]
-        Q4 --> Q5[Circulation hierarchy and corridor-mediated ratio]
+        Q4 --> Q5[Circulation hierarchy, hallway footprint/width,<br/>occupied arms, and corridor-mediated ratio]
         Q5 --> Q6[Every in-room pickup matches one exact provenance record]
-        Q6 --> Q7[Enemy codes, object limits, sound zones,<br/>boss/reward-floor contracts, shapes and decor invariants]
+        Q6 --> Q7[Enemy codes, object limits, sound zones, vista shell,<br/>boss/reward-floor contracts, shapes and decor-family invariants]
         Q7 --> Q8{All hard checks pass?}
         Q8 -- no --> X
         Q8 -- yes --> R[_critique<br/>soft quality flags for candidate comparison]
@@ -146,7 +148,7 @@ flowchart TD
     U --> Y{All ten floors accepted?}
     W --> Y
     Y -- no --> C
-    Y -- yes --> Y1[Validate adjacent floor types, skeletons, and<br/>progression grammars differ; enforce one-floor<br/>vine, gallery, and rare-motif budgets]
+    Y -- yes --> Y1[Validate adjacent floor types, skeletons, and<br/>progression grammars differ; enforce hallway/vista diversity<br/>and one-floor vine, gallery, and rare-motif budgets]
     Y1 --> Y2[Permute gameplay-neutral sound-zone labels<br/>until every map has two provenance residues;<br/>ten primary residues total 42 modulo 43]
     Y2 --> AA[Write deterministic MAPINFO, manifest,<br/>plain-text reproduction settings, and ten ECWolf map WADs<br/>to a temporary campaign file]
     AA --> AB[validate_package<br/>reopen archive, verify entries, headers,<br/>dimensions, manifest, and asset-free contents]
@@ -172,17 +174,18 @@ flowchart TD
 
 | Output | Planner responsible | Required explanation |
 |---|---|---|
-| Building circulation | `_plan_floor` + `_place_planned_rooms` | Skeleton, district mode, corridor node, suite/branch role |
-| Floor arrival | `_place_arrival_elevator` | First-route direction, complete working-door car, contextual item, player position and facing |
+| Building circulation | `_plan_floor` + `_place_planned_rooms` | Skeleton or hallway-first form, district mode, corridor width, occupied arms, suite/branch role |
+| Floor arrival | `_place_arrival_elevator` | Horizontal axis, complete working-door car, contextual item, player position and facing |
 | Elevator and keys | exit/gate planners | Mandatory route depth, explicit key states, meaningful physical-key detours |
 | Secret rooms/elevator | `_place_secret` / `_carve_secret_pocket` | Isolated shape, pushwall entrance, reward tier, bounded elevator car |
 | Enemies | `_place_population` | Room identity, encounter template, squad family, reveal slot, facing or patrol route |
 | Guard recesses | `_carve_guard_recesses` + encounter planner | Rare mirrored hallway pair and its owned blind-corner sentry |
 | Guard gallery | `_place_guard_gallery` + gallery encounter planner | Optional symmetric room, complete matched screen, inaccessible pickup-free rear chamber, owned firing pair |
 | Wall materials | `_assign_area_themes` + `_apply_wall_theme` | Compatible district family, room identity, coherent variant/damage/landmark, validated special composition |
+| Exterior vista | wall-special planner | Odd recessed span, original-plane piers, deeper sky, solid backing, campaign repetition budget |
 | Hallway vines | campaign schedule + `_place_decorations` | Single nominated floor, complete longitudinal run, same-path budget, optional existing ambush anchor |
 | Gameplay pickups | `_place_authored_pickups` + `_PlacementGrammar` | Economy intent, owning room, named composition, exact provenance |
-| Room decoration | `_place_decorations` | Room identity, one lighting family, architectural anchor, composition, reachability |
+| Room decoration | `_place_decorations` | Room identity, one lighting and barrel family, singular urn rule, architectural anchor, composition, reachability |
 | Symmetric room profiles | shape carvers + `_place_decorations` | Bounded mirrored structure and matching themed accents |
 
 The long-term rule is simple: if a sprite or structural feature cannot answer

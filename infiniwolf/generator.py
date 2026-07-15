@@ -447,7 +447,11 @@ PATROL_TARGETS = (0.0, 0.04, 0.09, 0.16, 0.23, 0.30)
 CIRCULATION_SKELETONS = (
     "bent-spine", "parallel-cross", "central-wings",
     "forked", "perimeter-loop", "staggered-grid",
+    "central-axis", "plus-concourse", "t-concourse", "offset-boulevard",
 )
+HALLWAY_FIRST_SKELETONS = frozenset({
+    "central-axis", "plus-concourse", "t-concourse", "offset-boulevard",
+})
 CIRCULATION_MODES = (
     "double-loaded", "single-loaded", "suite",
     "service-bays", "formal-axis", "tunnel-cluster",
@@ -568,14 +572,22 @@ def _circulation_sequence(config: CampaignConfig) -> tuple[str, ...]:
         "stronghold": ("central-wings", "forked", "parallel-cross"),
         "vault": ("perimeter-loop", "central-wings", "staggered-grid"),
     }
+    # Three of the eight ordinary floors receive a hallway-first scaffold.
+    # Keeping floors 9/10 outside this schedule preserves their authored boss
+    # and reward-expedition identities while making the new family exactly
+    # thirty percent of a ten-map campaign.
+    schedule_rng = random.Random(config.seed ^ 0x48414C4C57415931)
+    hallway_floors = frozenset(schedule_rng.sample(range(1, 9), 3))
     result: list[str] = []
     for floor, variant in enumerate(variants, 1):
         seed = config.circulation_seed(floor)
         if config.say_aardwolf:
             seed ^= config.aardwolf_seed(11 - floor)
         rng = random.Random(seed)
+        family = (HALLWAY_FIRST_SKELETONS if floor in hallway_floors
+                  else set(CIRCULATION_SKELETONS) - HALLWAY_FIRST_SKELETONS)
         pool = [name for name in CIRCULATION_SKELETONS
-                if not result or name != result[-1]]
+                if name in family and (not result or name != result[-1])]
         if config.say_aardwolf and len(result) > 1:
             distant = [name for name in pool if name != result[-2]]
             if distant:
@@ -918,6 +930,9 @@ class GeneratedMap:
     rare_motif: RareMotifDetail | None = None
     boss_arena: BossArenaDetail | None = None
     shape_target: float = 0.0
+    primary_hall_geometry: tuple[tuple[int, int, int, int, int], ...] = ()
+    barrel_families: tuple[str, ...] = ()
+    sky_vistas: tuple[tuple[tuple[int, int], ...], ...] = ()
 
 
 def _room_identities(rooms: list[Room], specs: list[RoomSpec], districts: list[int],
@@ -1142,12 +1157,22 @@ def _plan_floor(rng: random.Random, complexity: int, number: int,
     }[progression_grammar]
     desired = 3 if beat_count >= 6 and len(fractions) >= 3 else 2
     corridor_indices: list[int] = []
+    if skeleton in HALLWAY_FIRST_SKELETONS:
+        middle = beat_indices[len(beat_indices) // 2]
+        authored = {
+            "central-axis": (middle - 1, middle, middle + 1),
+            "plus-concourse": (middle - 1, middle, middle + 1),
+            "t-concourse": (middle - 1, middle, middle + 1),
+            "offset-boulevard": (middle - 1, middle, middle + 1),
+        }[skeleton]
+        corridor_indices.extend(index for index in authored
+                                if index in beat_indices)
     for fraction in fractions:
         index = beat_indices[min(len(beat_indices) - 1,
                                  round((len(beat_indices) - 1) * fraction))]
         if index not in corridor_indices:
             corridor_indices.append(index)
-        if len(corridor_indices) == desired:
+        if len(corridor_indices) >= desired:
             break
     while len(corridor_indices) < desired:
         remaining = [index for index in beat_indices if index not in corridor_indices]
@@ -1347,6 +1372,29 @@ def _plan_floor(rng: random.Random, complexity: int, number: int,
         specs.append(RoomSpec(role, tier, specs[parent].district, "filler"))
         edges.append((parent, node))
         filler_tips.append(node)
+
+    # Turn existing filler budget into occupied concourse arms instead of
+    # adding more rooms beyond the configured target. Each authored corridor
+    # arm owns a destination immediately after it, so no hallway-first form
+    # can terminate as an unexplained strip of floor.
+    arm_count = {
+        "plus-concourse": 2,
+        "t-concourse": 1,
+        "offset-boulevard": 1,
+    }.get(skeleton, 0)
+    arm_nodes = sorted(filler_tips)[-2 * arm_count:] if arm_count else []
+    hall_parent = corridor_indices[len(corridor_indices) // 2]
+    if len(arm_nodes) == 2 * arm_count:
+        for branch, destination in zip(arm_nodes[::2], arm_nodes[1::2]):
+            district = specs[hall_parent].district
+            specs[branch] = RoomSpec("circulation", "corridor", district,
+                                     "hallway-arm")
+            specs[destination] = RoomSpec("branch", "standard", district,
+                                          "hallway-destination")
+            edges = [(hall_parent if child == branch else parent, child)
+                     for parent, child in edges]
+            edges = [(branch if child == destination else parent, child)
+                     for parent, child in edges]
     if sum(spec.tier == "anchor" for spec in specs) != 1:
         raise ValueError("floor plan must have exactly one anchor")
     return FloorPlan(specs, edges, loops, tuple(motifs), frozenset(critical), tuple(groups),
@@ -1355,24 +1403,33 @@ def _plan_floor(rng: random.Random, complexity: int, number: int,
 
 
 def _room_size(rng: random.Random, tier: str, number: int = 0) -> tuple[int, int]:
+    def preferred(low: int, high: int) -> int:
+        """Strongly prefer odd spans without making parity a hard rule."""
+        values = list(range(low, high))
+        weights = [4 if value % 2 else 1 for value in values]
+        return rng.choices(values, weights=weights, k=1)[0]
+
     bump = 2 if number == 10 else 0
     if tier == "anchor":
         if number == 9:
-            return rng.randrange(14, 18), rng.randrange(14, 18)
-        return rng.randrange(10 + bump, 14 + bump), rng.randrange(10 + bump, 14 + bump)
+            return preferred(14, 18), preferred(14, 18)
+        return preferred(10 + bump, 14 + bump), preferred(10 + bump, 14 + bump)
     if tier == "motif":
         return 15, 15
     if tier == "closet":
         return rng.randrange(4, 6), rng.randrange(4, 6)
     if tier == "corridor":
         # A circulation node is a traversable hallway, not a long combat
-        # room. The major axis varies while the minor axis stays readable.
-        major, minor = rng.randrange(8 + bump, 14 + bump), rng.randrange(3, 5)
+        # room. Its authored major span is three tiles wide; ordinary carved
+        # connectors remain one tile wide. Even-width corridors are never the
+        # default product of the room-size grammar.
+        major, minor = preferred(8 + bump, 14 + bump), 3
         return (major, minor) if rng.random() < 0.5 else (minor, major)
     if tier == "hall":
-        major, minor = rng.randrange(9 + bump, 14 + bump), rng.randrange(5 + bump, 8 + bump)
+        major = preferred(9 + bump, 14 + bump)
+        minor = preferred(5 + bump, 8 + bump)
         return (major, minor) if rng.random() < 0.5 else (minor, major)
-    return rng.randrange(6 + bump, 10 + bump), rng.randrange(6 + bump, 10 + bump)
+    return preferred(6 + bump, 10 + bump), preferred(6 + bump, 10 + bump)
 
 
 def _place_planned_rooms(rng: random.Random, plan: FloorPlan, number: int = 0) -> PlacedPlan:
@@ -1398,10 +1455,18 @@ def _place_planned_rooms(rng: random.Random, plan: FloorPlan, number: int = 0) -
     quadrant = rng.randrange(4)
     heading = ((1, 0), (-1, 0), (0, 1), (0, -1))[quadrant]
     w, h = sizes[0]
-    sx = rng.randrange(4, 10) if heading[0] > 0 else (GRID - w - rng.randrange(4, 10)
-         if heading[0] < 0 else rng.randrange(4, GRID - w - 3))
-    sy = rng.randrange(4, 10) if heading[1] > 0 else (GRID - h - rng.randrange(4, 10)
-         if heading[1] < 0 else rng.randrange(4, GRID - h - 3))
+    hallway_first = plan.skeleton in HALLWAY_FIRST_SKELETONS
+    edge_low, edge_high = ((8, 15) if hallway_first else (4, 10))
+    cross_low_x = max(4, GRID // 2 - w - 8) if hallway_first else 4
+    cross_high_x = min(GRID - w - 3, GRID // 2 + 8) if hallway_first else GRID - w - 3
+    cross_low_y = max(4, GRID // 2 - h - 8) if hallway_first else 4
+    cross_high_y = min(GRID - h - 3, GRID // 2 + 8) if hallway_first else GRID - h - 3
+    sx = rng.randrange(edge_low, edge_high) if heading[0] > 0 else (
+         GRID - w - rng.randrange(edge_low, edge_high) if heading[0] < 0
+         else rng.randrange(cross_low_x, cross_high_x))
+    sy = rng.randrange(edge_low, edge_high) if heading[1] > 0 else (
+         GRID - h - rng.randrange(edge_low, edge_high) if heading[1] < 0
+         else rng.randrange(cross_low_y, cross_high_y))
     start = Room(sx, sy, w, h)
     rooms.append(start); kept.append(0); room_by_spec[0] = start
 
@@ -1475,6 +1540,20 @@ def _place_planned_rooms(rng: random.Random, plan: FloorPlan, number: int = 0) -
                     "perimeter-loop": (1.5, 4.25, 4.25),
                     "staggered-grid": ((2.5, 6.0, 1.0) if index % 2
                                        else (2.5, 1.0, 6.0)),
+                    # Hallway-first forms give the central run a readable
+                    # authored rhythm. Side-loaded optional rooms attach to
+                    # these corridor nodes later, producing the crossbars and
+                    # concourse arms without empty terminal hall stubs.
+                    "central-axis": (12.0, 0.8, 0.8),
+                    "plus-concourse": ((1.0, 7.0, 7.0)
+                                        if index == spine_count // 2
+                                        else (10.0, 1.0, 1.0)),
+                    "t-concourse": ((1.0, 7.0, 2.0)
+                                     if index == (2 * spine_count) // 3
+                                     else (10.0, 1.0, 1.0)),
+                    "offset-boulevard": ((1.0, 8.0, 1.0)
+                                           if index in branch_beats
+                                           else (9.0, 1.0, 1.0)),
                 }[plan.skeleton]
                 weights = tuple(grammar * skeleton
                                 for grammar, skeleton
@@ -1504,6 +1583,16 @@ def _place_planned_rooms(rng: random.Random, plan: FloorPlan, number: int = 0) -
                     candidate_size = rh, rw
                 elif side[1] and rh < rw:
                     candidate_size = rh, rw
+            # A centered door has a true middle tile only when the span of
+            # its wall is odd. Prefer that parity on the child's attaching
+            # face; the original even draw remains available on later retries
+            # when crowded geometry makes the preference impossible.
+            if attempt < 44:
+                rw, rh = candidate_size
+                if side[0] and rh % 2 == 0:
+                    candidate_size = (rw, rh + (1 if rh < 17 else -1))
+                elif side[1] and rw % 2 == 0:
+                    candidate_size = (rw + (1 if rw < 17 else -1), rh)
             # Human mappers align rooms; jitter is the fallback once these
             # center and edge-flush placements have had a chance.
             jitters = (_snap_offsets(parent, *candidate_size, side, rng)
@@ -2237,16 +2326,13 @@ def _adjacent_to_room(rooms: list[Room], x: int, y: int) -> bool:
 def _widen_corridors(tiles: list[int], rooms: list[Room], paths: list[list[tuple[int, int]]],
                      rng: random.Random, widen_chance: float = 0.8) -> None:
     """A map built entirely from 1-tile halls reads as door-camping and rush
-    traps. Default corridors to 2 tiles wide by adding floor to one side of
-    each interior cell, but leave the doorway threshold (any cell touching a
-    room) and short connectors pinched to 1 tile, so door placement still
-    finds an unambiguous bottleneck and secret pushwall pockets are untouched.
-    Widening only ever turns a solid WALL cell into FLOOR, so it can only add
-    connectivity, never remove or corrupt anything already carved."""
+    traps. Widen eligible straight runs symmetrically from one tile to three,
+    but leave doorway thresholds, bends, constrained runs, and short service
+    connectors pinched to one tile. A failed symmetric widening leaves both
+    sides untouched, so the generator never emits accidental 2-wide halls."""
     for path in paths:
         if len(path) < 6 or rng.random() > widen_chance:
             continue
-        side = rng.choice((-1, 1))
         for i in range(1, len(path) - 1):
             x, y = path[i]
             if _inside_room(rooms, x, y) or _adjacent_to_room(rooms, x, y):
@@ -2259,18 +2345,21 @@ def _widen_corridors(tiles: list[int], rooms: list[Room], paths: list[list[tuple
             horizontal = (px != x) or (nx != x)
             vertical = (py != y) or (ny != y)
             if horizontal and not vertical:
-                wx, wy = x, y + side
+                wings = ((x, y - 1), (x, y + 1))
             elif vertical and not horizontal:
-                wx, wy = x + side, y
+                wings = ((x - 1, y), (x + 1, y))
             else:
                 continue
-            if _inside_room(rooms, wx, wy) or _adjacent_to_room(rooms, wx, wy):
+            if any(_inside_room(rooms, wx, wy)
+                   or _adjacent_to_room(rooms, wx, wy) for wx, wy in wings):
                 continue
             if any(_at(tiles, wx + dx, wy + dy) in DOORS
+                   for wx, wy in wings
                    for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1))):
                 continue
-            if _at(tiles, wx, wy) == WALL:
-                _set(tiles, wx, wy, FLOOR)
+            if all(_at(tiles, wx, wy) == WALL for wx, wy in wings):
+                for wx, wy in wings:
+                    _set(tiles, wx, wy, FLOOR)
 
 
 def _door_axis(tiles: list[int], x: int, y: int) -> int | None:
@@ -3511,7 +3600,14 @@ def _place_arrival_elevator(tiles: list[int], room: Room,
         preferred = (-1, 0) if tx >= 0 else (1, 0)
     else:
         preferred = (0, -1) if ty >= 0 else (0, 1)
-    sides = [preferred, *[side for side in facings if side != preferred]]
+    # WL6's elevator wall tile is directional: ELEV1_1 is the rail face and
+    # ELEV1_2 is the control-panel face. Old-format map tiles cannot rotate
+    # that assignment, so only horizontal car axes render rails on both side
+    # walls and the panel on the rear wall. Vertical cars necessarily invert
+    # that visual language and are therefore invalid arrival candidates.
+    horizontal = ((-1, 0), (1, 0))
+    sides = [preferred] if preferred in horizontal else []
+    sides.extend(side for side in horizontal if side not in sides)
     cx, cy = room.center
     for dx, dy in sides:
         if dx:
@@ -4691,7 +4787,7 @@ def _place_population(config: CampaignConfig, number: int, rooms: list[Room],
 # Items that read as a deliberate matched pair when mirrored beside a door
 # or under a landmark wall: plants, lamps, pillars, vases, barrels, suits
 # of armor, and flags.
-_FRAMEABLE = frozenset({26, 30, 31, 34, 35, 39, 62})
+_FRAMEABLE = frozenset({26, 30, 31, 34, 39, 62})
 
 
 @dataclass(frozen=True, slots=True)
@@ -5361,6 +5457,7 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
                        notch_anchors: dict[int, tuple[tuple[int, int], ...]] | None = None,
                        traversal_pair_chance: float | None = None,
                        hallway_vine_budget: int = 0,
+                       allow_sky_vista: bool = True,
                        ) -> tuple[tuple[str, ...], tuple[VineScreen, ...]]:
     """Place purposeful, themed furniture in rooms following community-map patterns.
 
@@ -5428,6 +5525,38 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
                                        _DECOR_BLOCKING.get(theme, STATIC_BLOCKING))
         open_items = _DECOR_OPEN.get(concept,
                                      _DECOR_OPEN.get(theme, STATIC_OPEN))
+        # Barrels are a room-level material language, not an independent prop
+        # roll. Damp/crypt contexts use green barrels, formal military rooms
+        # use blue, and neutral storage chooses once for the whole room.
+        green_barrel_concepts = {
+            "jail", "crypt", "ossuary", "burial-chamber", "holding-cell",
+            "courtyard",
+        }
+        blue_barrel_concepts = {
+            "guardpost", "checkpoint", "armory", "workshop", "war-room",
+            "barracks", "ready-room", "training-room", "officers-quarters",
+        }
+        existing_barrels = {
+            _at(things, x, y)
+            for y in range(room.y, room.y + room.h)
+            for x in range(room.x, room.x + room.w)
+            if _at(things, x, y) in {24, 58}
+        }
+        if len(existing_barrels) == 1:
+            barrel_item = next(iter(existing_barrels))
+        elif concept in green_barrel_concepts or theme in {"jail", "crypt"}:
+            barrel_item = 24
+        elif concept in blue_barrel_concepts or theme in {"grand", "barracks"}:
+            barrel_item = 58
+        else:
+            barrel_item = rng.choices((58, 24), weights=(3, 2), k=1)[0]
+        blocking = tuple(dict.fromkeys(
+            barrel_item if item in (24, 58) else item for item in blocking))
+        wants_vase = 35 in blocking
+        # Vases are placed by the dedicated wall-accent pass below. Removing
+        # them here prevents zone clusters, pairs, signatures, and fallback
+        # compositions from independently adding more.
+        blocking = tuple(item for item in blocking if item != 35)
         allowed_lights = LIGHTING_FAMILY_ITEMS[lighting]
         blocking = tuple(item for item in blocking
                          if item not in LIGHTING_ITEMS or item in allowed_lights)
@@ -5546,16 +5675,23 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
             static_headroom -= 1
             return True
 
+        if wants_vase and static_headroom > 0:
+            vase_cells = [cell for cell in edge_free
+                          if cell not in keep_clear and _wall_backed(cell)]
+            rng.shuffle(vase_cells)
+            for cell in vase_cells:
+                if _try_place([cell], 35):
+                    break
+
         # A sky tile is a view beyond the building, never ordinary wallpaper.
-        # Every tile is completely covered by its own blocking pillar and the
-        # ray behind the wall must remain solid all the way to the map edge,
-        # proving this is an outside-most face rather than a leak into another
-        # room. One symmetric colonnade is enough to establish the motif.
-        if (not sky_composition_placed
+        # Open one broad, odd-span bay through the former wall plane and put
+        # the sky on the next plane outward. Pillars stay on that original
+        # wall line, so the visible one-cell recess supplies the depth cue the
+        # old pillar-directly-on-sky trick lacked.
+        if (allow_sky_vista and not sky_composition_placed
                 and concept in {"courtyard", "gallery", "trophy-hall"}
                 and min(room.w, room.h) >= 7
                 and rng.random() < (0.26 if concept == "courtyard" else 0.08)):
-            side_candidates: list[list[tuple[tuple[int, int], tuple[int, int]]]] = []
             side_specs = (
                 [((x, room.y), (x, room.y - 1))
                  for x in range(room.x + 1, room.x + room.w - 1)],
@@ -5566,40 +5702,66 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
                 [((room.x + room.w - 1, y), (room.x + room.w, y))
                  for y in range(room.y + 1, room.y + room.h - 1)],
             )
-            for side in side_specs:
-                eligible = []
-                for interior_cell, wall_cell in side:
-                    ix, iy = interior_cell
-                    wx, wy = wall_cell
-                    dx, dy = wx - ix, wy - iy
-                    if (interior_cell not in edge_free
-                            or _at(tiles, wx, wy) in DECOR_WALLS | SPECIAL_WALL_TILES
-                            or _is_floor(_at(tiles, wx, wy))
-                            or _at(tiles, wx, wy) in DOORS):
-                        continue
-                    outside_clear = True
-                    ox, oy = wx + dx, wy + dy
-                    while 0 <= ox < GRID and 0 <= oy < GRID:
-                        if (_is_floor(_at(tiles, ox, oy))
-                                or _at(tiles, ox, oy) in DOORS):
-                            outside_clear = False
-                            break
-                        ox += dx
-                        oy += dy
-                    if outside_clear:
-                        eligible.append((interior_cell, wall_cell))
-                if len(eligible) >= 4:
-                    side_candidates.append(eligible)
+            side_candidates = list(side_specs)
             rng.shuffle(side_candidates)
             for side in side_candidates:
-                mid = len(side) // 2
-                offset = max(1, len(side) // 4)
-                pair = [side[mid - offset], side[mid + offset]]
-                pillars = [interior for interior, _ in pair]
-                if _try_place(pillars, 30):
-                    for _, wall_cell in pair:
-                        _set(tiles, *wall_cell, 16)
-                    sky_composition_placed = True
+                spans = [span for span in (9, 7, 5) if span <= len(side)]
+                rng.shuffle(spans)
+                for span in spans:
+                    starts = list(range(len(side) - span + 1))
+                    center_start = (len(side) - span) / 2
+                    starts.sort(key=lambda value: (abs(value - center_start), value))
+                    for start_index in starts:
+                        aperture = side[start_index:start_index + span]
+                        geometry = []
+                        valid = True
+                        for interior_cell, wall_cell in aperture:
+                            ix, iy = interior_cell
+                            wx, wy = wall_cell
+                            dx, dy = wx - ix, wy - iy
+                            sky_cell = (wx + dx, wy + dy)
+                            if (interior_cell not in edge_free
+                                    or wall_cell in reserved
+                                    or _at(things, *wall_cell) != 0
+                                    or not (1 <= sky_cell[0] < GRID - 1
+                                            and 1 <= sky_cell[1] < GRID - 1)
+                                    or _at(tiles, *wall_cell) in (
+                                        DECOR_WALLS | SPECIAL_WALL_TILES | DOORS)
+                                    or _is_floor(_at(tiles, *wall_cell))
+                                    or _at(tiles, *sky_cell) in (
+                                        DECOR_WALLS | SPECIAL_WALL_TILES | DOORS)
+                                    or _is_floor(_at(tiles, *sky_cell))):
+                                valid = False
+                                break
+                            ox, oy = sky_cell[0] + dx, sky_cell[1] + dy
+                            while 0 <= ox < GRID and 0 <= oy < GRID:
+                                if (_is_floor(_at(tiles, ox, oy))
+                                        or _at(tiles, ox, oy) in DOORS):
+                                    valid = False
+                                    break
+                                ox += dx
+                                oy += dy
+                            if not valid:
+                                break
+                            geometry.append((interior_cell, wall_cell, sky_cell))
+                        supports = (0, span - 1) if span < 9 else (0, span // 2, span - 1)
+                        if not valid or static_headroom < len(supports):
+                            continue
+                        for interior_cell, wall_cell, sky_cell in geometry:
+                            _set(tiles, *wall_cell, _at(tiles, *interior_cell))
+                            _set(tiles, *sky_cell, 16)
+                        for support in supports:
+                            cell = geometry[support][1]
+                            _set(things, *cell, 30)
+                            reserved.add(cell)
+                            blocked_cells.add(cell)
+                            room_blocked.append(cell)
+                        static_headroom -= len(supports)
+                        sky_composition_placed = True
+                        break
+                    if sky_composition_placed:
+                        break
+                if sky_composition_placed:
                     break
 
         # Vines are complete architectural screens, never loose foliage. A
@@ -5642,8 +5804,8 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
         room_notches = list((notch_anchors or {}).get(ridx, ()))
         if room_notches:
             compact = tuple(item for item in blocking
-                            if item in (26, 31, 34, 35, 58, 62, 69))
-            notch_item = rng.choice(compact or (35,))
+                            if item in (24, 26, 31, 34, 58, 62, 69))
+            notch_item = rng.choice(compact or (31,))
             if not _try_place(room_notches, notch_item):
                 # A non-blocking ground accent preserves the mirrored intent
                 # when traffic or reachability makes solid props unsuitable.
@@ -5660,10 +5822,10 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
         pairs_placed = 0
         concept_frames = {
             "war-room": (39, 62), "armory": (39, 62), "guardpost": (26,),
-            "lounge": (31, 34, 35), "mess-kitchen": (35,),
+            "lounge": (31, 34),
             "courtyard": (31, 34), "checkpoint": (26, 62),
             "trophy-hall": (39, 62), "gallery": (34, 39, 62),
-            "dining-hall": (35,), "officers-quarters": (34, 35),
+            "officers-quarters": (34,),
         }
         frame_pool = tuple(
             item for item in concept_frames.get(
@@ -5671,7 +5833,7 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
             if item not in LIGHTING_ITEMS or item in allowed_lights)
         if not frame_pool:
             frame_pool = tuple(item for item in blocking
-                               if item not in LIGHTING_ITEMS) or (35,)
+                               if item not in LIGHTING_ITEMS) or (31,)
 
         # The primary matched composition follows the route through the room,
         # not an arbitrary room half. In a two-door hall this places one prop
@@ -5773,10 +5935,10 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
                 "trophy-hall": [((room.x, cy), 39),
                                 ((room.x + room.w - 1, cy), 62)],
                 "courtyard": [((cx, cy), 59)],
-                "storage": [((room.x + 1, room.y + 1), 58),
-                             ((room.x + 2, room.y + 1), 58)],
-                "supply-cache": [((room.x + 1, room.y + 1), 24),
-                                  ((room.x + 2, room.y + 1), 58)],
+                "storage": [((room.x + 1, room.y + 1), barrel_item),
+                             ((room.x + 2, room.y + 1), barrel_item)],
+                "supply-cache": [((room.x + 1, room.y + 1), barrel_item),
+                                  ((room.x + 2, room.y + 1), 59)],
                 "workshop": [((room.x + 1, cy), 36),
                              ((room.x + room.w - 1, cy), 69)],
                 "lounge": [((cx, cy), 25)],
@@ -5793,9 +5955,9 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
                 "ossuary": [((room.x + 1, room.y + 1), 40),
                              ((room.x + room.w - 2, room.y + 1), 41)],
                 "burial-chamber": [((room.x + 1, room.y + 1), 30),
-                                   ((room.x + room.w - 2, room.y + 1), 35)],
+                                   ((room.x + room.w - 2, room.y + 1), 30)],
                 "holding-cell": [((room.x + 1, room.y + 1), 40),
-                                 ((room.x + room.w - 2, room.y + 1), 58)],
+                                 ((room.x + room.w - 2, room.y + 1), barrel_item)],
                 "interrogation-room": [((cx, cy), 36),
                                        ((room.x + 1, cy), 26)],
             }
@@ -5953,9 +6115,11 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
 
         zones = _DECOR_ZONES.get(concept) if concept == theme else None
         if zones:
-            zones = tuple((tuple(item for item in solid
-                                 if item not in LIGHTING_ITEMS
-                                 or item in allowed_lights),
+            zones = tuple((tuple(dict.fromkeys(
+                                 barrel_item if item in (24, 58) else item
+                                 for item in solid
+                                 if item != 35 and (item not in LIGHTING_ITEMS
+                                                    or item in allowed_lights))),
                            tuple(item for item in open_
                                  if item not in LIGHTING_ITEMS
                                  or item in allowed_lights))
@@ -6172,7 +6336,7 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
                 candidate = blocked_cells | {deep}
                 if len(_reachable(tiles, start, locked_open=True,
                                   blocked=candidate)) == baseline - len(candidate):
-                    _set(things, *deep, rng.choice((35, 31, 26, 58)))
+                    _set(things, *deep, rng.choice((31, 26, 58)))
                     reserved.add(deep)
                     blocked_cells.add(deep)
                     static_headroom -= 1
@@ -6309,6 +6473,7 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
                  hallway_vine_budget: int = 0,
                  guard_gallery_enabled: bool = False,
                  rare_motif_enabled: bool = False,
+                 sky_vista_enabled: bool = True,
                  ) -> GeneratedMap:
     seed = config.floor_seed(number, attempt)
     if config.say_aardwolf:
@@ -6783,7 +6948,33 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
                  * DECORATION_MULTIPLIERS[int(config.decoration_amount)]),
         theme_overrides=floor_variant.decor_overrides, landmarks=landmarks,
         paths=paths, identities=identities, atmosphere=int(config.atmosphere),
-        notch_anchors=notch_anchors, hallway_vine_budget=hallway_vine_budget)
+        notch_anchors=notch_anchors, hallway_vine_budget=hallway_vine_budget,
+        allow_sky_vista=sky_vista_enabled)
+    primary_hall_geometry = tuple(
+        (index, room.x, room.y, room.w, room.h)
+        for index, (room, spec) in enumerate(zip(rooms, specs))
+        if plan.skeleton in HALLWAY_FIRST_SKELETONS and spec.tier == "corridor")
+    barrel_families = tuple(
+        ("green" if 24 in present else "blue" if 58 in present else "none")
+        for room in rooms
+        for present in ({_at(things, x, y)
+                         for y in range(room.y, room.y + room.h)
+                         for x in range(room.x, room.x + room.w)},))
+    sky_cells = {(index % GRID, index // GRID)
+                 for index, tile in enumerate(tiles) if tile == 16}
+    sky_vistas: list[tuple[tuple[int, int], ...]] = []
+    while sky_cells:
+        component = {sky_cells.pop()}
+        queue = deque(component)
+        while queue:
+            x, y = queue.popleft()
+            for neighbor in ((x + 1, y), (x - 1, y),
+                             (x, y + 1), (x, y - 1)):
+                if neighbor in sky_cells:
+                    sky_cells.remove(neighbor)
+                    component.add(neighbor)
+                    queue.append(neighbor)
+        sky_vistas.append(tuple(sorted(component)))
     final_distances = _floor_distances(tiles, start)
     deepest_room_distance = max((final_distances.get(room.center, 0) for room in rooms),
                                 default=1) or 1
@@ -6839,7 +7030,10 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
                           motif_realizations=plan.motif_realizations,
                           rare_motif=rare_motif_detail,
                           boss_arena=boss_arena_detail,
-                          shape_target=shape_target)
+                          shape_target=shape_target,
+                          primary_hall_geometry=primary_hall_geometry,
+                          barrel_families=barrel_families,
+                          sky_vistas=tuple(sky_vistas))
     validate_map(result)
     result.critique = _critique(result)
     return result
@@ -6855,6 +7049,19 @@ def validate_map(level: GeneratedMap) -> None:
         raise ValueError("purple wall material appears before the late campaign")
     if level.arrival is None:
         raise ValueError("floor has no arrival elevator")
+    if level.circulation_skeleton in HALLWAY_FIRST_SKELETONS:
+        corridor_indices = [index for index, tier in enumerate(level.room_tiers)
+                            if tier == "corridor"]
+        recorded = [entry[0] for entry in level.primary_hall_geometry]
+        if len(corridor_indices) < 3 or recorded != corridor_indices:
+            raise ValueError("hallway-first floor lacks its recorded primary scaffold")
+        degrees = Counter(index for edge in level.edges for index in edge)
+        for index, motif in enumerate(level.motif_rooms):
+            if motif == "hallway-arm" and degrees[index] < 2:
+                raise ValueError("hallway-first floor contains an empty terminal arm")
+        if any(min(level.rooms[index].w, level.rooms[index].h) != 3
+               for index in corridor_indices):
+            raise ValueError("hallway-first scaffold is not three tiles wide")
     arrival = level.arrival
     facings = ((0, -1), (1, 0), (0, 1), (-1, 0))
     inward = facings[arrival.facing]
@@ -6867,6 +7074,8 @@ def validate_map(level: GeneratedMap) -> None:
             or _at(level.things, *level.start) != PLAYER_START_CODES[arrival.facing]
             or sum(thing in PLAYER_START_CODES for thing in level.things) != 1):
         raise ValueError("player does not face away from the arrival elevator")
+    if outward[1] != 0:
+        raise ValueError("arrival elevator uses a directionally invalid vertical car")
     if (any(_at(level.tiles, *cell) == ELEVATOR_TILE
             for cell in arrival.footprint)
             or not all(_is_floor(_at(level.tiles, *cell))
@@ -6911,6 +7120,36 @@ def validate_map(level: GeneratedMap) -> None:
             continue
         if _is_floor(_at(level.tiles, *cell)) or _at(level.tiles, *cell) in DOORS:
             raise ValueError("arrival elevator is not rock bounded")
+
+    realized_barrel_families: list[str] = []
+    for room in level.rooms:
+        room_barrels = {
+            _at(level.things, x, y)
+            for y in range(room.y, room.y + room.h)
+            for x in range(room.x, room.x + room.w)
+            if _at(level.things, x, y) in {24, 58}
+        }
+        if len(room_barrels) > 1:
+            raise ValueError("room mixes blue and green barrel families")
+        realized_barrel_families.append(
+            "green" if 24 in room_barrels else
+            "blue" if 58 in room_barrels else "none")
+        vases = [
+            (x, y)
+            for y in range(room.y, room.y + room.h)
+            for x in range(room.x, room.x + room.w)
+            if _at(level.things, x, y) == 35
+        ]
+        if len(vases) > 1:
+            raise ValueError("room contains a clustered blue-urn composition")
+        for x, y in vases:
+            if not any(not _is_floor(_at(level.tiles, nx, ny))
+                       and _at(level.tiles, nx, ny) not in DOORS
+                       for nx, ny in ((x + 1, y), (x - 1, y),
+                                      (x, y + 1), (x, y - 1))):
+                raise ValueError("blue urn is not a wall-backed accent")
+    if level.barrel_families and tuple(realized_barrel_families) != level.barrel_families:
+        raise ValueError("barrel-family metadata does not match room decoration")
 
     if len(level.guard_recesses) > 1:
         raise ValueError("guard recesses dominate the floor")
@@ -7117,8 +7356,17 @@ def validate_map(level: GeneratedMap) -> None:
 
     sky_walls = [(index % GRID, index // GRID)
                  for index, tile in enumerate(level.tiles) if tile == 16]
-    if sky_walls and (len(sky_walls) < 2 or len(sky_walls) % 2):
-        raise ValueError("sky vista is not a matched pillar composition")
+    if sky_walls and len(sky_walls) not in {5, 7, 9}:
+        raise ValueError("sky vista does not use one broad odd-span bay")
+    if sky_walls and not (len({x for x, _ in sky_walls}) == 1
+                          or len({y for _, y in sky_walls}) == 1):
+        raise ValueError("sky vista is not one contiguous wall composition")
+    if sky_walls:
+        ordered_sky = sorted(sky_walls)
+        if any(abs(first[0] - second[0]) + abs(first[1] - second[1]) != 1
+               for first, second in zip(ordered_sky, ordered_sky[1:])):
+            raise ValueError("sky vista contains a gap")
+    recess_cells: list[tuple[int, int]] = []
     for x, y in sky_walls:
         visible_from = [(nx, ny) for nx, ny in
                         ((x + 1, y), (x - 1, y), (x, y + 1), (x, y - 1))
@@ -7126,8 +7374,7 @@ def validate_map(level: GeneratedMap) -> None:
         if len(visible_from) != 1:
             raise ValueError("sky wall is not on an outside-most face")
         interior = visible_from[0]
-        if _at(level.things, *interior) != 30:
-            raise ValueError("sky wall is not completely hidden by its pillar")
+        recess_cells.append(interior)
         dx, dy = x - interior[0], y - interior[1]
         ox, oy = x + dx, y + dy
         while 0 <= ox < GRID and 0 <= oy < GRID:
@@ -7136,6 +7383,17 @@ def validate_map(level: GeneratedMap) -> None:
                 raise ValueError("sky vista leaks into interior architecture")
             ox += dx
             oy += dy
+    if sky_walls:
+        supports = [index for index, cell in enumerate(recess_cells)
+                    if _at(level.things, *cell) == 30]
+        expected = ([0, len(recess_cells) - 1] if len(recess_cells) < 9
+                    else [0, len(recess_cells) // 2, len(recess_cells) - 1])
+        if supports != expected:
+            raise ValueError("sky vista lacks balanced original-plane supports")
+        if level.sky_vistas != (tuple(sorted(sky_walls)),):
+            raise ValueError("sky vista metadata does not match realized geometry")
+    elif level.sky_vistas:
+        raise ValueError("sky vista metadata records absent geometry")
 
     glass_walls = {(index % GRID, index // GRID)
                    for index, tile in enumerate(level.tiles) if tile == 33}
@@ -7958,6 +8216,10 @@ def generate_campaign(config: CampaignConfig, output: Path,
     gallery_floor = (gallery_rng.choices(gallery_floors, weights=gallery_weights, k=1)[0]
                      if gallery_enabled else 0)
     rare_motif_floor = _rare_motif_schedule(config)
+    # Only one parity of floors may request a vista in a campaign. This keeps
+    # the rare motif from appearing on consecutive maps without changing
+    # standalone-map generation or tying it to a specific theme.
+    vista_parity = random.Random(config.seed ^ 0x564953544131).randrange(2)
     for number in range(1, 11):
         if cancelled and cancelled():
             raise GenerationCancelled("campaign generation cancelled")
@@ -7971,7 +8233,8 @@ def generate_campaign(config: CampaignConfig, output: Path,
                                          hallway_vine_budget=(vine_budget
                                                               if number == vine_floor else 0),
                                          guard_gallery_enabled=(number == gallery_floor),
-                                         rare_motif_enabled=(number == rare_motif_floor))
+                                         rare_motif_enabled=(number == rare_motif_floor),
+                                         sky_vista_enabled=(number % 2 == vista_parity))
             except ValueError as error:
                 last_error = error
                 continue
@@ -8030,9 +8293,15 @@ def generate_campaign(config: CampaignConfig, output: Path,
     if any(first.circulation_skeleton == second.circulation_skeleton
            for first, second in zip(levels, levels[1:])):
         raise RuntimeError("campaign repeated the same circulation skeleton consecutively")
+    if sum(level.circulation_skeleton in HALLWAY_FIRST_SKELETONS
+           for level in levels) != 3:
+        raise RuntimeError("campaign violated its three-floor hallway-first schedule")
     if any(first.progression_grammar == second.progression_grammar
            for first, second in zip(levels, levels[1:])):
         raise RuntimeError("campaign repeated the same progression grammar consecutively")
+    if any(first.sky_vistas and second.sky_vistas
+           for first, second in zip(levels, levels[1:])):
+        raise RuntimeError("campaign repeated the exterior-vista motif consecutively")
     realized_rare = [level.number for level in levels if level.rare_motif is not None]
     expected_rare = [rare_motif_floor] if rare_motif_floor else []
     if realized_rare != expected_rare:
@@ -8058,6 +8327,10 @@ def generate_campaign(config: CampaignConfig, output: Path,
         "rare_motif_schedule": {"floor": rare_motif_floor,
                                 "realized_floor": (realized_rare[0]
                                                    if realized_rare else 0)},
+        "sky_vista_schedule": {
+            "eligible_parity": vista_parity,
+            "realized_floors": [level.number for level in levels
+                                if level.sky_vistas]},
         "lock_schedule": [plan.colors for plan in _lock_schedule(config)],
         "floors": [{"number": level.number,
                     "name": _display_name(level.number, level.variant),
@@ -8108,6 +8381,15 @@ def generate_campaign(config: CampaignConfig, output: Path,
                     "progression_grammar": level.progression_grammar,
                     "district_circulation": level.district_circulation,
                     "layout_signature": level.layout_signature,
+                    "primary_hall_geometry": level.primary_hall_geometry,
+                    "barrel_families": level.barrel_families,
+                    "sky_vistas": level.sky_vistas,
+                    "door_axis_parity": [
+                        {"room": index, "width": room.w,
+                         "height": room.h,
+                         "odd_width": bool(room.w % 2),
+                         "odd_height": bool(room.h % 2)}
+                        for index, room in enumerate(level.rooms)],
                     "motif_realizations": level.motif_realizations,
                     "shape_target": level.shape_target,
                     "rare_motif": ({"kind": level.rare_motif.kind,
@@ -8162,6 +8444,8 @@ def generate_campaign(config: CampaignConfig, output: Path,
                                    "pushwall_clearance", "rewarded_secrets",
                                    "secret_hints", "secret_route", "boss",
                                    "circulation_hierarchy", "arrival_elevator",
+                                   "hallway_first_scaffold", "sky_vista_depth",
+                                   "room_barrel_family", "wall_backed_blue_urn",
                                    "encounter_provenance", "patrol_routes",
                                    "wall_backed_flags", "pickup_provenance"],
                     }} for level in levels],
