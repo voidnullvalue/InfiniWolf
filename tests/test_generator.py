@@ -1408,6 +1408,24 @@ class GeneratorTests(unittest.TestCase):
         self.assertNotIn(19, {base for base, _ in early.values()})
         self.assertEqual({base for base, _ in late.values()}, {19})
 
+    def test_fake_elevator_door_texture_is_never_used_as_wall_decor(self):
+        """FAKEDOR(13) must not masquerade as a purple/service-wall detail."""
+        for number in range(1, 11):
+            for seed in range(3):
+                level = _generate_with_retries(CampaignConfig(seed=seed), number)
+                self.assertNotIn(13, level.tiles)
+                arrival_panels = {
+                    cell for cell in level.arrival.footprint
+                    if _at(level.tiles, *cell) == generator.DUMMY_ELEVATOR_TILE
+                }
+                self.assertTrue(arrival_panels)
+                self.assertEqual(
+                    {(index % GRID, index // GRID)
+                     for index, tile in enumerate(level.tiles)
+                     if tile == generator.DUMMY_ELEVATOR_TILE},
+                    arrival_panels,
+                )
+
     def test_cell_wall_tile_is_never_the_base_theme(self):
         """BSTCELA1(5)/BSTCELB1(7), the barred prison-cell wall, reads as a
         specific set piece; if either is a theme's base it fills every wall

@@ -148,8 +148,10 @@ class WallMaterialFamily:
 # Names and grouping come from ECWolf's bundled xlat/wolf3d.txt. These are
 # material families rather than a flat texture lottery: the generator can use
 # the full registered WL6 vocabulary while keeping every visible district
-# coherent. FAKEDOR(13), SKY(16), stained GLASS(33), and inert ELEV1(85) are
-# special compositions and intentionally remain outside the general roster.
+# coherent. FAKEDOR(13) is deliberately excluded from decorative wall
+# dressing.  The inert ELEV1(85) elevator façade remains reserved for the
+# player's purpose-built arrival car; SKY(16) and stained GLASS(33) are the
+# other special compositions outside the general roster.
 WALL_MATERIALS = (
     WallMaterialFamily("grey-stone", 1, (2, 27), (), (3, 4, 6, 28)),
     # SIGN(28) carries a clean grey-stone surround, so it is not compatible
@@ -3394,7 +3396,6 @@ def _apply_wall_theme(tiles: list[int], things: list[int], rooms: list[Room],
     insignia) so the decoration pass can frame them with furniture instead
     of placing pieces mid-room."""
     landmark_cells: dict[int, list[tuple[int, int]]] = {}
-    fake_door_placed = False
     for index, tile in enumerate(tiles):
         if tile != WALL:
             continue
@@ -3486,15 +3487,7 @@ def _apply_wall_theme(tiles: list[int], things: list[int], rooms: list[Room],
                          and concept in {"gallery", "trophy-hall", "war-room"}
                          and rng.random() < 0.12)
 
-        # A fake door is rare architectural misdirection in a service room.
-        # It is allowed only when one face is visible and solid rock continues
-        # behind it, so it cannot leak into a neighboring space or progression.
-        special_fake = (identity is not None and not fake_door_placed
-                        and concept in {"storage", "supply-cache", "workshop",
-                                        "checkpoint"}
-                        and rng.random() < 0.035)
-
-        if special_glass or place_landmark or special_fake:
+        if special_glass or place_landmark:
             # Landmark tiles hang like pictures on the longest clean
             # (contiguous, same-base) wall run -- never the material for the
             # whole room. Short runs get one centered tile; longer runs get a
@@ -3512,34 +3505,6 @@ def _apply_wall_theme(tiles: list[int], things: list[int], rooms: list[Room],
                         current = []
                 if current:
                     runs.append((side_index, current))
-            if special_fake:
-                backed_runs = []
-                for run_side, candidate in runs:
-                    backed = []
-                    for x, y in candidate:
-                        floor_neighbors = [(nx, ny) for nx, ny in
-                                           ((x + 1, y), (x - 1, y),
-                                            (x, y + 1), (x, y - 1))
-                                           if _is_floor(_at(tiles, nx, ny))]
-                        if len(floor_neighbors) != 1:
-                            continue
-                        ix, iy = floor_neighbors[0]
-                        outward = (x + (x - ix), y + (y - iy))
-                        if (_is_floor(_at(tiles, *outward))
-                                or _at(tiles, *outward) in DOORS):
-                            continue
-                        backed.append((x, y))
-                    if backed:
-                        backed_runs.append((run_side, backed))
-                if backed_runs:
-                    _, backed = max(backed_runs, key=lambda item: len(item[1]))
-                    _set(tiles, *backed[len(backed) // 2], 13)
-                    fake_door_placed = True
-                    continue
-                special_fake = False
-                if not special_glass and not place_landmark:
-                    continue
-
             side_index, run = max(runs, key=lambda item: len(item[1]), default=(-1, []))
             if run:
                 selected_runs = [run]
@@ -7630,24 +7595,11 @@ def validate_map(level: GeneratedMap) -> None:
             if not fixtures <= LIGHTING_FAMILY_ITEMS[family]:
                 raise ValueError("room mixes incompatible lighting families")
 
-    # Special wall graphics are complete architectural compositions, never
-    # members of the ordinary material scatter.
-    fake_doors = [(index % GRID, index // GRID)
-                  for index, tile in enumerate(level.tiles)
-                  if tile == 13 and level.things[index] != PUSHWALL]
-    if len(fake_doors) > 1:
-        raise ValueError("fake doors dominate the floor")
-    for x, y in fake_doors:
-        visible_from = [(nx, ny) for nx, ny in
-                        ((x + 1, y), (x - 1, y), (x, y + 1), (x, y - 1))
-                        if _is_floor(_at(level.tiles, nx, ny))]
-        if len(visible_from) != 1:
-            raise ValueError("fake door exposes more than one wall face")
-        ix, iy = visible_from[0]
-        backing = (x + (x - ix), y + (y - iy))
-        if (_is_floor(_at(level.tiles, *backing))
-                or _at(level.tiles, *backing) in DOORS):
-            raise ValueError("fake door has no solid architectural backing")
+    # FAKEDOR(13) resembles an elevator door, so it is never decorative wall
+    # dressing. The inert ELEV1(85) texture remains valid only in the
+    # purpose-built arrival car checked above.
+    if 13 in level.tiles:
+        raise ValueError("fake elevator-door texture appears in generated map")
 
     sky_walls = [(index % GRID, index // GRID)
                  for index, tile in enumerate(level.tiles) if tile == 16]

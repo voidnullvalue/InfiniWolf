@@ -89,7 +89,7 @@ flowchart TD
         M --> M1[Assign sound zones and district wall-material groups]
         M1 --> M2[Select jail rooms and apply explicit material families<br/>plain variants, gated damage, sparse landmarks]
         M2 --> M3[Combine role, tier, motif, district, variant,<br/>special family, material, and balanced room concept]
-        M3 --> M4[Compose rare sealed fake door, matched stained glass,<br/>or recessed 5–9 tile pier-framed exterior vista]
+        M3 --> M4[Compose matched stained glass<br/>or recessed 5–9 tile pier-framed exterior vista]
         M4 --> M5{Guard-gallery floor and safe optional formal room?}
         M5 -- yes --> M6[Reserve inaccessible rear chamber<br/>seal its full visible face with matched pillars]
         M5 -- no --> L
