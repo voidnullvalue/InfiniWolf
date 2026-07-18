@@ -39,6 +39,18 @@ def _generate_with_retries(config: CampaignConfig, floor: int, attempts: int = 5
 
 
 class GeneratorTests(unittest.TestCase):
+    def test_enemy_roster_weights_and_normal_ss_unlock(self):
+        self.assertEqual([(name, weight) for name, _, weight, _ in generator.ENEMY_FAMILIES],
+                         [("guard", 8), ("dog", 6), ("officer", 4), ("ss", 6)])
+        toughness = int(CampaignConfig(seed=1).enemy_toughness)
+        unlocked_count = (len(generator.ENEMY_FAMILIES)
+                          if toughness >= 3 else max(1, toughness))
+        self.assertIn(SS, [family for _, family, _, _
+                           in generator.ENEMY_FAMILIES[:unlocked_count]])
+
+    def test_level_ten_novelty_chance_is_twenty_percent(self):
+        self.assertEqual(generator.NOVELTY_SPAWN_CHANCE, 0.20)
+
     def test_arrival_elevator_is_inert_rock_bounded_and_behind_player(self):
         room = Room(20, 20, 8, 8)
         # ECWolf expands old-format player starts from thing 19 in its native

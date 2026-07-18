@@ -10,11 +10,11 @@ PUBLIC_DOCS = ("README.md", "DESIGN.md", "GENERATION_FLOW.md")
 
 
 class DocumentationTests(unittest.TestCase):
-    def test_readme_has_exact_1_7_release_version_and_unicode_credit_footer(self):
+    def test_readme_has_exact_release_version_and_unicode_credit_footer(self):
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
-        self.assertEqual(__version__, "1.8.0")
+        self.assertEqual(__version__, "1.8.5")
         self.assertIn(
-            "python3 packaging/make_release.py --platform linux --version 1.8.0",
+            "python3 packaging/make_release.py --platform linux --version 1.8.5",
             readme)
         self.assertTrue(
             readme.rstrip().endswith(

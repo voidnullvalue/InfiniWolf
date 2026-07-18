@@ -113,11 +113,12 @@ ENEMY_CODES = frozenset(code + tier * 36
 # filler and SS stays rare/expensive, matching the report's threat-budget
 # model (guard 1.0 up to SS 3.0) instead of a flat or inverted mix.
 ENEMY_FAMILIES = (
-    ("guard", GUARDS, 10, 1.5),
+    ("guard", GUARDS, 8, 1.5),
     ("dog", DOGS, 6, 0.5),
-    ("officer", OFFICERS, 3, 3.0),
-    ("ss", SS, 1, 6.0),
+    ("officer", OFFICERS, 4, 3.0),
+    ("ss", SS, 6, 6.0),
 )
+NOVELTY_SPAWN_CHANCE = 0.20
 PATROLS_BY_FAMILY = dict(zip((GUARDS, OFFICERS, SS, DOGS),
                              (PATROL_GUARDS, PATROL_OFFICERS, PATROL_SS, PATROL_DOGS)))
 FAMILY_BY_CODE = {code + 36 * tier: family
@@ -4442,13 +4443,16 @@ def _place_population(config: CampaignConfig, number: int, rooms: list[Room],
     progression = min(1.0, ((progression_number or number) - 1) / 8)
     per_room = max(1, round(config.guard_density * .7 + progression * 2))
     toughness = int(config.enemy_toughness)
-    unlocked = ENEMY_FAMILIES[:max(1, min(len(ENEMY_FAMILIES), toughness))]
+    # Normal and above use the complete classic roster. Lower settings retain
+    # the gentler progressive unlock without making SS absent from defaults.
+    unlocked_count = len(ENEMY_FAMILIES) if toughness >= 3 else max(1, toughness)
+    unlocked = ENEMY_FAMILIES[:unlocked_count]
     names = [name for name, *_ in unlocked]
     families = [family for _, family, *_ in unlocked]
     base_weights = [weight for _, _, weight, _ in unlocked]
-    # A fresh door breach must not reveal a high-tier shooter at point-blank
-    # range (report checklist #5): anything picked as officer/SS within a
-    # short walk of a door tile is downgraded to the safe guard filler.
+    # Keep officers away from point-blank door breaches. SS remain eligible
+    # here: suppressing them around every door made the family much rarer than
+    # its roster weight implied on ordinary door-heavy layouts.
     doors = {(x, y) for y in range(GRID) for x in range(GRID) if _at(tiles, x, y) in DOORS}
 
     def near_door(x: int, y: int, radius: int = 3) -> bool:
@@ -4479,7 +4483,7 @@ def _place_population(config: CampaignConfig, number: int, rooms: list[Room],
                     family: tuple[int, ...], room: Room | None = None,
                     forced_facing: int | None = None, patrol: bool = False
                     ) -> tuple[int, int, int]:
-        if name in ("officer", "ss") and near_door(x, y):
+        if name == "officer" and near_door(x, y):
             name, family = "guard", GUARDS
         if forced_facing is not None:
             facing = forced_facing
@@ -4890,7 +4894,7 @@ def _place_population(config: CampaignConfig, number: int, rooms: list[Room],
             encounter_counts[template] += 1
             previous_template = template
     novelty = FAKE_HITLER if number == 9 else rng.choice(GHOSTS) if number == 10 else None
-    if novelty is not None and rng.random() < 0.1:
+    if novelty is not None and rng.random() < NOVELTY_SPAWN_CHANCE:
         novelty_rooms = ([rooms[index] for index in sorted(optional_rooms)]
                          if optional_rooms else rooms)
         candidates = [(x, y) for room in novelty_rooms

@@ -52,7 +52,7 @@ Floor 10 is a dedicated secret reward expedition, entered from the campaign's se
 - **Room interiors**: floor codes taken from the district's sound zone (see §6). Normal room-shape variation targets 40% of realized rooms and scales from 0% to 55% across the control. `_carve_notches` supplies mirrored cuts, while `_carve_symmetric_profiles` now includes single chamfers, L shapes, shallow T shapes, offset side bays, stepped crosses, and paired side/end bays. No one family may dominate the shaped set, utility/circulation/arrival rooms remain legible, and validation caps all non-rectangular rooms at 60%. `_add_pillars` provides rarer symmetric structural landmarks where the room tier permits them.
 - **Rare late motif**: 3% of campaigns nominate at most one floor from 6–9 for a bounded three-tile-wide hooked-cross (swastika) room profile. It is an optional branch only: never the critical route, boss room, key host, or progression gate. The low rate keeps a historically charged symbol from becoming a routine visual signature while still making it discoverable across campaign seeds.
 - **Corridors**: explicit `corridor` rooms establish the building-scale circulation hierarchy. Hallway-first forms prefer three-tile-wide major axes and one-tile-wide local connectors, so their main circulation reads differently from their room approaches. `_carve_connection` then routes safe portal paths between graph neighbours, biased toward clean, centered entrances; it searches the best bounded portal set before using protected seam fallbacks. `_widen_corridors` opens eligible single-tile chokes based on traffic.
-- **Doors**: `_door_candidate` finds a single-tile choke on the wall between two rooms and `_door_axis` sets the vertical/horizontal door variant. `_place_doors` skips choke points that would trap a locked-door key behind itself and downgrades officer/SS spawns within three tiles of a door (see `near_door` in `_place_population`) so a door breach cannot reveal a point-blank elite.
+- **Doors**: `_door_candidate` finds a single-tile choke on the wall between two rooms and `_door_axis` sets the vertical/horizontal door variant. `_place_doors` skips choke points that would trap a locked-door key behind itself and downgrades officer spawns within three tiles of a door (see `near_door` in `_place_population`) so a door breach cannot reveal a point-blank officer.
 - **Secrets**: `_place_secret` and `_carve_secret_pocket` push a wall into a bespoke square, vault, reliquary, gallery, or nested pocket reachable only through its pushwall. The complete footprint and its one-tile shell must be unused wall, so a secret cannot leak into a normally accessible room. Ordinary pockets have three deliberately spaced rewards; floor 9 uses the richer pre-boss cache described above. The campaign's special elevator is planned separately from the ordinary secret budget: it requires a deep optional host, uses a vault/reliquary/gallery/nested approach, then opens into a real two-tile elevator car with a door, side rails, back switch, and a rock envelope. Its matching symmetric wall landmarks provide a subtle in-family hint. Required solvency remains on the normal route, so secrets stay advantageous rather than mandatory.
 
 ## 5. Doors, keys, and the exit
@@ -133,7 +133,7 @@ Rooms are ranked by BFS distance from `start`. `depth ∈ [0, 1]` is that distan
 `exit_room` additionally gets its budget multiplied by `0.4` regardless of depth. Recovery and ammo are no longer emitted inside this pass; the pickup planner consumes the finalized encounter economy and route position afterward (§7.5).
 
 ### 7.3 Family selection (`pick_family`)
-Base weights come from `ENEMY_FAMILIES = ((guard, 10, 1.5), (dog, 6, 0.5), (officer, 3, 3.0), (ss, 1, 6.0))` — name, base frequency weight, expected bullets to down. Officers and SS are scaled by depth:
+Base weights come from `ENEMY_FAMILIES = ((guard, 8, 1.5), (dog, 6, 0.5), (officer, 4, 3.0), (ss, 6, 6.0))` — name, base frequency weight, expected bullets to down. Officers and SS are scaled by depth:
 
 ```
 elite_scale = 0.45     if depth < 0.20
@@ -142,9 +142,9 @@ elite_scale = 0.45     if depth < 0.20
 weights = base * (1 + progression) * elite_scale   for officer/ss
 ```
 
-So elites are rare near spawn, most common at the pacing peak, and their overall frequency grows across the campaign. `enemy_toughness` (1..5) gates which families are unlocked at all: at toughness 1 only guards spawn; at 4+ SS is unlocked. `near_door(x, y, radius=3)` downgrades any officer or SS drawn within three tiles of a door back to a guard, so a door-breach line-up never point-blank-fires an elite at the player.
+So elites are rare near spawn, most common at the pacing peak, and their overall frequency grows across the campaign. `enemy_toughness` (1..5) gates which families are unlocked at all: toughness 1 has only guards, toughness 2 adds dogs, and Normal (3) or above uses the complete roster including SS. `near_door(x, y, radius=3)` downgrades officers drawn within three tiles of a door back to a guard; SS are not suppressed by room proximity to doors.
 
-FakeHitler is a rare one-off actor only on floor 9, never a boss; the four indestructible Pac-Man ghosts are likewise a single ~10% novelty spawn, restricted to optional rooms on secret floor 10. Neither participates in the normal enemy-family or ammo-budget model. Floor 10 derives its progression pressure from the recorded secret-source floor, while its arrival remains calm; floor 9 similarly reserves its post-boss victory room as a quiet release.
+FakeHitler is a rare one-off actor only on floor 9, never a boss; the four indestructible Pac-Man ghosts are likewise a single 20% novelty spawn, restricted to optional rooms on secret floor 10. Neither participates in the normal enemy-family or ammo-budget model. Floor 10 derives its progression pressure from the recorded secret-source floor, while its arrival remains calm; floor 9 similarly reserves its post-boss victory room as a quiet release.
 
 ### 7.4 Tier structure
 ECWolf treats each `+36` on an actor code as the next cumulative skill tier: tier-1 actors join the base population on medium, tier-2 joins both on hard. `_place_population` places the base tier first, then two rounds of skill-only actors with `extra = round(base_budget * (0.20 + progression * 0.12))`. Skill actors need their own free cells in the `things` plane.
@@ -204,7 +204,7 @@ Player gunfire is strong at close range, degrades fast, and becomes unreliable p
 
 - The **`max_run = 21`** sightline cap in `_break_long_sightlines`.
 - The **routine-fight range 3–12 tiles** target; room sizing (6–9 baseline, halls 9–13 major axis) is chosen so most rooms fall inside this band.
-- The **near-door officer/SS downgrade** (`near_door(x, y, radius=3)` in `_place_population`) — the manual explicitly warns against rushing straight through doors, and a point-blank elite at the door is the worst version of that trap.
+- The **near-door officer downgrade** (`near_door(x, y, radius=3)` in `_place_population`) — the manual explicitly warns against rushing straight through doors, and a point-blank officer at the door is the worst version of that trap.
 - The **"necessary items are not hidden" rule** (from the manual). Enforced by `_reachable(..., locked_open=False)` and by placing keys in reachable off-route rooms, never behind pushwalls. A key may be tucked away from the direct door line, but its measured detour and progression state remain explicit and solvable. Secrets are always optional surplus.
 
 ### 9.3 Real-map corpus (254 maps, 6277 rooms)
