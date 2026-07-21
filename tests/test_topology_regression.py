@@ -271,6 +271,71 @@ class TopologyRegressionTests(unittest.TestCase):
                         f"seed={seed!r} floor={floor}: plain door at ({x},{y}) "
                         "has a floor-only walkaround")
 
+    def test_no_tight_double_doorway_into_one_room(self):
+        """A corridor that clips a pinched room corner used to leave two plain
+        doors a few tiles apart both opening into the same room -- an ugly
+        redundant pair even though each was individually load-bearing.
+        _heal_pinched_room_door_pairs collapses those into one clean
+        threshold. A wide corridor or a widely spaced pair is a deliberate
+        double entrance and is allowed. Seed 4 / floor 9 is the concrete case
+        that motivated the fix; the rest is a broad guard."""
+        cases = [(4, 9)] + [(seed, floor) for seed in REGRESSION_SEEDS
+                            for floor in (2, 5, 8, 10)]
+        for seed, floor in cases:
+            config = CampaignConfig(seed=seed)
+            level = _generate_with_retries(config, floor)
+            tiles, rooms = level.tiles, level.rooms
+            room_of = {}
+            for index, room in enumerate(rooms):
+                for y in range(room.y, room.y + room.h):
+                    for x in range(room.x, room.x + room.w):
+                        if _is_floor(_at(tiles, x, y)):
+                            room_of[(x, y)] = index
+
+            def corridor(x, y):
+                value = _at(tiles, x, y)
+                return (value != -1 and _is_floor(value)
+                        and (x, y) not in room_of)
+
+            blob_of, blobs = {}, []
+            for y in range(GRID):
+                for x in range(GRID):
+                    if corridor(x, y) and (x, y) not in blob_of:
+                        component, queue = [], deque([(x, y)])
+                        blob_of[(x, y)] = len(blobs)
+                        while queue:
+                            cx, cy = queue.popleft()
+                            component.append((cx, cy))
+                            for nx, ny in ((cx+1, cy), (cx-1, cy),
+                                           (cx, cy+1), (cx, cy-1)):
+                                if corridor(nx, ny) and (nx, ny) not in blob_of:
+                                    blob_of[(nx, ny)] = len(blobs)
+                                    queue.append((nx, ny))
+                        blobs.append(component)
+
+            pair_doors = {}
+            for index, tile in enumerate(tiles):
+                if tile not in (DOOR_EW, DOOR_NS):
+                    continue
+                x, y = index % GRID, index // GRID
+                dx, dy = (1, 0) if tile == DOOR_EW else (0, 1)
+                for near, far in (((x-dx, y-dy), (x+dx, y+dy)),
+                                  ((x+dx, y+dy), (x-dx, y-dy))):
+                    if near in room_of and far in blob_of:
+                        pair_doors.setdefault(
+                            (blob_of[far], room_of[near]), []).append((x, y))
+
+            for (blob_index, room_index), doors in pair_doors.items():
+                if len(doors) < 2 or len(blobs[blob_index]) > 8:
+                    continue
+                jog = max(abs(a[0]-b[0]) + abs(a[1]-b[1])
+                          for i, a in enumerate(doors) for b in doors[i+1:])
+                self.assertGreater(
+                    jog, 4,
+                    f"seed={seed!r} floor={floor}: room {room_index} has "
+                    f"{len(doors)} doors {doors} into one "
+                    f"{len(blobs[blob_index])}-cell corridor stub")
+
 
 class AreaThemeRegressionTests(unittest.TestCase):
     def test_wall_material_balance_across_seeds(self):

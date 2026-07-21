@@ -3233,6 +3233,115 @@ def _remove_redundant_plain_doors(tiles: list[int]) -> int:
     return removed
 
 
+def _heal_pinched_room_door_pairs(tiles: list[int], rooms: list[Room],
+                                  start: tuple[int, int],
+                                  pushwalls: set[tuple[int, int]],
+                                  max_blob: int = 8, max_jog: int = 4) -> int:
+    """Collapse a tight double-doorway into a single clean threshold.
+
+    A corridor that clips a pinched room corner can leave two plain doors a
+    few tiles apart both opening into the same room, each kept load-bearing
+    only by the room's own internal notch (the corridor threads in one door,
+    across the room's own floor, and back out the other). That reads as a
+    redundant pair even though neither door is individually removable.
+
+    Where a single interior wall cell reconnects the room across its notch,
+    open it and seal one of the doors so the room presents one threshold and
+    the stub becomes a plain alcove. Only short corridor stubs with closely
+    spaced doors are touched; a wide blob or a widely separated pair is a
+    deliberate double entrance and is left alone. Every edit is guarded by a
+    full-reachability check, so nothing is ever stranded. Uses no rng, so the
+    shared generation stream is untouched.
+    """
+    room_of: dict[tuple[int, int], int] = {}
+    for index, room in enumerate(rooms):
+        for y in range(room.y, room.y + room.h):
+            for x in range(room.x, room.x + room.w):
+                if _is_floor(_at(tiles, x, y)):
+                    room_of[(x, y)] = index
+
+    def corridor(x: int, y: int) -> bool:
+        value = _at(tiles, x, y)
+        return value != -1 and _is_floor(value) and (x, y) not in room_of
+
+    blob_of: dict[tuple[int, int], int] = {}
+    blobs: list[list[tuple[int, int]]] = []
+    for y in range(GRID):
+        for x in range(GRID):
+            if corridor(x, y) and (x, y) not in blob_of:
+                component = []
+                queue = deque([(x, y)])
+                blob_of[(x, y)] = len(blobs)
+                while queue:
+                    cx, cy = queue.popleft()
+                    component.append((cx, cy))
+                    for nx, ny in ((cx + 1, cy), (cx - 1, cy),
+                                   (cx, cy + 1), (cx, cy - 1)):
+                        if corridor(nx, ny) and (nx, ny) not in blob_of:
+                            blob_of[(nx, ny)] = len(blobs)
+                            queue.append((nx, ny))
+                blobs.append(component)
+
+    pair_doors: dict[tuple[int, int], list[tuple[int, int]]] = {}
+    for index, tile in enumerate(tiles):
+        if tile not in (DOOR_EW, DOOR_NS):
+            continue
+        x, y = index % GRID, index // GRID
+        dx, dy = (1, 0) if tile == DOOR_EW else (0, 1)
+        for room_side, corr_side in (((x - dx, y - dy), (x + dx, y + dy)),
+                                     ((x + dx, y + dy), (x - dx, y - dy))):
+            if room_side in room_of and corr_side in blob_of:
+                key = (blob_of[corr_side], room_of[room_side])
+                pair_doors.setdefault(key, []).append((x, y))
+
+    baseline = _reachable(tiles, start, locked_open=True,
+                          extra_passable=pushwalls)
+    healed = 0
+    for (blob_index, room_index), doors in pair_doors.items():
+        if len(doors) < 2 or len(blobs[blob_index]) > max_blob:
+            continue
+        jog = max(abs(a[0] - b[0]) + abs(a[1] - b[1])
+                  for i, a in enumerate(doors) for b in doors[i + 1:])
+        if jog > max_jog:
+            continue
+        room = rooms[room_index]
+        # Interior wall cells whose only floor neighbours all belong to this
+        # room: opening one heals the room's own notch without bridging into a
+        # corridor or a neighbouring room.
+        pinches: list[tuple[int, int] | None] = [None]
+        for py in range(room.y, room.y + room.h):
+            for px in range(room.x, room.x + room.w):
+                if _at(tiles, px, py) != WALL:
+                    continue
+                floor_neighbours = [(px + ddx, py + ddy)
+                                    for ddx, ddy in ((1, 0), (-1, 0),
+                                                     (0, 1), (0, -1))
+                                    if _is_floor(_at(tiles, px + ddx, py + ddy))]
+                if (len(floor_neighbours) >= 2
+                        and all(room_of.get(cell) == room_index
+                                for cell in floor_neighbours)):
+                    pinches.append((px, py))
+        resolved = False
+        for seal in doors:
+            if resolved:
+                break
+            for pinch in pinches:
+                trial = list(tiles)
+                if pinch is not None:
+                    trial[pinch[1] * GRID + pinch[0]] = FLOOR
+                trial[seal[1] * GRID + seal[0]] = WALL
+                reach = _reachable(trial, start, locked_open=True,
+                                   extra_passable=pushwalls)
+                if baseline - {seal} <= reach:
+                    if pinch is not None:
+                        _set(tiles, pinch[0], pinch[1], FLOOR)
+                    _set(tiles, seal[0], seal[1], WALL)
+                    healed += 1
+                    resolved = True
+                    break
+    return healed
+
+
 def _assign_sound_zones(tiles: list[int]) -> int:
     """Give each door-separated floor component its own ECWolf MapZone.
 
@@ -7166,6 +7275,13 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
     if _remove_redundant_plain_doors(tiles):
         # A removed door can extend a floor-only sightline which the earlier
         # pass correctly treated as interrupted; repair only that new case.
+        _break_long_sightlines(tiles, things, rooms, reserved, rng, start,
+                               allow_doors=False, walls_for_redundant_doors=True)
+    # Collapse tight double-doorways where a corridor clips a pinched room
+    # corner into a single clean threshold (rare; leaves wide double entrances).
+    door_pushwalls = {(index % GRID, index // GRID)
+                      for index, thing in enumerate(things) if thing == PUSHWALL}
+    if _heal_pinched_room_door_pairs(tiles, rooms, start, door_pushwalls):
         _break_long_sightlines(tiles, things, rooms, reserved, rng, start,
                                allow_doors=False, walls_for_redundant_doors=True)
     # With the gate probe below, seeds 0--19 on floors 2/5/8 placed at most
