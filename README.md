@@ -145,7 +145,7 @@ package by hand:
 pip install pyinstaller .
 pyinstaller --onefile --windowed --name InfiniWolf run.py
 pyinstaller --onefile --name infiniwolf-cli infiniwolf_cli.py
-python3 packaging/make_release.py --platform linux --version 1.8.5   # or windows / macos
+python3 packaging/make_release.py --platform linux --version 1.9.0   # or windows / macos
 ```
 
 The script downloads ECWolf's official prebuilt binary for the target platform from `maniacsvault.net`, checks it against a pinned SHA-256, and packages it alongside the two executables. It never touches Wolfenstein 3D game data.

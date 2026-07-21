@@ -3557,14 +3557,20 @@ def _hint_secrets(tiles: list[int], things: list[int],
                   component_of: dict[tuple[int, int], int],
                   group_theme: dict[int, tuple[int, tuple[int, ...]]],
                   rng: random.Random,
-                  special_pushwall: tuple[int, int] | None = None
+                  special_pushwall: tuple[int, int] | None = None,
+                  plain_walls: frozenset[tuple[int, int]] = frozenset(),
                   ) -> dict[tuple[int, int], str]:
-    """Hang a landmark decor tile (banner, portrait, insignia) on every
-    pushwall, the way the original episodes telegraph most of theirs. Runs
-    after _apply_wall_theme so the theme can't repaint the hint, and prefers
-    the floor theme's own decor accents so the hint matches the material.
-    Falls back to a same-base sibling theme's accents rather than a hardcoded
-    cross-family constant, so a hint tile can never mix material families."""
+    """Hang a landmark decor tile (banner, portrait, insignia) on most
+    pushwalls, the way the original episodes telegraph theirs. Runs after
+    _apply_wall_theme so the theme can't repaint the hint, and prefers the
+    floor theme's own decor accents so the hint matches the material. Falls
+    back to a same-base sibling theme's accents rather than a hardcoded
+    cross-family constant, so a hint tile can never mix material families.
+
+    Walls in ``plain_walls`` are deliberately left as ordinary wall material
+    with no landmark -- the inner wall of a nested double secret, so the second
+    chamber is not given away. The mandatory secret-exit ``special_pushwall``
+    is always hinted."""
     treatments: dict[tuple[int, int], str] = {}
     for index, thing in enumerate(things):
         if thing != PUSHWALL:
@@ -3583,8 +3589,18 @@ def _hint_secrets(tiles: list[int], things: list[int],
                           for accent in other_accents if accent in DECOR_WALLS)
         if not hints:
             hints = SECRET_HINT_BY_BASE.get(base, ())
+        force_plain = (x, y) in plain_walls and (x, y) != special_pushwall
         if hints:
+            # Always draw the hint even when the wall is deliberately left
+            # plain, so the marking choice never shifts the main rng stream
+            # that downstream population and item economy depend on.
             hint = rng.choice(hints)
+            if force_plain:
+                # An unmarked secret reads as ordinary wall, so it is found by
+                # pushing rather than by spotting a landmark.
+                tiles[index] = base
+                treatments[(x, y)] = "plain-wall"
+                continue
             tiles[index] = hint
             treatments[(x, y)] = ("plain-wall" if hint == base
                                   else "single-landmark")
@@ -3602,6 +3618,11 @@ def _hint_secrets(tiles: list[int], things: list[int],
                             _set(tiles, *cell, hint)
                         treatments[(x, y)] = "symmetric-landmark"
                         break
+        elif force_plain:
+            # No landmark accent exists for this material, so the wall is
+            # already ordinary; just record it as the deliberate plain choice.
+            tiles[index] = base
+            treatments[(x, y)] = "plain-wall"
     return treatments
 
 
@@ -4208,7 +4229,22 @@ def _carve_secret_pocket(tiles: list[int], things: list[int], px: int, py: int,
         rewards.append(rng.choices(useful_choices, weights=useful_weights, k=1)[0])
         rewards.append(_secret_reward(rng, depth, premium=True, quality=reward_quality,
                                       allow_one_up=ONE_UP not in things))
-    reward_cells = candidates[:reward_count]
+    if variant == "nested" and not secret_exit:
+        # A double secret must not read as an obvious empty antechamber: the
+        # first chamber holds the bulk of the reward so opening the outer wall
+        # already feels complete, and the second (behind an unmarked wall) is
+        # a genuine bonus for the thorough player rather than the only payoff.
+        depth_of = lambda cell: direction * (cell[0] - px)
+        first_cells = [cell for cell in candidates if depth_of(cell) < 4]
+        second_cells = [cell for cell in candidates if depth_of(cell) > 4]
+        n_second = max(1, reward_count // 3)
+        n_first = reward_count - n_second
+        reward_cells = first_cells[:n_first] + second_cells[:n_second]
+        if len(reward_cells) < reward_count:
+            spare = [cell for cell in candidates if cell not in reward_cells]
+            reward_cells += spare[:reward_count - len(reward_cells)]
+    else:
+        reward_cells = candidates[:reward_count]
     for cell, item in zip(reward_cells, rewards):
         _set(things, *cell, item)
 
@@ -6344,23 +6380,44 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
             pairs_placed = pair_budget
         else:
             # --- Pattern: symmetric wall pairs (general fallback) ---
-            # Candidates come only from the wall-hugging band: a mirrored
-            # pair mid-room reads as random clutter, the same pair against
-            # opposite walls reads as furnishing.
+            # Furniture reads as "set against the walls," so both members of a
+            # pair belong flush on the wall-backed outer ring. The interior
+            # `free` ring is one floor cell short of the wall -- a barrel or
+            # bunk parked there leaves a visible gap and reads as floating,
+            # which is the dominant source of mid-room clutter. Prefer matched
+            # cells on opposite walls; keep the old center-mirror interior
+            # pairs only as a last resort so density holds where the wall band
+            # is already spoken for.
             if pairs_placed < pair_budget and blocking:
+                backed = {cell for cell in edge_free
+                          if cell not in keep_clear and _wall_backed(cell)}
+                lr_pairs = [((room.x, y), (room.x + room.w - 1, y))
+                            for y in range(room.y + 1, room.y + room.h - 1)
+                            if (room.x, y) in backed
+                            and (room.x + room.w - 1, y) in backed]
+                tb_pairs = [((x, room.y), (x, room.y + room.h - 1))
+                            for x in range(room.x + 1, room.x + room.w - 1)
+                            if (x, room.y) in backed
+                            and (x, room.y + room.h - 1) in backed]
+                flush_pairs = lr_pairs + tb_pairs
+                rng.shuffle(flush_pairs)
                 band = [cell for cell in free if _near_wall(*cell)]
                 x_pairs = [((x, y), (2 * cx - x, y)) for x, y in band
                            if x < cx and (2 * cx - x, y) in free]
                 y_pairs = [((x, y), (x, 2 * cy - y)) for x, y in band
                            if y < cy and (x, 2 * cy - y) in free]
-                geometric_pairs = x_pairs + y_pairs
-                rng.shuffle(geometric_pairs)
-                # Travel-aware pairs stay ahead of room-center symmetry. The
-                # latter remains a fallback when doors are absent or the aisle
-                # is occupied by a stronger room signature.
-                all_pairs = travel_pairs + [pair for pair in geometric_pairs
-                                            if pair not in travel_pairs
-                                            and pair[::-1] not in travel_pairs]
+                interior_pairs = x_pairs + y_pairs
+                rng.shuffle(interior_pairs)
+                # Travel-aware pairs stay ahead of room-center symmetry, then
+                # wall-flush pairs, then the interior mirror as a last resort.
+                ordered = travel_pairs + flush_pairs + interior_pairs
+                seen: set[tuple[tuple[int, int], tuple[int, int]]] = set()
+                all_pairs = []
+                for pair in ordered:
+                    if pair in seen or pair[::-1] in seen:
+                        continue
+                    seen.add(pair)
+                    all_pairs.append(pair)
                 for (ax, ay), (bx, by) in all_pairs:
                     if pairs_placed >= pair_budget:
                         break
@@ -6411,6 +6468,49 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
                 spots += [(cell, rng.choice(floor_clutter)) for cell in mids]
             for cell, item in spots[:count]:
                 _place_open(cell, item)
+
+        # --- Pull isolated furniture flush to the wall ---
+        # A blocking prop that aimed for the wall band but landed on the inner
+        # floor ring sits one cell short, with a visible gap behind it that
+        # reads as floating. Move only props that have no wall or furniture
+        # neighbor and are already within two cells of a wall, straight toward
+        # it. Centerpieces (wells, banquet tables sitting deep in the room) and
+        # anything already part of a pair or cluster keep their place.
+        def _solid(cell: tuple[int, int]) -> bool:
+            value = _at(tiles, *cell)
+            return value != -1 and not _is_floor(value) and value not in DOORS
+
+        for cell in list(room_blocked):
+            item = _at(things, *cell)
+            if item in (39, 62, 69):          # wall displays are backed already
+                continue
+            neighbours = [(cell[0] + dx, cell[1] + dy)
+                          for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1))]
+            if any(_solid(n) for n in neighbours):
+                continue                       # already flush to a wall
+            if any(_at(things, *n) in STATIC_BLOCKING for n in neighbours):
+                continue                       # reads as a deliberate cluster
+            target = None
+            for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                step1 = (cell[0] + dx, cell[1] + dy)
+                step2 = (cell[0] + 2 * dx, cell[1] + 2 * dy)
+                if (_solid(step2) and step1 not in keep_clear
+                        and (step1 in free or step1 in edge_free)
+                        and _at(things, *step1) == 0):
+                    target = step1
+                    break
+            if target is None:
+                continue
+            candidate = (blocked_cells - {cell}) | {target}
+            if len(_reachable(tiles, start, locked_open=True,
+                              blocked=candidate)) < baseline - len(candidate):
+                continue
+            _set(things, *cell, 0)
+            _set(things, *target, item)
+            reserved.discard(cell); reserved.add(target)
+            free.add(cell); free.discard(target); edge_free.discard(target)
+            blocked_cells.discard(cell); blocked_cells.add(target)
+            room_blocked.append(target)
 
     # --- Corridor rhythm: ceiling lights pace long straight halls ---
     # Open fixtures only, so nothing here can affect reachability, patrol
@@ -7128,10 +7228,26 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
                                   atmosphere=int(config.atmosphere))
     exit_pushwall = next((detail.pushwall for detail in secret_details
                           if detail.secret_exit), None)
+    # Only the inner wall of a nested double secret is deliberately forced
+    # plain, so the second chamber is not given away. Ordinary secrets are
+    # already not uniformly telegraphed: plaster pushwalls stay plain by design
+    # and a few materials have no landmark accent, so hint_secrets never marks
+    # every secret to begin with. The nested outer wall and the mandatory
+    # secret-exit wall are always marked.
+    nested_inner = {(detail.pushwall[0] + 4 * detail.push_direction,
+                     detail.pushwall[1])
+                    for detail in secret_details if detail.shape == "nested"}
+    plain_walls = frozenset(nested_inner)
     secret_hints = _hint_secrets(tiles, things, component_of, group_theme, rng,
-                                 special_pushwall=exit_pushwall)
+                                 special_pushwall=exit_pushwall,
+                                 plain_walls=plain_walls)
     if exit_pushwall is not None and secret_hints.get(exit_pushwall) != "symmetric-landmark":
         raise ValueError("secret elevator host cannot support its landmark hint")
+    # Keep each recorded treatment truthful to what was actually painted.
+    secret_details = [
+        replace(detail, hint_treatment=secret_hints.get(detail.pushwall,
+                                                        detail.hint_treatment))
+        for detail in secret_details]
     rare_motif_detail = None
     if rare_profile is not None:
         room_index, realization, endpoints = rare_profile

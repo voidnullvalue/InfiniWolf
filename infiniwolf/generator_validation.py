@@ -14,7 +14,7 @@ from .generator import (
     LIGHTING_FAMILY_ITEMS, LIGHTING_ITEMS, LOCKED_DOORS, MACHINE_GUN,
     ONE_UP, PATROLS_BY_FAMILY, PATROL_POINT_DIRECTIONS, PICKUP_CODES,
     PLAYER_START_CODES, PROGRESSION_GRAMMARS, PURPLE_MIN_FLOOR, PUSHWALL,
-    SECRET_EXIT_ZONE, SECRET_HINT_WALLS, SILVER_DOORS, SILVER_KEY,
+    SECRET_EXIT_ZONE, SILVER_DOORS, SILVER_KEY,
     SPEAR_CONCEPTS, TREASURE, _at, _codes_for_colors, _door_zone,
     _floor_distances, _inside_room, _is_floor, _minimum_critical_route_rooms,
     _path_bends, _reachable, _room_graph_path, _room_predecessor,
@@ -620,10 +620,12 @@ def validate_map(level: GeneratedMap) -> None:
     # second wall of a nested pocket so reachability models the real push.
     push_directions = {detail.pushwall: detail.push_direction
                        for detail in level.secret_details}
+    nested_inner = set()
     for detail in level.secret_details:
         if detail.shape == "nested":
             x, y = detail.pushwall
             push_directions[(x + 4 * detail.push_direction, y)] = detail.push_direction
+            nested_inner.add((x + 4 * detail.push_direction, y))
     rests = {(x + 2 * push_directions.get((x, y), 1), y)
              for x, y in pushwalls}
     for x, y in pushwalls:
@@ -635,8 +637,13 @@ def validate_map(level: GeneratedMap) -> None:
         if not all(_is_floor(_at(level.tiles, x + direction * step, y))
                    for step in (1, 2)):
             raise ValueError("pushwall has no two-tile backstop")
-        if _at(level.tiles, x, y) not in SECRET_HINT_WALLS:
-            raise ValueError("pushwall is not hinted by a decor wall tile")
+        # Not every pushwall is telegraphed: a nested double secret hides its
+        # inner wall, and a small share of ordinary caches stay fully hidden.
+        # The nested inner wall must read as ordinary wall (never a landmark)
+        # so the second chamber is not given away; the mandatory secret-exit
+        # landmark is validated separately above.
+        if (x, y) in nested_inner and _at(level.tiles, x, y) in DECOR_WALLS:
+            raise ValueError("nested inner pushwall must stay an unmarked wall")
     # Nested secrets become approachable in sequence. Simulate each push at
     # its real two-tile travel distance rather than pretending the inner wall
     # must be reachable while its outer wall is still closed.
