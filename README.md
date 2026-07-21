@@ -5,7 +5,7 @@
 <img src="assets/infiniwolf-logo.png" alt="InfiniWolf logo" width="520">
 
 <p>
-  <a href="https://github.com/voidnullvalue/InfiniWolf/actions/workflows/release.yml"><img src="https://github.com/voidnullvalue/InfiniWolf/actions/workflows/release.yml/badge.svg" alt="CI"></a>
+  <a href="https://github.com/voidnullvalue/InfiniWolf/actions/workflows/release.yml?query=branch%3Amain+event%3Apush"><img src="https://github.com/voidnullvalue/InfiniWolf/actions/workflows/release.yml/badge.svg?branch=main&event=push" alt="CI"></a>
   <a href="https://github.com/voidnullvalue/InfiniWolf/releases/latest"><img src="https://img.shields.io/github/v/release/voidnullvalue/InfiniWolf?display_name=tag&sort=date" alt="Latest release"></a>
   <a href="https://github.com/voidnullvalue/InfiniWolf/releases"><img src="https://img.shields.io/github/downloads/voidnullvalue/InfiniWolf/total" alt="Downloads"></a>
   <a href="LICENSE"><img src="https://img.shields.io/github/license/voidnullvalue/InfiniWolf" alt="License"></a>
