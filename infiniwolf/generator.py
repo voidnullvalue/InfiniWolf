@@ -467,6 +467,10 @@ PROGRESSION_GRAMMARS = (
 
 SHAPE_TARGETS = (0.0, 0.15, 0.25, 0.40, 0.48, 0.55)
 RARE_MOTIF_CHANCE = 0.03
+# Recessed exterior vistas retain the original wall plane as matching pillar
+# supports. Name the rates so this landmark can be deliberately tuned.
+SKY_VISTA_COURTYARD_CHANCE = 0.36
+SKY_VISTA_INTERIOR_CHANCE = 0.18
 
 
 def _variant_sequence(config: CampaignConfig) -> tuple[FloorVariant, ...]:
@@ -5998,7 +6002,9 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
         if (allow_sky_vista and not sky_composition_placed
                 and concept in {"courtyard", "gallery", "trophy-hall"}
                 and min(room.w, room.h) >= 7
-                and rng.random() < (0.26 if concept == "courtyard" else 0.08)):
+                and rng.random() < (SKY_VISTA_COURTYARD_CHANCE
+                                    if concept == "courtyard"
+                                    else SKY_VISTA_INTERIOR_CHANCE)):
             side_specs = (
                 [((x, room.y), (x, room.y - 1))
                  for x in range(room.x + 1, room.x + room.w - 1)],
@@ -6963,14 +6969,16 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
     required_post_anchor = next((index for index, role in enumerate(roles)
                                  if role in ("victory", "recovery")), None)
 
-    # Claim the complete native-safe arrival car before carving corridors.
-    # Later routers treat its floor, panels, and real door as occupied
-    # architecture and naturally route around it, rather than consuming the
-    # rock backing and forcing an otherwise valid floor to retry.
+    # Floor one begins inside the castle rather than beside an inert lift.
+    # Later floors retain their bounded arrival cars and reserve that geometry
+    # before routing, so their rock backing cannot be consumed by corridors.
     first_neighbor = next((second if first == 0 else first
                            for first, second in edges if 0 in (first, second)), 1)
-    arrival = _place_arrival_elevator(
-        tiles, rooms[0], rooms[first_neighbor].center, rng, floor_variant.name)
+    arrival = None
+    if number != 1:
+        arrival = _place_arrival_elevator(
+            tiles, rooms[0], rooms[first_neighbor].center, rng,
+            floor_variant.name)
     # Reserve the terminal car at the same architectural stage. Prefer the
     # planned final spine room, then another sufficiently deep post-anchor
     # route when its horizontal exterior wall is the one that remains clean.
@@ -7011,17 +7019,27 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
     terminal_footprint = {
         (exit_portal[0] + switch_dx * depth, exit_portal[1] + side)
         for depth in range(5) for side in (-2, -1, 0, 1, 2)}
-    protected_elevators = set(arrival.footprint) | terminal_footprint
-    door_zones: set[tuple[int, int]] = {arrival.portal}
+    protected_elevators = ((set(arrival.footprint) if arrival else set())
+                            | terminal_footprint)
+    door_zones: set[tuple[int, int]] = ({arrival.portal} if arrival else set())
     paths = [_carve_connection(tiles, rooms[a], rooms[b], rng, complexity,
                                door_zones, protected_elevators)
              for a, b in edges]
     _widen_corridors(tiles, rooms, paths, rng,
                      widen_chance=floor_variant.widen_chance,
                      protected=protected_elevators)
-    start = arrival.player
-    _set(things, *start, PLAYER_START_CODES[arrival.facing])
-    if arrival.item is not None:
+    if arrival is not None:
+        start = arrival.player
+        facing = arrival.facing
+    else:
+        start = rooms[0].center
+        tx, ty = rooms[first_neighbor].center
+        dx, dy = tx - start[0], ty - start[1]
+        facing = (1 if abs(dx) >= abs(dy) and dx >= 0 else
+                  3 if abs(dx) >= abs(dy) else
+                  2 if dy >= 0 else 0)
+    _set(things, *start, PLAYER_START_CODES[facing])
+    if arrival is not None and arrival.item is not None:
         _set(things, *arrival.item)
     exit_room = rooms[preplaced_exit_index]
     # The elevator belongs near the deepest authored frontier, after the
@@ -7053,13 +7071,15 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
         roles[planned_exit_index] = "relief"
         roles[exit_index] = "exit"
     notch_cells = {cell for cells in notch_anchors.values() for cell in cells}
-    reserved = {start, *arrival.clearance, *arrival.car_cells,
-                exit_stand, *notch_cells}
+    reserved = ({start, exit_stand, *notch_cells}
+                | (set(arrival.clearance) | set(arrival.car_cells)
+                   if arrival else set()))
     rewards: list[tuple[int, int]] = []
     secret_variants: list[str] = []
     secret_details: list[SecretDetail] = []
     shortcut_pushwalls: list[tuple[int, int]] = []
-    secret_protected: set[tuple[int, int]] = set(arrival.footprint)
+    secret_protected: set[tuple[int, int]] = (set(arrival.footprint)
+                                              if arrival else set())
     floor_distances = _floor_distances(tiles, start)
     room_distances = {room: floor_distances.get(room.center, 0) for room in rooms}
     max_room_distance = max(room_distances.values(), default=1) or 1

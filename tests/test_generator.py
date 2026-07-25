@@ -51,6 +51,16 @@ class GeneratorTests(unittest.TestCase):
     def test_level_ten_novelty_chance_is_twenty_percent(self):
         self.assertEqual(generator.NOVELTY_SPAWN_CHANCE, 0.20)
 
+    def test_floor_one_starts_in_a_normal_room_without_an_arrival_elevator(self):
+        level = _generate_with_retries(CampaignConfig(seed=42), 1)
+        self.assertIsNone(level.arrival)
+        self.assertEqual(level.start, level.rooms[0].center)
+        self.assertNotIn(generator.DUMMY_ELEVATOR_TILE, level.tiles)
+
+    def test_sky_vista_chances_are_increased_by_ten_percentage_points(self):
+        self.assertEqual(generator.SKY_VISTA_COURTYARD_CHANCE, 0.36)
+        self.assertEqual(generator.SKY_VISTA_INTERIOR_CHANCE, 0.18)
+
     def test_arrival_elevator_is_inert_rock_bounded_and_behind_player(self):
         room = Room(20, 20, 8, 8)
         # ECWolf expands old-format player starts from thing 19 in its native
@@ -1426,6 +1436,10 @@ class GeneratorTests(unittest.TestCase):
             for seed in range(3):
                 level = _generate_with_retries(CampaignConfig(seed=seed), number)
                 self.assertNotIn(13, level.tiles)
+                if number == 1:
+                    self.assertIsNone(level.arrival)
+                    self.assertNotIn(generator.DUMMY_ELEVATOR_TILE, level.tiles)
+                    continue
                 arrival_panels = {
                     cell for cell in level.arrival.footprint
                     if _at(level.tiles, *cell) == generator.DUMMY_ELEVATOR_TILE
