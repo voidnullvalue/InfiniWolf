@@ -22,6 +22,7 @@ from .generator import (
 )
 
 def validate_map(level: GeneratedMap) -> None:
+    facings = ((0, -1), (1, 0), (0, 1), (-1, 0))
     if len(level.tiles) != GRID * GRID or len(level.things) != GRID * GRID:
         raise ValueError("invalid plane dimensions")
     if 63 in level.things:
@@ -29,7 +30,16 @@ def validate_map(level: GeneratedMap) -> None:
     if (level.number < PURPLE_MIN_FLOOR
             and any(tile in {19, 25} for tile in level.tiles)):
         raise ValueError("purple wall material appears before the late campaign")
-    if level.arrival is None:
+    if level.number == 1:
+        if level.arrival is not None:
+            raise ValueError("floor 1 must start in a normal room")
+        if (not level.room_roles or level.room_roles[0] != "start"
+                or level.start != level.rooms[0].center
+                or _at(level.things, *level.start) not in PLAYER_START_CODES
+                or sum(thing in PLAYER_START_CODES for thing in level.things) != 1
+                or DUMMY_ELEVATOR_TILE in level.tiles):
+            raise ValueError("floor 1 has an invalid normal-room start")
+    elif level.arrival is None:
         raise ValueError("floor has no arrival elevator")
     if level.circulation_skeleton in HALLWAY_FIRST_SKELETONS:
         corridor_indices = [index for index, tier in enumerate(level.room_tiers)
@@ -49,64 +59,64 @@ def validate_map(level: GeneratedMap) -> None:
         if any(min(level.rooms[index].w, level.rooms[index].h) != 3
                for index in corridor_indices):
             raise ValueError("hallway-first scaffold is not three tiles wide")
-    arrival = level.arrival
-    facings = ((0, -1), (1, 0), (0, 1), (-1, 0))
-    inward = facings[arrival.facing]
-    outward = (-inward[0], -inward[1])
-    inside = arrival.kind.startswith("inside-")
-    expected_player = (arrival.portal[0] + 2 * (outward[0] if inside else inward[0]),
-                       arrival.portal[1] + 2 * (outward[1] if inside else inward[1]))
-    if (arrival.kind not in {"outside-empty", "outside-supply", "inside-closed"}
-            or arrival.player != level.start or level.start != expected_player
-            or _at(level.things, *level.start) != PLAYER_START_CODES[arrival.facing]
-            or sum(thing in PLAYER_START_CODES for thing in level.things) != 1):
-        raise ValueError("player does not face away from the arrival elevator")
-    if outward[1] != 0:
-        raise ValueError("arrival elevator uses a directionally invalid vertical car")
-    if (any(_at(level.tiles, *cell) == ELEVATOR_TILE
-            for cell in arrival.footprint)
-            or not all(_is_floor(_at(level.tiles, *cell))
-                       and _at(level.things, *cell) == 0
-                       for cell in arrival.clearance)):
-        raise ValueError("arrival elevator contains a switch or blocked threshold")
-    car_cells = tuple((arrival.portal[0] + depth * outward[0],
-                       arrival.portal[1] + depth * outward[1])
-                      for depth in (1, 2))
-    if (arrival.car_cells != car_cells
-            or any(not _is_floor(_at(level.tiles, *cell)) for cell in car_cells)):
-        raise ValueError("arrival elevator car has invalid floor geometry")
-    expected_portal = DOOR_ELEVATOR if inward[0] else DOOR_ELEVATOR_NS
-    if _at(level.tiles, *arrival.portal) != expected_portal:
-        raise ValueError("arrival car lacks its normal elevator door")
-    px, py = -outward[1], outward[0]
-    dressed = {
-        (arrival.portal[0] + depth * outward[0] + side * px,
-         arrival.portal[1] + depth * outward[1] + side * py)
-        for depth in (1, 2, 3) for side in (-1, 1)}
-    dressed.add((arrival.portal[0] + 3 * outward[0],
-                 arrival.portal[1] + 3 * outward[1]))
-    if any(_at(level.tiles, *cell) != DUMMY_ELEVATOR_TILE
-           for cell in dressed):
-        raise ValueError("arrival car does not use inert native panels")
-    if arrival.item is not None:
-        if (arrival.kind != "outside-supply"
-                or arrival.item[:2] not in arrival.car_cells
-                or arrival.item[2] not in PICKUP_CODES
-                or _at(level.things, *arrival.item[:2]) != arrival.item[2]):
-            raise ValueError("arrival car item lacks contextual provenance")
-    elif arrival.kind == "outside-supply":
-        raise ValueError("staged arrival car has no item")
-    allowed_things = {level.start}
-    if arrival.item is not None:
-        allowed_things.add(arrival.item[:2])
-    if any(_at(level.things, *cell) and cell not in allowed_things
-           for cell in arrival.car_cells):
-        raise ValueError("arrival car contains an unexplained object")
-    for cell in arrival.footprint:
-        if cell in dressed or cell in arrival.car_cells or cell == arrival.portal:
-            continue
-        if _is_floor(_at(level.tiles, *cell)) or _at(level.tiles, *cell) in DOORS:
-            raise ValueError("arrival elevator is not rock bounded")
+    if level.arrival is not None:
+        arrival = level.arrival
+        inward = facings[arrival.facing]
+        outward = (-inward[0], -inward[1])
+        inside = arrival.kind.startswith("inside-")
+        expected_player = (arrival.portal[0] + 2 * (outward[0] if inside else inward[0]),
+                           arrival.portal[1] + 2 * (outward[1] if inside else inward[1]))
+        if (arrival.kind not in {"outside-empty", "outside-supply", "inside-closed"}
+                or arrival.player != level.start or level.start != expected_player
+                or _at(level.things, *level.start) != PLAYER_START_CODES[arrival.facing]
+                or sum(thing in PLAYER_START_CODES for thing in level.things) != 1):
+            raise ValueError("player does not face away from the arrival elevator")
+        if outward[1] != 0:
+            raise ValueError("arrival elevator uses a directionally invalid vertical car")
+        if (any(_at(level.tiles, *cell) == ELEVATOR_TILE
+                for cell in arrival.footprint)
+                or not all(_is_floor(_at(level.tiles, *cell))
+                           and _at(level.things, *cell) == 0
+                           for cell in arrival.clearance)):
+            raise ValueError("arrival elevator contains a switch or blocked threshold")
+        car_cells = tuple((arrival.portal[0] + depth * outward[0],
+                           arrival.portal[1] + depth * outward[1])
+                          for depth in (1, 2))
+        if (arrival.car_cells != car_cells
+                or any(not _is_floor(_at(level.tiles, *cell)) for cell in car_cells)):
+            raise ValueError("arrival elevator car has invalid floor geometry")
+        expected_portal = DOOR_ELEVATOR if inward[0] else DOOR_ELEVATOR_NS
+        if _at(level.tiles, *arrival.portal) != expected_portal:
+            raise ValueError("arrival car lacks its normal elevator door")
+        px, py = -outward[1], outward[0]
+        dressed = {
+            (arrival.portal[0] + depth * outward[0] + side * px,
+             arrival.portal[1] + depth * outward[1] + side * py)
+            for depth in (1, 2, 3) for side in (-1, 1)}
+        dressed.add((arrival.portal[0] + 3 * outward[0],
+                     arrival.portal[1] + 3 * outward[1]))
+        if any(_at(level.tiles, *cell) != DUMMY_ELEVATOR_TILE
+               for cell in dressed):
+            raise ValueError("arrival car does not use inert native panels")
+        if arrival.item is not None:
+            if (arrival.kind != "outside-supply"
+                    or arrival.item[:2] not in arrival.car_cells
+                    or arrival.item[2] not in PICKUP_CODES
+                    or _at(level.things, *arrival.item[:2]) != arrival.item[2]):
+                raise ValueError("arrival car item lacks contextual provenance")
+        elif arrival.kind == "outside-supply":
+            raise ValueError("staged arrival car has no item")
+        allowed_things = {level.start}
+        if arrival.item is not None:
+            allowed_things.add(arrival.item[:2])
+        if any(_at(level.things, *cell) and cell not in allowed_things
+               for cell in arrival.car_cells):
+            raise ValueError("arrival car contains an unexplained object")
+        for cell in arrival.footprint:
+            if cell in dressed or cell in arrival.car_cells or cell == arrival.portal:
+                continue
+            if _is_floor(_at(level.tiles, *cell)) or _at(level.tiles, *cell) in DOORS:
+                raise ValueError("arrival elevator is not rock bounded")
 
     realized_barrel_families: list[str] = []
     for room in level.rooms:
