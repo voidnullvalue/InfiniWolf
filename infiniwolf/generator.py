@@ -126,6 +126,21 @@ FAMILY_BY_CODE = {code + 36 * tier: family
                   for variant in (family, PATROLS_BY_FAMILY[family])
                   for code in variant for tier in range(3)}
 AMMO_COST = {family: cost for _, family, _, cost in ENEMY_FAMILIES}
+# The placed-clip budget models bullets spent but not bullets recovered: in WL6
+# a downed guard, officer, or SS leaves its own clip behind, so a floor stocked
+# to its full expected sink reads as a floor drowning in ammo. Corpse drops are
+# the primary supply; staged clips are a thin top-up for expensive stretches.
+AMMO_SUPPLY_SCALE = 0.25
+# The boss stronghold is exempt. Its staging cache, pre-arena secrets, and arena
+# supplies exist to make one unavoidable, expensive fight survivable, and there
+# is no corpse-drop stream from a boss to fall back on.
+AMMO_SUPPLY_EXEMPT_FLOORS = frozenset({9})
+# Encounter frequency. `guard_density` sets the raw appetite, but realized
+# rooms were reading as wall-to-wall resistance, so trim the per-room budget.
+ACTOR_BUDGET_SCALE = 0.85
+# Chebyshev separation an encounter tries to keep between its own actors before
+# relaxing (see `_spread_actor_cells`).
+ACTOR_SPACING = 3
 
 @dataclass(frozen=True, slots=True)
 class WallMaterialFamily:
@@ -4567,6 +4582,41 @@ def _break_long_sightlines(tiles: list[int], things: list[int], rooms: list[Room
             return placed
 
 
+def _spread_actor_cells(candidates: list[tuple[int, int]], count: int,
+                        occupied: list[tuple[int, int]]) -> list[tuple[int, int]]:
+    """Take ``count`` ranked slots while keeping actors out of each other's laps.
+
+    The encounter templates rank every interior cell, and taking the ranked
+    prefix wholesale hands back a contiguous blob: `visible-sentry` files its
+    guards along one line at the same distance from the entry, `strongpoint`
+    packs them into the far corner. A room composition should read as posted
+    positions covering the space, so each slot is skipped while it sits inside
+    an already-chosen actor's personal space. Rank order still decides who is
+    offered a slot first, so every template keeps its shape.
+
+    The spacing relaxes to nothing over successive sweeps: a cramped room must
+    still fill its budget rather than silently under-populate.
+    """
+    if count <= 0:
+        return []
+    picked: list[tuple[int, int]] = []
+    used: set[tuple[int, int]] = set()
+    for spacing in range(ACTOR_SPACING, 0, -1):
+        for cell in candidates:
+            if len(picked) >= count:
+                break
+            if cell in used:
+                continue
+            if any(max(abs(cell[0] - x), abs(cell[1] - y)) < spacing
+                   for x, y in occupied + picked):
+                continue
+            picked.append(cell)
+            used.add(cell)
+        if len(picked) >= count:
+            break
+    return picked
+
+
 def _place_population(config: CampaignConfig, number: int, rooms: list[Room],
                       tiles: list[int], things: list[int], reserved: set[tuple[int, int]],
                       rng: random.Random, start: tuple[int, int],
@@ -4855,7 +4905,8 @@ def _place_population(config: CampaignConfig, number: int, rooms: list[Room],
     budgets: dict[int, int] = {}
     for ridx, room in enumerate(rooms[1:], 1):
         depth = depth_of(room)
-        budget = max(0, round(per_room * (0.4 if room == exit_room else pacing(depth))))
+        budget = max(0, round(per_room * ACTOR_BUDGET_SCALE
+                              * (0.4 if room == exit_room else pacing(depth))))
         if ridx in calm_rooms:
             budget = 0
         elif room == boss_room:
@@ -5011,20 +5062,24 @@ def _place_population(config: CampaignConfig, number: int, rooms: list[Room],
             return (-distance, not visible, -side, y, x)
 
         candidates.sort(key=rank)
+        # ECWolf's base translator treats +36 as the next cumulative skill
+        # tier: skill 2 actors join the easy population on medium, and skill 3
+        # actors join both on hard. They require their own cells in plane 2.
+        extra = max(0, round(base_budget * (0.20 + progression * 0.12)))
+        # All three tiers are live together on hard, so they share one spacing
+        # sweep; recess guards and patrol spawns already hold their own cells.
+        slots = _spread_actor_cells(candidates, budget + 2 * extra,
+                                    [(x, y) for x, y, _ in placed_cells])
         cursor = 0
-        for x, y in candidates[cursor:cursor + budget]:
+        for x, y in slots[cursor:cursor + budget]:
             record = place_enemy(x, y, 0, name, family, room)
             placed_cells.append(record)
             if not any(_line_visible(entry, (x, y)) for entry in entries):
                 hidden_cells.append((x, y))
             tier_counts[0] += 1
         cursor += budget
-        # ECWolf's base translator treats +36 as the next cumulative skill
-        # tier: skill 2 actors join the easy population on medium, and skill 3
-        # actors join both on hard. They require their own cells in plane 2.
-        extra = max(0, round(base_budget * (0.20 + progression * 0.12)))
         for tier in (1, 2):
-            for x, y in candidates[cursor:cursor + extra]:
+            for x, y in slots[cursor:cursor + extra]:
                 record = place_enemy(x, y, tier, name, family, room)
                 placed_cells.append(record)
                 if not any(_line_visible(entry, (x, y)) for entry in entries):
@@ -5550,7 +5605,9 @@ def _place_authored_pickups(config: CampaignConfig, number: int, rooms: list[Roo
     # route, staged before its most expensive forthcoming rooms.
     expected_need = sum(AMMO_COST.get(FAMILY_BY_CODE.get(code), 0.0)
                         for code in things if code)
-    target_ratio = 1.15 + 0.05 * int(config.supplies)
+    supply_scale = (1.0 if number in AMMO_SUPPLY_EXEMPT_FLOORS
+                    else AMMO_SUPPLY_SCALE)
+    target_ratio = (1.15 + 0.05 * int(config.supplies)) * supply_scale
     styled_items = [item for placement in placements
                     for _, _, item in placement.cells]
     ammo_target = max(0, math.ceil((expected_need * target_ratio

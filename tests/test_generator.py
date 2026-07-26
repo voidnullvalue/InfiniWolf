@@ -2135,6 +2135,55 @@ class GeneratorTests(unittest.TestCase):
         self.assertGreaterEqual(level.things.count(49), 1)
         self.assertGreaterEqual(level.things.count(47) + level.things.count(48), 1)
 
+    def test_spread_actor_cells_keeps_ranked_order_and_relaxes_when_cramped(self):
+        column = [(4, y) for y in range(4, 14)]
+        spread = generator._spread_actor_cells(column, 3, [])
+        self.assertEqual(spread, [(4, 4), (4, 7), (4, 10)])
+        # Rank still decides who is offered a slot first: the best-ranked cell
+        # is always taken, and an occupied anchor pushes the rest clear of it.
+        anchored = generator._spread_actor_cells(column, 2, [(4, 5)])
+        self.assertEqual(anchored, [(4, 8), (4, 11)])
+        # A room too tight for the full separation still fills its budget
+        # rather than silently under-populating.
+        cramped = generator._spread_actor_cells([(1, 1), (1, 2), (2, 1)], 3, [])
+        self.assertEqual(sorted(cramped), [(1, 1), (1, 2), (2, 1)])
+        self.assertEqual(generator._spread_actor_cells(column, 0, []), [])
+
+    def test_room_encounters_do_not_huddle_their_actors(self):
+        """Ranked slots used to be consumed as a contiguous prefix, which put
+        over 90% of a floor's actors shoulder to shoulder."""
+        level = _generate_with_retries(
+            CampaignConfig(seed=600, guard_density=Intensity.HIGH), 8)
+        actors = {(index % GRID, index // GRID)
+                  for index, thing in enumerate(level.things)
+                  if thing in generator.ENEMY_CODES and thing not in BOSSES}
+        touching = sum(any((x + dx, y + dy) in actors
+                           for dx in (-1, 0, 1) for dy in (-1, 0, 1)
+                           if (dx, dy) != (0, 0))
+                       for x, y in actors)
+        self.assertLessEqual(touching / len(actors), 0.60)
+
+    def test_placed_ammo_leaves_the_supply_to_corpse_drops_outside_floor_nine(self):
+        """Downed guards drop their own clips, so staging a floor's full
+        expected bullet sink on the ground drowns it in ammunition. The boss
+        stronghold is exempt: one unavoidable, expensive fight with no
+        corpse-drop stream behind it."""
+        self.assertLess(generator.AMMO_SUPPLY_SCALE, 1.0)
+        self.assertEqual(generator.AMMO_SUPPLY_EXEMPT_FLOORS, frozenset({9}))
+
+        def supply_ratio(seed, floor):
+            level = _generate_with_retries(CampaignConfig(seed=seed), floor)
+            sink = sum(generator.AMMO_COST.get(
+                generator.FAMILY_BY_CODE.get(code), 0.0)
+                for code in level.things if code)
+            return (8 + 8 * level.things.count(AMMO)) / sink
+
+        for seed, floor in ((42, 8), (7, 5)):
+            self.assertLessEqual(supply_ratio(seed, floor), 0.45,
+                                 f"seed={seed} floor={floor} is over-supplied")
+        self.assertGreater(supply_ratio(42, 9), 1.0,
+                           "floor 9 lost its boss-preparation supply")
+
 
 if __name__ == "__main__":
     unittest.main()
