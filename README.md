@@ -124,6 +124,28 @@ someone deliberately re-encoding a copied map can forge it.
 python3 -m unittest discover -s tests -v
 ```
 
+Most tests generate whole floors, and a floor costs a few seconds, so the full
+suite runs for roughly 50 minutes on four cores. `tools/check.py` offers three
+gates sized to what you changed — pick the smallest one that can actually catch
+your mistake:
+
+```sh
+python3 tools/check.py --fast    # ~2s   tables, docs, config, CLI; no generation
+python3 tools/check.py --decor   # ~15m  decoration, lighting and placement invariants
+python3 tools/check.py --full    # ~50m  the whole suite, sharded across cores
+```
+
+`--fast` skips map generation entirely, so it cannot see reachability, actor-facing
+or placement regressions; run `--full` before committing.
+
+Sharding is hand-rolled rather than delegated to `pytest-xdist` so a bare checkout
+needs no extra packages — but do not expect it to scale with core count. Measured
+on a 4-core machine, `--full -j 4` took *longer* than running the suite serially
+(55 min against 49): map generation churns 4096-element planes and repeated
+flood fills, so parallel shards saturate memory bandwidth and starve each other.
+The default leaves one core free, which helps a little. If you need a fast gate,
+use a narrower tier rather than more shards.
+
 Broader deterministic fuzzing and a real-engine smoke check are also included:
 
 ```sh
@@ -158,7 +180,7 @@ package by hand:
 pip install pyinstaller .
 pyinstaller --onefile --windowed --name InfiniWolf run.py
 pyinstaller --onefile --name infiniwolf-cli infiniwolf_cli.py
-python3 packaging/make_release.py --platform linux --version 1.9.7   # or windows / macos
+python3 packaging/make_release.py --platform linux --version 1.10.0   # or windows / macos
 ```
 
 The script downloads ECWolf's official prebuilt binary for the target platform from `maniacsvault.net`, checks it against a pinned SHA-256, and packages it alongside the two executables. It never touches Wolfenstein 3D game data.

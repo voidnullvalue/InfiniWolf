@@ -187,6 +187,11 @@ flowchart TD
 | Hallway vines | campaign schedule + `_place_decorations` | Single nominated floor, complete longitudinal run, same-path budget, optional existing ambush anchor |
 | Gameplay pickups | `_place_authored_pickups` + `_PlacementGrammar` | Economy intent, owning room, named composition, exact provenance |
 | Room decoration | `_place_decorations` | Room identity, one lighting and barrel family, singular urn rule, architectural anchor, composition, reachability |
+| Ambient lighting | `_place_decorations` Stage B | Every room lit, one fixture family per room, 3–4 tile lattice spacing, allocated before furniture spends the statics budget |
+| Density fill | `_place_decorations` Stage C | Cell geometry (corner/nook/slot/wall/free) chooses the item from the mined corpus distribution, corner-first, concept-eligible only, spaced except for barrels, reachability re-checked |
+| Floor lamps | `_place_decorations` lamp gate + corner snap | Never on a cell with floor on all four sides, never abutting another lamp, at most two per room; matched pairs allowed from any composition, singles only from the corner snap |
+| Matched compositions | `_place_decorations` group commit | Cells committed as one multi-cell group are exempt from the flush-to-wall repair, so a pair cannot be pulled apart |
+| Hallway furnishing | `_place_decorations` area gate | Rooms are skipped by floor area (< 20 cells), not by minimum dimension, so three-wide corridors are furnished along their flanking lanes; the centre lane of any room three cells across is reserved outright, since reachability still validates a plugged corridor |
 | Symmetric room profiles | shape carvers + `_place_decorations` | Bounded mirrored structure and matching themed accents |
 
 The long-term rule is simple: if a sprite or structural feature cannot answer

@@ -193,35 +193,75 @@ def _place_zoned(room: Room,
                 reserved.add(cell)
                 free.discard(cell)
 
+# Every concept carries a fixture language, and none of them may resolve to
+# "none". A room the player cannot see is not a stylistic choice: the corpus
+# runs ~60 ceiling lights per map across 94% of maps, and the community guides
+# single out unlit rooms as the clearest "unfinished" tell. Missing entries used
+# to default to (("none", 1.0),), which silently left `barracks` -- the theme
+# every beat/branch/ring/hub/filler room gets -- and `storage`, every closet,
+# permanently dark.
 _LIGHTING_OPTIONS: dict[str, tuple[tuple[str, float], ...]] = {
-    "war-room": (("chandelier", 3.0), ("ceiling-lamp", 2.0), ("none", 0.5)),
-    "trophy-hall": (("chandelier", 4.0), ("ceiling-lamp", 1.0), ("none", 0.5)),
-    "gallery": (("chandelier", 3.0), ("ceiling-lamp", 1.0), ("none", 0.5)),
-    "dining-hall": (("chandelier", 5.0), ("none", 0.5)),
-    "officers-quarters": (("chandelier", 2.0), ("floor-lamp", 2.0), ("none", 0.5)),
-    "lounge": (("chandelier", 2.0), ("floor-lamp", 3.0), ("none", 0.5)),
-    "guardpost": (("floor-lamp", 3.0), ("ceiling-lamp", 2.0), ("none", 0.5)),
-    "checkpoint": (("ceiling-lamp", 4.0), ("floor-lamp", 1.0), ("none", 0.5)),
-    "armory": (("ceiling-lamp", 4.0), ("none", 1.0)),
-    "training-room": (("ceiling-lamp", 4.0), ("none", 1.0)),
-    "ready-room": (("ceiling-lamp", 2.0), ("floor-lamp", 1.0), ("none", 1.0)),
-    "workshop": (("ceiling-lamp", 4.0), ("none", 1.0)),
-    "mess-kitchen": (("ceiling-lamp", 5.0), ("none", 0.5)),
-    "corridor": (("ceiling-lamp", 4.0), ("floor-lamp", 1.0), ("none", 1.0)),
-    "interrogation-room": (("floor-lamp", 3.0), ("ceiling-lamp", 1.0), ("none", 1.0)),
-    "courtyard": (("ceiling-lamp", 2.0), ("none", 2.0)),
-    "grand": (("chandelier", 3.0), ("ceiling-lamp", 1.0), ("none", 0.5)),
+    "war-room": (("chandelier", 3.0), ("ceiling-lamp", 2.0)),
+    "trophy-hall": (("chandelier", 4.0), ("ceiling-lamp", 1.0)),
+    "gallery": (("chandelier", 3.0), ("ceiling-lamp", 1.0)),
+    "dining-hall": (("chandelier", 5.0), ("ceiling-lamp", 1.0)),
+    "officers-quarters": (("chandelier", 2.0), ("floor-lamp", 2.0)),
+    "lounge": (("chandelier", 2.0), ("floor-lamp", 3.0)),
+    "guardpost": (("floor-lamp", 3.0), ("ceiling-lamp", 2.0)),
+    "checkpoint": (("ceiling-lamp", 4.0), ("floor-lamp", 1.0)),
+    "armory": (("ceiling-lamp", 4.0),),
+    "training-room": (("ceiling-lamp", 4.0),),
+    "ready-room": (("ceiling-lamp", 2.0), ("floor-lamp", 1.0)),
+    "workshop": (("ceiling-lamp", 4.0),),
+    "mess-kitchen": (("ceiling-lamp", 5.0),),
+    # Even weight, not 4:1. A corridor's whole blocking vocabulary is the floor
+    # lamp, so a ceiling-lamp corridor has no furniture composition available at
+    # all -- the 4:1 weight this used to carry left four corridors in five bare
+    # of the matched pair that bisects door-to-door travel. Keep ceiling lamps a
+    # real alternative so hallway lighting still varies down a floor.
+    "corridor": (("ceiling-lamp", 1.0), ("floor-lamp", 1.0)),
+    "interrogation-room": (("floor-lamp", 3.0), ("ceiling-lamp", 1.0)),
+    "courtyard": (("ceiling-lamp", 3.0),),
+    "grand": (("chandelier", 3.0), ("ceiling-lamp", 1.0)),
+    # Previously unreachable concepts. Utility and dungeon spaces get the plain
+    # ceiling lamp; only the quarters-like barracks earns a floor lamp.
+    "barracks": (("ceiling-lamp", 4.0), ("floor-lamp", 1.0)),
+    "storage": (("ceiling-lamp", 1.0),),
+    "supply-cache": (("ceiling-lamp", 1.0),),
+    "jail": (("ceiling-lamp", 1.0),),
+    "holding-cell": (("ceiling-lamp", 1.0),),
+    "crypt": (("ceiling-lamp", 1.0),),
+    "ossuary": (("ceiling-lamp", 1.0),),
+    "burial-chamber": (("ceiling-lamp", 2.0), ("chandelier", 1.0)),
 }
+# What an unlisted concept gets. Chandeliers and floor lamps carry styling the
+# caller has not asked for, so the neutral ceiling lamp is the safe default.
+_DEFAULT_LIGHTING = "ceiling-lamp"
 
 def _lighting_family(concept: str, room: Room, rng: random.Random,
                      counts: Counter[str]) -> str:
-    """Resolve one coherent fixture language for an authored room."""
-    options = list(_LIGHTING_OPTIONS.get(concept, (("none", 1.0),)))
+    """Resolve one coherent fixture language for an authored room.
+
+    Always returns a real family. Every room gets light; the only question is
+    which fixture vocabulary it uses.
+    """
+    options = list(_LIGHTING_OPTIONS.get(concept, ((_DEFAULT_LIGHTING, 1.0),)))
+    # Each family has its own minimum. A chandelier needs a hall to read as one.
+    # A standing lamp does not -- floor lamps are 13.7% of the corpus's
+    # corner/tight bucket, its third most common item -- but it does need a
+    # corner the decoration pass will actually visit, and rooms below 5x5 are
+    # closets that the pass skips wholesale. Requiring 6x6 for both was what left
+    # only 3.5% of rooms on the floor-lamp family; dropping the floor-lamp
+    # minimum to 5x5 raises that to ~20% without leaving closets dark, because
+    # only the non-solid ceiling lamp can be placed in a room that gets skipped.
     if room.w < 6 or room.h < 6:
         options = [(family, weight) for family, weight in options
-                   if family not in ("chandelier", "floor-lamp")]
-        if not options:
-            return "none"
+                   if family != "chandelier"]
+    if room.w < 5 or room.h < 5:
+        options = [(family, weight) for family, weight in options
+                   if family != "floor-lamp"]
+    if not options:
+        return _DEFAULT_LIGHTING
     families = [family for family, _ in options]
     # Repetition is legal when the identity calls for it, but a floor-wide
     # monoculture receives a soft penalty rather than a deterministic cycle.
@@ -230,6 +270,168 @@ def _lighting_family(concept: str, room: Room, rng: random.Random,
     chosen = rng.choices(families, weights=weights, k=1)[0]
     counts[chosen] += 1
     return chosen
+
+# Ceiling fixtures are laid on a grid, not scattered and not strung along the
+# room's centre axis. Measured over the 1,211 straight CeilingLight runs in the
+# authored corpus, stride 4 x length 3 is modal (452 runs) followed by stride 3
+# x length 3 (250), i.e. authored maps light a hall on a 3-4 tile lattice.
+_FIXTURE_STRIDES = (4, 3)
+# The Wolf3D renderer starts dropping sprites somewhere around 56-64 visible
+# objects, and one room's lattice is the worst case for that because it is all
+# in view at once. A 24x24 hall on stride 3 would ask for 64 fixtures by itself.
+_MAX_FIXTURES_PER_ROOM = 12
+
+
+def _fixture_lattice(room: Room, tiles: list[int], stride: int
+                     ) -> tuple[list[tuple[int, int]], list[tuple[int, int]]]:
+    """Candidate fixture cells as (rhythm, fallback), both centre-outward.
+
+    `rhythm` is the centred `stride` lattice, ordered from the room centre
+    outward, so a room that can only afford part of its lattice still reads as
+    deliberately lit rather than lit in one corner. `fallback` is every other
+    interior floor cell, and exists to guarantee a minimum rather than to be
+    filled: a 5x4 room has exactly one cell on a stride-3 lattice, so without it
+    a single reserved cell -- an actor, a pickup, a patrol node -- would leave
+    the whole room dark. Ceiling fixtures have no collision, so there is never a
+    reason to refuse one while any free floor cell remains.
+    """
+    xs = range(room.x + 1, room.x + room.w - 1)
+    ys = range(room.y + 1, room.y + room.h - 1)
+    if not xs or not ys:
+        # A 1- or 2-wide room has no interior ring; light its floor directly.
+        xs, ys = range(room.x, room.x + room.w), range(room.y, room.y + room.h)
+    # Centre the lattice inside the room so the rhythm looks intentional at both
+    # walls instead of flush to the low corner.
+    x0 = xs.start + ((len(xs) - 1) % stride) // 2
+    y0 = ys.start + ((len(ys) - 1) % stride) // 2
+    cx, cy = room.center
+    interior = [(x, y) for x in xs for y in ys if _is_floor(_at(tiles, x, y))]
+    on_lattice = [c for c in interior
+                  if (c[0] - x0) % stride == 0 and (c[1] - y0) % stride == 0]
+    # The fallback spans the whole room, wall ring included, not just the
+    # interior: a small room can have every interior cell held in `reserved` for
+    # an actor and its facing clearance, and a things-plane cell holds exactly
+    # one code, so those cells are genuinely unavailable. Wall-adjacent ceiling
+    # lights are unremarkable in the corpus anyway (21% of CeilingLight sits on
+    # a wall, corner, or slot cell).
+    ring = [(x, y)
+            for x in range(room.x, room.x + room.w)
+            for y in range(room.y, room.y + room.h)
+            if _is_floor(_at(tiles, x, y))]
+    taken = set(on_lattice)
+    on_lattice.sort(key=lambda c: (abs(c[0] - cx) + abs(c[1] - cy), c))
+    spare = sorted((c for c in ring if c not in taken),
+                   key=lambda c: (abs(c[0] - cx) + abs(c[1] - cy), c))
+    return on_lattice, spare
+
+
+# --------------------------------------------------------------------- Stage C
+# The geometry of a candidate cell predicts the authored item better than the
+# room's theme does. Mined from all 43,122 decoration instances in the 207-map
+# hand-authored corpus (docs/decor-corpus-patterns.md; regenerate with
+# tools/mine_decor_patterns.py). This is a prior, not a replacement for theming:
+# the concept still chooses the eligible item set, and this only ranks within it
+# and decides which cells are candidates for which item at all.
+
+def _cell_geometry(tiles: list[int], cell: tuple[int, int]) -> str:
+    """Classify a cell by its orthogonal wall neighbours.
+
+    free   0 walls        mid-floor
+    wall   1 wall         a plain wall line
+    corner 2 perpendicular   the single largest destination for solid props
+    slot   2 opposite     a one-wide gap; the corpus fills these with pillars
+    nook   3+ walls       a one-cell alcove; armor and bunks live here
+    """
+    x, y = cell
+    solid = []
+    for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+        value = _at(tiles, x + dx, y + dy)
+        # Off-map reads as wall; a door is an opening, not a backing.
+        if value == -1 or (not _is_floor(value) and value not in DOORS):
+            solid.append((dx, dy))
+    if len(solid) >= 3:
+        return "nook"
+    if len(solid) == 2:
+        (adx, ady), (bdx, bdy) = solid
+        return "slot" if (adx == -bdx and ady == -bdy) else "corner"
+    return "wall" if solid else "free"
+
+
+def _cell_openness(tiles: list[int], cell: tuple[int, int]) -> str:
+    """How open the surroundings are: floor cells in the 5x5 box around it."""
+    x, y = cell
+    count = sum(1 for dx in range(-2, 3) for dy in range(-2, 3)
+                if _is_floor(_at(tiles, x + dx, y + dy)))
+    return "tight" if count <= 9 else "medium" if count <= 17 else "open"
+
+
+# P(item | geo, space), as (item, weight) pairs per bucket. Weights are the
+# corpus percentages, so a bucket's mix is reproduced directly. Ceiling fixtures
+# (27/37) are deliberately absent: Stage B owns lighting on its own rhythm, and
+# letting fill re-add them would break that spacing.
+_FILL_BUCKETS: dict[tuple[str, str], tuple[tuple[int, float], ...]] = {
+    # corner is 22.1% of all authored decoration -- the single biggest target.
+    # FloorLamp (26) is absent from every bucket even though the corpus puts it
+    # in corners 76% of the time: it is a LIGHTING_ITEM, so the dedicated
+    # floor-lamp pass owns it outright and fill must not stack more beside it.
+    ("corner", "medium"): ((31, 28.1), (34, 14.5), (30, 12.0), (35, 6.5),
+                           (62, 6.1), (24, 4.9), (58, 3.6), (25, 1.7)),
+    ("corner", "tight"): ((31, 19.0), (34, 6.8), (30, 5.0), (58, 4.0)),
+    ("corner", "open"): ((31, 24.0), (34, 12.0), (30, 14.0), (62, 6.0)),
+    # Alcoves: suits of armor sit in a nook 80% of the time, bunk beds 51%.
+    ("nook", "medium"): ((39, 29.0), (30, 19.0), (28, 12.0), (45, 11.0), (33, 4.0)),
+    ("nook", "tight"): ((39, 16.0), (28, 11.0), (30, 11.0), (45, 8.0),
+                        (68, 5.7), (33, 4.7)),
+    ("nook", "open"): ((39, 20.0), (30, 16.0), (45, 10.0)),
+    # A one-wide gap in an open room is a pillar, 67% of the time.
+    ("slot", "open"): ((30, 67.0), (24, 5.0), (58, 4.0)),
+    ("slot", "medium"): ((30, 27.0), (24, 7.2), (58, 5.0), (36, 3.0)),
+    ("slot", "tight"): ((30, 20.0), (24, 5.0)),
+    ("wall", "medium"): ((24, 10.1), (25, 8.9), (58, 8.5), (30, 5.5), (31, 5.5),
+                         (61, 5.0), (42, 4.0), (36, 3.5), (62, 3.0)),
+    ("wall", "open"): ((30, 15.0), (24, 11.0), (25, 9.8), (58, 6.8), (36, 4.0)),
+    ("wall", "tight"): ((24, 8.0), (58, 8.0), (30, 5.0), (61, 5.0), (42, 4.0)),
+    # Free cells are mostly ceiling in the corpus; with lighting excluded only
+    # the genuinely free-standing furniture remains, which is why this is thin.
+    ("free", "open"): ((25, 7.4), (30, 6.1), (67, 3.0), (61, 2.9), (46, 2.1)),
+    ("free", "medium"): ((67, 5.9), (46, 5.0), (25, 1.5), (61, 1.4), (23, 1.1)),
+    ("free", "tight"): ((67, 2.0),),
+}
+# Order fill visits geometry classes in. Corner first is the headline finding.
+_FILL_ORDER = ("corner", "nook", "slot", "wall", "free")
+# Wall-material affinities worth encoding, as a soft multiplier. The corpus
+# signal here is the weakest of the four and most tail items are too thin to
+# trust, so only the wood-domestic and dungeon-gore families get a nudge.
+_MATERIAL_AFFINITY: dict[str, frozenset[int]] = {
+    "wood": frozenset({38, 36, 45, 33, 68}),
+    "blue-stone": frozenset({42, 64, 65, 66, 32, 57, 61}),
+    "damp-grey-stone": frozenset({42, 64, 65, 66, 32, 57, 61, 59, 60}),
+    "chipped-stone": frozenset({41, 40}),
+    "metal": frozenset({67, 24}),
+}
+_MATERIAL_MULTIPLIER = 1.75
+# Authored decoration sits at 0.134 items per floor cell. Fill aims at that and
+# stops; it is a target, not a floor to be saturated toward.
+_TARGET_DECOR_DENSITY = 0.134
+# Keep fill spaced so it reads as furnishing rather than a pile. The corpus
+# clusters 18.6% of decorations against a neighbour, so some contact is correct
+# -- barrels are shoulder to shoulder -- but it must not be the default.
+_FILL_MIN_SPACING = 2
+# Every static decoration code, for counting what a room already carries.
+_ALL_DECOR = frozenset(STATIC_BLOCKING) | frozenset(STATIC_OPEN)
+
+
+def _material_behind(tiles: list[int], cell: tuple[int, int]) -> str | None:
+    """Name of the wall material family backing a cell, if any."""
+    x, y = cell
+    for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+        value = _at(tiles, x + dx, y + dy)
+        if value != -1 and not _is_floor(value) and value not in DOORS:
+            for family in WALL_MATERIALS:
+                if value == family.base or value in family.accents:
+                    return family.name
+    return None
+
 
 def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
                        reserved: set[tuple[int, int]], start: tuple[int, int],
@@ -308,7 +510,58 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
             lighting = _lighting_family(concept, room, rng, lighting_counts)
         lighting_families[ridx] = lighting
 
-        if room.w < 5 or room.h < 5:
+        # --- Stage B: ambient lighting, before any furniture spends budget ---
+        # Lighting is allocated first on purpose: when a floor is close to the
+        # statics cap it should lose filler props, never its lights. Ceiling
+        # fixtures (27/37) have no collision at all, so this pass cannot affect
+        # reachability, patrols, or combat -- it is purely what the room looks
+        # like. Solid floor lamps are left to the furniture passes below, which
+        # already re-check reachability, so a floor-lamp room is guaranteed its
+        # ceiling-free minimum here only when it has no lamp yet.
+        if not existing_lights:
+            fixture = next(iter(LIGHTING_FAMILY_ITEMS[lighting]), None)
+            if fixture is not None and fixture not in STATIC_BLOCKING:
+                stride = _FIXTURE_STRIDES[0] if max(room.w, room.h) >= 10 else _FIXTURE_STRIDES[1]
+                rhythm, spare = _fixture_lattice(room, tiles, stride)
+                placed = 0
+                for cell in rhythm:
+                    if placed >= _MAX_FIXTURES_PER_ROOM or static_headroom <= 0:
+                        break
+                    if cell in reserved or _at(things, *cell) != 0:
+                        continue
+                    _set(things, *cell, fixture)
+                    reserved.add(cell)
+                    static_headroom -= 1
+                    placed += 1
+                # The lattice can be fully occupied (small rooms have only one
+                # cell on it). Take the nearest free cell instead of going dark,
+                # but only enough to light the room, never the whole fallback.
+                for cell in spare if not placed else ():
+                    if static_headroom <= 0:
+                        break
+                    if cell in reserved or _at(things, *cell) != 0:
+                        continue
+                    _set(things, *cell, fixture)
+                    reserved.add(cell)
+                    static_headroom -= 1
+                    placed += 1
+                    break
+
+        # Area, not minimum dimension. The old `w < 5 or h < 5` test excluded
+        # every hallway-first corridor from furniture entirely, because
+        # validate_map pins those at exactly 3 cells wide -- so a hallway got
+        # ambient light and nothing else, and the traversal-pair composition
+        # named for hallways only ever ran in wide hall-tier rooms.
+        #
+        # A 3-wide corridor is structurally safe to furnish: `interior` reduces
+        # to the single middle lane, which is already in `keep_clear` as the
+        # travel path, so props can only reach the two flanking lanes through
+        # `edge_free`. The heavy vignettes exclude themselves on their own size
+        # and concept guards (divider 10x10, colonnade 8x8, centerpiece 9x9,
+        # signatures 6x6, and "corridor" has no zoning entry), and pair_budget
+        # is 1 at this height, so what a hallway gains is one matched pair, its
+        # corner lamps, and a modest density fill along the edges.
+        if room.w * room.h < 20:
             continue
 
         blocking = _DECOR_BLOCKING.get(concept,
@@ -389,6 +642,20 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
         # blocking decor belongs beside that path, never on top of it.
         if traversal.entries:
             keep_clear.update(traversal.path)
+        # A room only three cells across has exactly one through-route: its
+        # centre lane. Two gaps let props onto it -- traversal.path covers the
+        # lane only when the frame actually found entries, and the lane's end
+        # cells lie on the perimeter ring, so edge_free reaches them even when
+        # it does. Reachability does not catch this: the flood fill still finds
+        # a way through the doorway, so the corridor validates while being
+        # miserable to walk. Protect the lane outright.
+        if min(room.w, room.h) <= 3:
+            if room.h <= room.w:
+                keep_clear.update((x, room.y + room.h // 2)
+                                  for x in range(room.x, room.x + room.w))
+            else:
+                keep_clear.update((room.x + room.w // 2, y)
+                                  for y in range(room.y, room.y + room.h))
         # The outermost floor ring is excluded from `interior` (and thus from
         # every legacy pattern), but wall-flush anchors -- door flanks and
         # landmark frames -- live exactly there, so track it separately.
@@ -420,6 +687,30 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
                        for neighbor in outward)
 
         room_blocked: list[tuple[int, int]] = []
+        # Floor lamps are rationed at this one choke point, because every
+        # blocking path commits through here. Eight paths can ask for item 26 --
+        # the guardpost/checkpoint signatures, concept frames, _FRAMEABLE
+        # landmark and doorway frames, traversal pairs, the zoned blocking sets,
+        # notch accents and Stage C fill -- and because each rolled
+        # independently, one 9x9 room came out with six lamps, two of them side
+        # by side, against a corpus rate of 6.2 per *map*.
+        #
+        # The rule is about the shape of the request, not about which pass is
+        # asking. A matched pair flanking a landmark wall, or bisecting
+        # door-to-door travel, is exactly how authored maps use floor lamps away
+        # from corners (24% of the 1,283 in the corpus are not in a corner). So
+        # any owner may commit an atomic *pair*; only the dedicated corner pass
+        # below may commit singles. What the corpus never does is stack them --
+        # 3 runs in all 43,122 instances -- or crowd a room, so pairs must not
+        # abut and the room total is capped either way.
+        placing_lamps = False
+        room_lamps: list[tuple[int, int]] = []
+        # Area, not minimum dimension. A hallway is exactly three cells wide
+        # (validate_map enforces it), so a min-dimension rule capped every real
+        # corridor at one lamp and silently rejected the matched pair that
+        # bisects door-to-door travel -- the one composition a corridor has.
+        lamp_cap = 2 if room.w * room.h >= 20 else 1
+        composed_cells: set[tuple[int, int]] = set()
 
         def _try_place_items(pieces: list[tuple[tuple[int, int], int]]) -> bool:
             """Commit a blocking group if all cells are free, no doorway
@@ -435,6 +726,28 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
             if any(item in LIGHTING_ITEMS and item not in allowed_lights
                    for _, item in pieces):
                 return False
+            lamp_cells = [cell for cell, item in pieces if item == 26]
+            if lamp_cells:
+                # Never in open floor. The corpus puts 76% of its 1,283 floor
+                # lamps in a true corner, 17% along a wall and 1% free, so a
+                # lamp with floor on all four sides is the one arrangement
+                # authored maps essentially never use -- and it is what reads as
+                # a lamp abandoned mid-room. This rejects the guardpost
+                # signature's (room.x + 1, room.y + 1) diagonal slots and any
+                # mid-aisle traversal pair; those compositions fall back to a
+                # non-lamp prop from the same palette.
+                if any(_cell_geometry(tiles, cell) == "free"
+                       for cell in lamp_cells):
+                    return False
+                if not placing_lamps and len(lamp_cells) != 2:
+                    return False
+                if len(room_lamps) + len(lamp_cells) > lamp_cap:
+                    return False
+                occupied = set(room_lamps) | set(lamp_cells)
+                if any((lx + dx, ly + dy) in occupied
+                       for lx, ly in lamp_cells
+                       for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1))):
+                    return False
             # Suits of armor, flags, and spear racks are wall displays,
             # never freestanding furniture.
             if any(item in (39, 62, 69) and not _wall_backed(cell)
@@ -448,8 +761,17 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
                 reserved.add(c)
                 blocked_cells.add(c)
                 room_blocked.append(c)
+                if item == 26:
+                    room_lamps.append(c)
                 free.discard(c)
                 edge_free.discard(c)
+            # Anything committed as a multi-cell group is a composition, and
+            # its members' positions are load-bearing relative to each other.
+            # Record that here so the flush-to-wall repair below cannot pull
+            # one half of a matched pair a cell sideways and silently break the
+            # symmetry the pass was placed to create.
+            if len(cells) >= 2:
+                composed_cells.update(cells)
             static_headroom -= len(cells)
             return True
 
@@ -469,6 +791,23 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
             edge_free.discard(cell)
             static_headroom -= 1
             return True
+
+        # --- Stage B, solid half: guarantee the floor-lamp rooms their light ---
+        # The lattice pass above only places non-solid ceiling fixtures, so a
+        # room whose family is the standing lamp would still be dark. Corpus
+        # floor lamps are corner furniture (76% sit in a corner) and essentially
+        # never run in rows, so one or two corners is the authored shape. This
+        # goes through _try_place, so reachability is re-checked as usual.
+        # Floor-lamp rooms are handled *after* the composition instead of before
+        # it, by the guarantee pass at the end of this loop. A dedicated
+        # up-front lamp pass was tried and reverted: floor lamps are already
+        # placed deliberately by the guardpost/checkpoint signatures, the
+        # concept frames, _FRAMEABLE landmark and doorway frames, the zoned
+        # blocking sets, the notch accents and the alcove niche. Adding a
+        # seventh source on top produced six lamps in one 9x9 room with two side
+        # by side, against a corpus rate of 6.2 per *map* that forms 3 runs in
+        # all 43,122 instances. The authored placements were fine; the problem
+        # was competing with them.
 
         if wants_vase and static_headroom > 0:
             vase_cells = [cell for cell in edge_free
@@ -658,7 +997,15 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
         pair_budget = max(1, round((2 if room.w >= 8 and room.h >= 8 else 1) * density))
         pairs_placed = 0
         concept_frames = {
-            "war-room": (39, 62), "armory": (39, 62), "guardpost": (26,),
+            # Guardpost keeps a green-plant companion so its matched pair can
+            # still land when the candidate cells are open floor and the lamp is
+            # therefore refused. Not a vase: item 35 is a singular wall accent
+            # owned by its own pass, and `blocking` strips it for exactly this
+            # reason -- concept_frames bypasses that filter, so naming it here
+            # would let a guardpost mount two. Plants are legitimately paired
+            # (_place_zoned says so in as many words) and are corner furniture
+            # in the corpus at 72-84%.
+            "war-room": (39, 62), "armory": (39, 62), "guardpost": (26, 31),
             "lounge": (31, 34),
             "courtyard": (31, 34), "checkpoint": (26, 62),
             "trophy-hall": (39, 62), "gallery": (34, 39, 62),
@@ -764,8 +1111,12 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
                                   ((room.x + room.w - 2, cy), 36)],
                 "armory": [((room.x, cy), 69),
                             ((room.x + room.w - 1, cy), 69)],
-                "guardpost": [((room.x + 1, room.y + 1), 26),
-                               ((room.x + room.w - 2, room.y + 1), 26)],
+                # True corners, not the (+1, +1) diagonal slot this used to
+                # use: that cell has floor on all four sides, so the lamp read
+                # as abandoned mid-room. room.x/room.y are already the first
+                # floor column and row, with wall immediately outside.
+                "guardpost": [((room.x, room.y), 26),
+                               ((room.x + room.w - 1, room.y), 26)],
                 "checkpoint": [((room.x, cy), 62)],
                 "war-room": [((room.x, room.y + 1), 39),
                               ((room.x + room.w - 1, room.y + 1), 39)],
@@ -957,9 +1308,14 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
                                  for item in solid
                                  if item != 35 and (item not in LIGHTING_ITEMS
                                                     or item in allowed_lights))),
+                           # Ceiling fixtures are excluded outright, not merely
+                           # filtered to the room's family: the Stage B lattice
+                           # has already lit this room on a 3-4 tile rhythm, and
+                           # a zone dropping its own lamp landed one adjacent to
+                           # a lattice lamp in 13% of zoned rooms. Solid floor
+                           # lamps still come through the blocking set above.
                            tuple(item for item in open_
-                                 if item not in LIGHTING_ITEMS
-                                 or item in allowed_lights))
+                                 if item not in (27, 37)))
                           for solid, open_ in zones)
         if zones and atmosphere <= 2:
             forbidden = ({32, 42, 57, 61, 64, 65, 66} if atmosphere == 1 else {57})
@@ -980,13 +1336,17 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
         else:
             # --- Pattern: symmetric wall pairs (general fallback) ---
             # Furniture reads as "set against the walls," so both members of a
-            # pair belong flush on the wall-backed outer ring. The interior
-            # `free` ring is one floor cell short of the wall -- a barrel or
-            # bunk parked there leaves a visible gap and reads as floating,
-            # which is the dominant source of mid-room clutter. Prefer matched
-            # cells on opposite walls; keep the old center-mirror interior
-            # pairs only as a last resort so density holds where the wall band
-            # is already spoken for.
+            # pair belong flush on the wall-backed outer ring.
+            #
+            # The old center-mirror `interior_pairs` fallback is deliberately
+            # gone. It mirrored cells across the room centre on the *inner*
+            # floor band -- one cell short of the wall -- which is precisely
+            # what makes a prop read as floating, and it was the dominant source
+            # of the 37.5% of solid props that stood free in open floor against
+            # the corpus's 11.9%. It existed to hold density up when the wall
+            # band was spoken for; Stage C now supplies that density from
+            # wall-, corner- and nook-backed cells instead, so the fallback has
+            # nothing left to do.
             if pairs_placed < pair_budget and blocking:
                 backed = {cell for cell in edge_free
                           if cell not in keep_clear and _wall_backed(cell)}
@@ -1000,16 +1360,8 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
                             and (x, room.y + room.h - 1) in backed]
                 flush_pairs = lr_pairs + tb_pairs
                 rng.shuffle(flush_pairs)
-                band = [cell for cell in free if _near_wall(*cell)]
-                x_pairs = [((x, y), (2 * cx - x, y)) for x, y in band
-                           if x < cx and (2 * cx - x, y) in free]
-                y_pairs = [((x, y), (x, 2 * cy - y)) for x, y in band
-                           if y < cy and (x, 2 * cy - y) in free]
-                interior_pairs = x_pairs + y_pairs
-                rng.shuffle(interior_pairs)
-                # Travel-aware pairs stay ahead of room-center symmetry, then
-                # wall-flush pairs, then the interior mirror as a last resort.
-                ordered = travel_pairs + flush_pairs + interior_pairs
+                # Travel-aware pairs stay ahead of wall-flush symmetry.
+                ordered = travel_pairs + flush_pairs
                 seen: set[tuple[tuple[int, int], tuple[int, int]]] = set()
                 all_pairs = []
                 for pair in ordered:
@@ -1017,10 +1369,16 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
                         continue
                     seen.add(pair)
                     all_pairs.append(pair)
+                # One item family per room, chosen once. Re-rolling
+                # rng.choice(blocking) per candidate pair -- including for every
+                # rejected pair -- is what produced rooms holding a lamp pair
+                # *and* a plant pair *and* a barrel pair: a grab bag rather than
+                # a composition.
+                pair_item = rng.choice(blocking)
                 for (ax, ay), (bx, by) in all_pairs:
                     if pairs_placed >= pair_budget:
                         break
-                    if _try_place([(ax, ay), (bx, by)], rng.choice(blocking)):
+                    if _try_place([(ax, ay), (bx, by)], pair_item):
                         pairs_placed += 1
 
             # --- Vignette: prisoner remains in a jail corner ---
@@ -1041,21 +1399,19 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
                             _place_open(cell, 61)   # Blood
 
             # --- Open (non-solid) items, anchored instead of scattered ---
-            # Ceiling fixtures hang on the room's center axis; floor clutter
-            # sits beside furniture or hugs a wall midpoint. Nothing floats
-            # on a random mid-room cell.
+            # Floor clutter sits beside furniture or hugs a wall midpoint.
+            # Nothing floats on a random mid-room cell.
+            #
+            # Ceiling fixtures are deliberately absent here. The Stage B lattice
+            # above owns lighting for the whole room; this pass used to add its
+            # own fixtures on the centre axis as well, which put a second lamp
+            # within two tiles of a lattice lamp and undid the 3-4 tile rhythm
+            # the corpus shows. One pass, one rhythm.
             area = room.w * room.h
             open_budget = max(1, round((3 if area >= 80 else 2 if area >= 45 else 1) * density))
             count = rng.randrange(0, open_budget + 1)
-            ceiling = [item for item in open_items if item in (27, 37)]
             floor_clutter = [item for item in open_items if item not in (27, 37)]
             spots: list[tuple[tuple[int, int], int]] = []
-            if ceiling:
-                third = max(2, max(room.w, room.h) // 3)
-                axis = [(cx, cy)]
-                axis += ([(cx - third, cy), (cx + third, cy)] if room.w >= room.h
-                         else [(cx, cy - third), (cx, cy + third)])
-                spots += [(cell, rng.choice(ceiling)) for cell in axis if cell in free]
             if floor_clutter:
                 beside = [(x + dx, y + dy) for x, y in room_blocked
                           for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1))
@@ -1067,6 +1423,134 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
                 spots += [(cell, rng.choice(floor_clutter)) for cell in mids]
             for cell, item in spots[:count]:
                 _place_open(cell, item)
+
+        # --- Floor lamps: the sole owner, in corners, at most two ---
+        # Gated by `placing_lamps` so no other pass can add item 26. Runs before
+        # Stage C fill because fill also wants corner cells (plants and pillars
+        # live there); when fill went first it took every corner and the lamp had
+        # nowhere to go.
+        #
+        # Corpus shape: 76% of the 1,283 authored floor lamps sit in a true
+        # corner, 17% along a wall, 1% free. They form 3 runs in all 43,122
+        # decoration instances and pair 0-3% of the time, so one or two per room
+        # is the authored idiom and a row never is. The old signature positions
+        # like (room.x + 1, room.y + 1) sit one step diagonally in from the
+        # corner with floor on all four sides, which is why they read as a lamp
+        # standing in open floor.
+        #
+        # `_prepare_boss_arena` lays a deliberate symmetric four-lamp
+        # composition before decoration runs at all. Those cells are not in
+        # `room_blocked`, are not counted here, and stay untouched.
+        # Tops up to the same `lamp_cap` the composed passes above draw against,
+        # so a room that already earned a matched pair is left alone rather than
+        # gaining a third lamp in a corner.
+        if lighting == "floor-lamp":
+            placing_lamps = True
+            for cell in sorted(edge_free | free,
+                               key=lambda c: (_cell_geometry(tiles, c) not in ("corner", "nook"),
+                                              rng.random())):
+                if len(room_lamps) >= lamp_cap or static_headroom <= 0:
+                    break
+                if _cell_geometry(tiles, cell) not in ("corner", "nook"):
+                    break          # candidates are sorted; no corners remain
+                _try_place([cell], 26)
+            placing_lamps = False
+
+        # --- Stage B guarantee: nothing leaves this loop dark ---
+        # Runs here, before fill, rather than at the end of the room: fill
+        # consumes the very cells a fallback fixture would need, and a crowded
+        # small room could finish with no fixture at all. The Stage B lattice
+        # already covers ceiling-lamp and chandelier rooms; this catches the
+        # floor-lamp room whose corners were all spoken for. Reassign the
+        # reported family too, so the room's fixtures stay coherent with what
+        # validate_map reads back.
+        if not any(_at(things, x, y) in LIGHTING_ITEMS
+                   for y in range(room.y, room.y + room.h)
+                   for x in range(room.x, room.x + room.w)):
+            rhythm, spare = _fixture_lattice(room, tiles, _FIXTURE_STRIDES[1])
+            for cell in rhythm + spare:
+                if cell in reserved or _at(things, *cell) != 0 or static_headroom <= 0:
+                    continue
+                _set(things, *cell, 37)
+                reserved.add(cell)
+                free.discard(cell)
+                edge_free.discard(cell)
+                static_headroom -= 1
+                lighting = "ceiling-lamp"
+                lighting_families[ridx] = lighting
+                allowed_lights = LIGHTING_FAMILY_ITEMS[lighting]
+                break
+
+        # --- Stage C: geometry-led fill up to the authored density ---
+        # The motif above gives the room its idea; this brings it up to the
+        # density authored maps actually carry (0.134 decorations per floor
+        # cell against the 0.063 this generator used to produce, a 2.9x gap).
+        #
+        # Fill is not scatter. Every candidate is classified by its own
+        # geometry and visited corner-first, because corner cells are the
+        # single largest destination for authored solid props (22.1% of all
+        # decoration), then nook, slot, wall, and only lastly free floor. The
+        # item is drawn from the corpus distribution for that exact bucket,
+        # intersected with what this room's concept permits, so a crypt still
+        # fills with crypt furniture.
+        room_floor = sum(1 for y in range(room.y, room.y + room.h)
+                         for x in range(room.x, room.x + room.w)
+                         if _is_floor(_at(tiles, x, y)))
+        already = sum(1 for y in range(room.y, room.y + room.h)
+                      for x in range(room.x, room.x + room.w)
+                      if _at(things, x, y) in _ALL_DECOR)
+        fill_target = round(room_floor * _TARGET_DECOR_DENSITY * density) - already
+        if fill_target > 0:
+            eligible = frozenset(blocking) | frozenset(open_items)
+            candidates = [cell for cell in (free | edge_free)
+                          if cell not in keep_clear and _at(things, *cell) == 0]
+            # Deterministic base order, then shuffled inside each geometry
+            # class so the rhythm is not biased toward one corner of the room.
+            classified: dict[str, list[tuple[int, int]]] = {}
+            for cell in sorted(candidates):
+                classified.setdefault(_cell_geometry(tiles, cell), []).append(cell)
+            for cells in classified.values():
+                rng.shuffle(cells)
+
+            placed_fill = 0
+            for geo in _FILL_ORDER:
+                if placed_fill >= fill_target:
+                    break
+                for cell in classified.get(geo, ()):
+                    if placed_fill >= fill_target or static_headroom <= 0:
+                        break
+                    if _at(things, *cell) != 0:
+                        continue
+                    bucket = _FILL_BUCKETS.get((geo, _cell_openness(tiles, cell)))
+                    if not bucket:
+                        continue
+                    choices = [(item, weight) for item, weight in bucket
+                               if item in eligible]
+                    if not choices:
+                        continue
+                    # Barrels are the one family the corpus stacks shoulder to
+                    # shoulder (stride 1 dominates their runs); everything else
+                    # keeps its distance so fill reads as furnishing, not a pile.
+                    neighbours = [(cell[0] + dx, cell[1] + dy)
+                                  for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1))]
+                    touching = [_at(things, *n) for n in neighbours]
+                    crowded = any(t in _ALL_DECOR for t in touching)
+                    if crowded:
+                        choices = [(i, w) for i, w in choices
+                                   if i in (24, 58) and i in touching]
+                        if not choices:
+                            continue
+                    material = _material_behind(tiles, cell)
+                    affinity = _MATERIAL_AFFINITY.get(material or "", frozenset())
+                    weights = [w * (_MATERIAL_MULTIPLIER if i in affinity else 1.0)
+                               for i, w in choices]
+                    item = rng.choices([i for i, _ in choices], weights=weights, k=1)[0]
+                    if item in STATIC_BLOCKING:
+                        _try_place([cell], item)
+                    elif not _place_open(cell, item):
+                        continue
+                    if _at(things, *cell) == item:
+                        placed_fill += 1
 
         # --- Pull isolated furniture flush to the wall ---
         # A blocking prop that aimed for the wall band but landed on the inner
@@ -1083,6 +1567,8 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
             item = _at(things, *cell)
             if item in (39, 62, 69):          # wall displays are backed already
                 continue
+            if cell in composed_cells:
+                continue                       # a group owns this position
             neighbours = [(cell[0] + dx, cell[1] + dy)
                           for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1))]
             if any(_solid(n) for n in neighbours):
@@ -1110,6 +1596,26 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
             free.add(cell); free.discard(target); edge_free.discard(target)
             blocked_cells.discard(cell); blocked_cells.add(target)
             room_blocked.append(target)
+
+        # --- Final lighting backstop ---
+        # Not redundant with the guarantee above: the flush-to-wall repair pass
+        # just moved props and may have freed a cell that was occupied when that
+        # check ran. A no-op whenever the room is already lit, which is the
+        # overwhelming majority.
+        if not any(_at(things, x, y) in LIGHTING_ITEMS
+                   for y in range(room.y, room.y + room.h)
+                   for x in range(room.x, room.x + room.w)):
+            rhythm, spare = _fixture_lattice(room, tiles, _FIXTURE_STRIDES[1])
+            for cell in rhythm + spare:
+                if cell in reserved or _at(things, *cell) != 0 or static_headroom <= 0:
+                    continue
+                _set(things, *cell, 37)
+                reserved.add(cell)
+                free.discard(cell)
+                edge_free.discard(cell)
+                static_headroom -= 1
+                lighting_families[ridx] = "ceiling-lamp"
+                break
 
     # --- Corridor rhythm: ceiling lights pace long straight halls ---
     # Open fixtures only, so nothing here can affect reachability, patrol

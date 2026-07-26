@@ -585,6 +585,211 @@ class GeneratorTests(unittest.TestCase):
             realized.add(family)
         self.assertGreaterEqual(len(realized), 2)
 
+    def test_no_concept_resolves_to_an_unlit_room(self):
+        """Every decoration concept must name a real fixture family.
+
+        _LIGHTING_OPTIONS used to default missing keys to (("none", 1.0),), so
+        eight concepts could never be lit at all -- including `barracks`, which
+        is what _decor_theme returns for beat/branch/ring/hub/filler rooms, and
+        `storage`, which is every closet. Community guidance is blunt about it:
+        rooms without ceiling lamps "look particularly poor aesthetically".
+        """
+        concepts = set(generator._DECOR_BLOCKING) | set(generator._DECOR_OPEN)
+        concepts |= set(decorations._LIGHTING_OPTIONS)
+        for concept in sorted(concepts):
+            for size in (3, 5, 6, 9, 14):
+                for seed in range(12):
+                    family = decorations._lighting_family(
+                        concept, Room(2, 2, size, size), random.Random(seed), Counter())
+                    self.assertNotEqual(
+                        family, "none",
+                        f"concept {concept!r} at {size}x{size} resolved to no lighting")
+                    self.assertIn(family, generator.LIGHTING_FAMILY_ITEMS)
+
+    def test_every_room_of_every_generated_floor_is_lit(self):
+        """The Stage B contract: no room is dark.
+
+        Measured before this landed, only 24.2% of generated rooms contained any
+        fixture. Ceiling fixtures are non-solid, so this cannot trade against
+        reachability, patrols, or combat -- there is no reason for a room to be
+        unlit.
+        """
+        for seed in ("0", "3", "hall"):
+            config = CampaignConfig(seed=seed)
+            for floor in (1, 4, 8):
+                level = _generate_with_retries(config, floor)
+                for index, room in enumerate(level.rooms):
+                    fixtures = [
+                        _at(level.things, x, y)
+                        for y in range(room.y, room.y + room.h)
+                        for x in range(room.x, room.x + room.w)
+                        if _at(level.things, x, y) in generator.LIGHTING_ITEMS]
+                    self.assertTrue(
+                        fixtures,
+                        f"seed {seed} floor {floor} room {index} "
+                        f"({room.w}x{room.h} at {room.x},{room.y}) has no light fixture")
+
+    def test_ceiling_fixtures_are_laid_on_a_spacing_rhythm(self):
+        """Lights sit on a 3-4 tile lattice, not bunched and not in one clump.
+
+        Corpus evidence: of the 1,211 straight CeilingLight runs across the 207
+        authored maps, stride 4 x length 3 is modal (452) followed by stride 3 x
+        length 3 (250). A hall lit by two adjacent lamps reads as a mistake.
+        """
+        room = Room(8, 8, 16, 14)
+        identity = generator.RoomIdentity("beat", "standard", "spine", 0,
+                                          "grand-halls", "armory", "barracks")
+        tiles = [WALL] * (GRID * GRID)
+        for y in range(room.y, room.y + room.h):
+            for x in range(room.x, room.x + room.w):
+                tiles[y * GRID + x] = FLOOR
+        things = [0] * len(tiles)
+        _place_decorations([room], tiles, things, set(), room.center,
+                           random.Random(0), identities=[identity])
+        lights = [(index % GRID, index // GRID)
+                  for index, item in enumerate(things) if item == 37]
+        self.assertGreaterEqual(len(lights), 4, "a 16x14 hall should carry a lattice")
+        self.assertLessEqual(len(lights), decorations._MAX_FIXTURES_PER_ROOM)
+        for (ax, ay), (bx, by) in combinations(lights, 2):
+            self.assertGreaterEqual(
+                abs(ax - bx) + abs(ay - by), 3,
+                f"fixtures at {(ax, ay)} and {(bx, by)} are closer than 3 tiles")
+
+    def test_cell_geometry_matches_the_mined_corpus_classes(self):
+        """The Stage C classifier must agree with docs/decor-corpus-patterns.md.
+
+        The whole fill model is keyed on these five classes, so a drift here
+        silently repoints every bucket at the wrong cells.
+        """
+        tiles = [WALL] * (GRID * GRID)
+        for y in range(10, 20):
+            for x in range(10, 20):
+                tiles[y * GRID + x] = FLOOR
+        self.assertEqual(decorations._cell_geometry(tiles, (10, 10)), "corner")
+        self.assertEqual(decorations._cell_geometry(tiles, (19, 19)), "corner")
+        self.assertEqual(decorations._cell_geometry(tiles, (15, 10)), "wall")
+        self.assertEqual(decorations._cell_geometry(tiles, (15, 15)), "free")
+        for y in range(10, 20):                      # a one-wide gap
+            tiles[y * GRID + 25] = FLOOR
+        self.assertEqual(decorations._cell_geometry(tiles, (25, 15)), "slot")
+        tiles[15 * GRID + 30] = FLOOR                # a one-cell alcove
+        self.assertEqual(decorations._cell_geometry(tiles, (30, 15)), "nook")
+        self.assertEqual(decorations._cell_openness(tiles, (15, 15)), "open")
+        self.assertEqual(decorations._cell_openness(tiles, (30, 15)), "tight")
+
+    def test_fill_never_offers_a_ceiling_fixture(self):
+        """Stage C must not re-add lighting; Stage B owns the fixture rhythm.
+
+        A fill bucket containing 27/37 would drop a second lamp beside a lattice
+        lamp and undo the 3-4 tile spacing. Floor lamps (26) are excluded too --
+        they are owned by the corner-snap pass, and fill stacking more beside
+        them is exactly what produced six lamps in one room.
+        """
+        for bucket, distribution in decorations._FILL_BUCKETS.items():
+            for item, _weight in distribution:
+                self.assertNotIn(item, generator.LIGHTING_ITEMS,
+                                 f"bucket {bucket} offers lighting item {item}")
+
+    def test_floor_lamps_are_corner_furniture_in_pairs_at_most(self):
+        """Corpus: 76% of floor lamps sit in a corner, and they never form rows.
+
+        Across all 43,122 authored decoration instances floor lamps form 3 runs
+        and pair 0-3% of the time. Before the corner-snap pass, competing
+        signature/frame/zone/notch sources put six in one 9x9 room with two side
+        by side, most of them one cell diagonally in from the corner where they
+        read as standing in open floor.
+
+        The two rules are asserted at the levels the corpus states them. Per
+        lamp: never in open floor, because that is the arrangement authored maps
+        essentially never use (1%) and the one that reads as abandoned. A wall
+        cell is fine -- 17% of authored lamps sit along one, so requiring every
+        lamp to be a corner is stricter than the corpus and rejects legitimate
+        matched pairs flanking a landmark wall. In aggregate: corners must still
+        dominate, which is the actual 76% claim.
+        """
+        seen = 0
+        geometries = Counter()
+        for seed in ("0", "2", "4798122272745380871"):
+            config = CampaignConfig(seed=seed)
+            # Floor 9 must be covered: it carries the boss arena, whose
+            # deliberate symmetric four-lamp composition is placed by
+            # _prepare_boss_arena before decoration runs and is exempt from the
+            # per-room rules below. Sampling only floors 1/3/5/8 hid that.
+            for floor in (1, 3, 5, 8, 9, 10):
+                level = _generate_with_retries(config, floor)
+                for index, room in enumerate(level.rooms):
+                    if index == level.boss_arena_room:
+                        continue
+                    lamps = [(x, y)
+                             for y in range(room.y, room.y + room.h)
+                             for x in range(room.x, room.x + room.w)
+                             if _at(level.things, x, y) == 26]
+                    seen += len(lamps)
+                    self.assertLessEqual(
+                        len(lamps), 2,
+                        f"seed {seed} floor {floor} room at {room.x},{room.y} "
+                        f"has {len(lamps)} floor lamps")
+                    for cell in lamps:
+                        geometry = decorations._cell_geometry(level.tiles, cell)
+                        geometries[geometry] += 1
+                        self.assertNotEqual(
+                            geometry, "free",
+                            f"floor lamp at {cell} stands in open floor")
+                        for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                            self.assertNotEqual(
+                                _at(level.things, cell[0] + dx, cell[1] + dy), 26,
+                                f"floor lamps abut at {cell}")
+        self.assertGreater(seen, 0, "test placed no floor lamps at all")
+        corner_share = (geometries["corner"] + geometries["nook"]) / seen
+        self.assertGreater(
+            corner_share, 0.60,
+            f"corners must dominate as they do in the corpus (76%); got "
+            f"{corner_share:.1%} from {dict(geometries)}")
+
+    def test_floor_lamp_rooms_actually_receive_a_lamp(self):
+        """A campaign must not come out with no standing lamps anywhere.
+
+        Two bugs did exactly that. Stage C fill ran before the corner snap and
+        took every corner, so the lamp had nowhere to relocate and was deleted;
+        and requiring 6x6 for the floor-lamp family left only 3.5% of rooms
+        eligible. Observed: 12 lamps across a 10-floor campaign, with five floors
+        carrying none at all.
+        """
+        for seed in ("4798122272745380871", "0"):
+            config = CampaignConfig(seed=seed)
+            lamps = 0
+            for floor in range(1, 11):
+                level = _generate_with_retries(config, floor)
+                lamps += sum(1 for item in level.things if item == 26)
+            self.assertGreater(
+                lamps, 20,
+                f"seed {seed} produced only {lamps} floor lamps across ten "
+                f"floors; the corpus averages 6.2 per map")
+
+    def test_decoration_density_reaches_the_authored_band(self):
+        """Density, not raw count, is the corpus-comparable measure.
+
+        Authored maps average 1,559 floor cells against this generator's 1,153,
+        so a raw per-map count target would penalise smaller maps for being
+        smaller. The authored figure is 0.134 decorations per floor cell.
+        """
+        densities = []
+        for seed in ("0", "2", "hall"):
+            config = CampaignConfig(seed=seed)
+            for floor in (2, 5, 9):
+                level = _generate_with_retries(config, floor)
+                decor = sum(1 for item in level.things
+                            if item in decorations._ALL_DECOR)
+                floor_cells = sum(1 for tile in level.tiles if _is_floor(tile))
+                densities.append(decor / floor_cells)
+        mean = sum(densities) / len(densities)
+        self.assertGreater(mean, 0.10,
+                           f"decoration density {mean:.3f} is far below the "
+                           f"authored 0.134")
+        self.assertLess(mean, 0.17,
+                        f"decoration density {mean:.3f} overshoots the authored "
+                        f"0.134 and will read as clutter")
+
     def test_vines_only_form_complete_room_screens(self):
         room = Room(10, 10, 12, 10)
         identity = generator.RoomIdentity("climax", "anchor", "spine", 0,
@@ -1575,11 +1780,66 @@ class GeneratorTests(unittest.TestCase):
                       for y in range(room.y, room.y + room.h)
                       for x in range(room.x, room.x + room.w) if _at(things, x, y)]
             # 32 is the flat skeleton the jail-remains corner vignette lays
-            # down; 40/41 are the hanging/skeleton cages -- everything else
-            # stays barrels, blood, and bone variants.
-            self.assertTrue(set(placed) <= {24, 61, 42, 64, 65, 66, 32, 40, 41})
+            # down; 40/41 are the hanging/skeleton cages; 37 is the ceiling
+            # lamp every room now gets -- everything else stays barrels, blood,
+            # and bone variants. The point of this test is that a jail draws
+            # from the grim palette rather than generic furniture, not that a
+            # jail is pitch dark.
+            self.assertTrue(set(placed) <= {24, 61, 42, 64, 65, 66, 32, 40, 41, 37},
+                            f"seed {seed} placed off-palette items: "
+                            f"{sorted(set(placed) - {24, 61, 42, 64, 65, 66, 32, 40, 41, 37})}")
+            self.assertIn(37, placed, f"seed {seed} left the jail unlit")
 
     def test_decoration_zoning_splits_across_room_halves(self):
+        """The zoning grammar itself, exercised in isolation.
+
+        This used to run the whole decoration pipeline and assert on the
+        things plane, but the plane carries no provenance: the Stage C
+        density fill legitimately places code 31 anywhere in the room, and a
+        fill-placed 31 on the left half is indistinguishable from a zoning
+        bug. So drive _place_zoned directly -- it is the only function that
+        owns the two-half split -- and let the integrated behaviour be
+        covered by the weaker presence check below.
+        """
+        room = Room(10, 10, 8, 8)
+        cx, cy = room.center
+        free = {(x, y)
+                for y in range(room.y + 1, room.y + room.h - 1)
+                for x in range(room.x + 1, room.x + room.w - 1)}
+        things = [0] * (GRID * GRID)
+        zones = generator._DECOR_ZONES["guardpost"]
+
+        def try_place(cells, item):
+            for x, y in cells:
+                things[y * GRID + x] = item
+                free.discard((x, y))
+            return True
+
+        # blocking_budget 2 so cluster_budgets gives each half one cluster.
+        generator._place_zoned(room, zones, free, set(), set(), things,
+                               random.Random(0), try_place, 2)
+
+        zone_a = set(zones[0][0]) | set(zones[0][1])
+        zone_b = set(zones[1][0]) | set(zones[1][1])
+        self.assertFalse(zone_a & zone_b, "zone item sets must be disjoint")
+        placed = [(index % GRID, index // GRID, thing)
+                  for index, thing in enumerate(things) if thing]
+        self.assertTrue(placed, "zoning placed nothing at all")
+        for x, y, thing in placed:
+            if thing in zone_a:
+                self.assertLess(x, cx, f"zone-A item {thing} crossed to {x},{y}")
+            if thing in zone_b:
+                self.assertGreaterEqual(x, cx, f"zone-B item {thing} crossed to {x},{y}")
+        self.assertTrue(any(thing in zone_a for _, _, thing in placed))
+        self.assertTrue(any(thing in zone_b for _, _, thing in placed))
+
+    def test_decoration_zoning_still_runs_inside_the_full_pipeline(self):
+        """Companion to the unit test above: prove _place_zoned is still
+        wired in. Deliberately weak on position -- Stage C fill can place the
+        same codes anywhere -- so this only catches the zoning pass being
+        dropped or its theme lookup breaking. A real positional assertion
+        needs per-item provenance, which the things plane does not carry.
+        """
         class ThemedRandom(random.Random):
             def random(self):
                 return 0.0
@@ -1590,32 +1850,30 @@ class GeneratorTests(unittest.TestCase):
             for x in range(room.x, room.x + room.w):
                 tiles[y * GRID + x] = FLOOR
         things = [0] * len(tiles)
-        _place_decorations([room], tiles, things, set(), room.center, ThemedRandom(0),
-                           roles=["start"], traversal_pair_chance=0.0)
-        cx, _ = room.center
-        # Vases use their own single, wall-backed accent grammar rather than
-        # the two-half zoning grammar exercised by this test.
-        zone_a = {26, 37}
-        zone_b = {31, 27}
-        placed = [(index % GRID, index // GRID, thing)
-                  for index, thing in enumerate(things) if thing]
-        self.assertTrue(placed)
-        traversal = generator._room_traversal_frame(room, tiles)
-        signature_cells = set(generator._traversal_pair_candidates(
-            room, tiles, traversal)[0])
-        off_zone_a = 0
-        for x, y, thing in placed:
-            if (x, y) in signature_cells:
-                continue
-            if thing in zone_a:
-                off_zone_a += x >= cx
-            if thing in zone_b:
-                self.assertGreaterEqual(x, cx)
-        # The independently authored room-light pair may share the zone-A
-        # item type; the furniture cluster itself must remain on its half.
-        self.assertLessEqual(off_zone_a, 2)
-        self.assertTrue(any(thing in zone_a and x < cx
-                            for x, _, thing in placed))
+        with mock.patch.object(decorations, "_place_zoned",
+                               wraps=decorations._place_zoned) as zoned:
+            _place_decorations([room], tiles, things, set(), room.center,
+                               ThemedRandom(0), roles=["start"],
+                               traversal_pair_chance=0.0)
+        zoned.assert_called_once()
+        # Role "start" resolves to the guardpost theme. The zones argument is
+        # a *filtered* view of the constant, not the constant itself: the
+        # concept gate drops blocking items the room cannot host, and Stage B
+        # strips ceiling fixtures (27, 37) so the lattice owns them alone.
+        # Assert the derivation, and that filtering left both halves usable.
+        authored = generator._DECOR_ZONES["guardpost"]
+        passed = zoned.call_args.args[1]
+        for half, (blocking, open_) in enumerate(passed):
+            self.assertTrue(set(blocking) <= set(authored[half][0]),
+                            f"half {half} invented blocking items {blocking}")
+            self.assertTrue(set(open_) <= set(authored[half][1]),
+                            f"half {half} invented open items {open_}")
+            self.assertTrue(blocking, f"half {half} lost all its furniture")
+        self.assertFalse({27, 37} & {item for half in passed for item in half[1]},
+                         "ceiling fixtures must be left to the Stage B lattice")
+        placed = {thing for thing in things if thing}
+        self.assertTrue(placed & set(generator._DECOR_ZONES["guardpost"][0][0]),
+                        "no zone-A furniture reached the room")
 
     def test_decoration_scattered_path_is_unchanged_for_ineligible_rooms(self):
         cases = ((Room(10, 10, 8, 8), [RoomSpec("beat", "closet", 0)]),
@@ -1703,28 +1961,159 @@ class GeneratorTests(unittest.TestCase):
         self.assertEqual(_at(things, 14, 10), 0, "the picture itself stays visible")
 
     def test_hallway_pairs_are_bisected_by_door_to_door_travel(self):
-        room = Room(10, 10, 12, 8)
-        tiles = [WALL] * (GRID * GRID)
-        for y in range(room.y, room.y + room.h):
-            for x in range(room.x, room.x + room.w):
-                tiles[y * GRID + x] = FLOOR
-        travel_y = 14
-        tiles[travel_y * GRID + room.x - 1] = generator.DOOR_EW
-        tiles[travel_y * GRID + room.x + room.w] = generator.DOOR_EW
-        tiles[travel_y * GRID + room.x - 2] = FLOOR
-        tiles[travel_y * GRID + room.x + room.w + 1] = FLOOR
-        things = [0] * len(tiles)
+        # Wide halls only, and that is not an oversight. validate_map requires
+        # min(w, h) == 3 for a hallway-first corridor, and _place_decorations
+        # skips furniture composition entirely for any room with a dimension
+        # under 5, so a real 3-cell hallway receives ambient lighting and
+        # nothing else. This composition therefore belongs to hall-tier rooms.
+        # test_narrow_rooms_get_light_but_no_furniture pins the other half.
+        for width, height in ((12, 8), (9, 7)):
+            with self.subTest(room=f"{width}x{height}"):
+                room = Room(10, 10, width, height)
+                tiles = [WALL] * (GRID * GRID)
+                for y in range(room.y, room.y + room.h):
+                    for x in range(room.x, room.x + room.w):
+                        tiles[y * GRID + x] = FLOOR
+                travel_y = room.y + room.h // 2
+                tiles[travel_y * GRID + room.x - 1] = generator.DOOR_EW
+                tiles[travel_y * GRID + room.x + room.w] = generator.DOOR_EW
+                tiles[travel_y * GRID + room.x - 2] = FLOOR
+                tiles[travel_y * GRID + room.x + room.w + 1] = FLOOR
+                identity = generator.RoomIdentity(
+                    "circulation", "hall", "spine", 0, "grand-halls",
+                    "corridor", "corridor")
+                # Assert the composition, not one item code. This used to
+                # require floor lamps specifically, because the corridor
+                # palette is lamp-first -- but a lamp may no longer stand in
+                # open floor (1% in the corpus, and it reads as abandoned), and
+                # a mid-aisle pair in a wide hall is exactly open floor. The
+                # pass now reaches for another prop in the same palette there,
+                # which is the intended behaviour: the feature is "a matched
+                # pair flanks the travel line", and the item is the palette's
+                # business. Search seeds rather than pinning one -- a hardcoded
+                # seed silently stopped exercising this path once lighting
+                # selection began drawing from the same RNG, which is how the
+                # pass regressed unnoticed.
+                found = None
+                for seed in range(40):
+                    trial = [0] * len(tiles)
+                    _place_decorations(
+                        [room], tiles[:], trial, set(),
+                        (room.x - 2, travel_y), random.Random(seed),
+                        identities=[identity], traversal_pair_chance=1.0)
+                    placed = {(index % GRID, index // GRID): item
+                              for index, item in enumerate(trial) if item}
+                    mirrored = {
+                        cell for cell, item in placed.items()
+                        if placed.get((cell[0], 2 * travel_y - cell[1])) == item
+                        and cell[1] != travel_y}
+                    if mirrored:
+                        found = (seed, mirrored, placed)
+                        break
+                self.assertIsNotNone(
+                    found, "no seed in 40 produced a travel-mirrored pair")
+                seed, mirrored, placed = found
+                self.assertGreaterEqual(len(mirrored), 2)
+                self.assertEqual(len(mirrored) % 2, 0)
+                self.assertFalse(
+                    any(cell[1] == travel_y for cell in placed),
+                    f"seed {seed} put decor on the travel line itself")
+
+    def test_tiny_rooms_get_light_but_no_furniture(self):
+        """Closet-sized rooms are lit and otherwise empty.
+
+        The furniture skip is an area test (w * h < 20), not a minimum-dimension
+        one. A minimum-dimension test excluded every hallway-first corridor --
+        validate_map pins those at exactly 3 wide -- so hallways got ambient
+        light and nothing else. These rooms are genuinely too small to compose
+        in, and they still come out lit because the skip sits after the Stage B
+        lattice. test_three_wide_hallways_are_furnished_along_their_flanks
+        covers the corridor case.
+        """
+        for width, height in ((4, 4), (3, 5), (5, 3)):
+            with self.subTest(room=f"{width}x{height}"):
+                room = Room(10, 10, width, height)
+                tiles = [WALL] * (GRID * GRID)
+                for y in range(room.y, room.y + room.h):
+                    for x in range(room.x, room.x + room.w):
+                        tiles[y * GRID + x] = FLOOR
+                things = [0] * len(tiles)
+                _place_decorations([room], tiles, things, set(), room.center,
+                                   random.Random(3),
+                                   identities=[generator.RoomIdentity(
+                                       "circulation", "hall", "spine", 0,
+                                       "grand-halls", "corridor", "corridor")])
+                placed = [thing for thing in things if thing]
+                self.assertTrue(placed, "a tiny room must still be lit")
+                self.assertTrue(
+                    set(placed) <= set(generator.LIGHTING_ITEMS),
+                    f"tiny room gained non-lighting decor: "
+                    f"{sorted(set(placed) - set(generator.LIGHTING_ITEMS))}")
+
+    def test_three_wide_hallways_are_furnished_along_their_flanks(self):
+        """A 3-wide corridor gains props, and never on its travel lane.
+
+        Corridors are exactly 3 cells wide, so the middle lane is the whole
+        route. `interior` collapses to that lane and it is held in keep_clear,
+        which is what makes furnishing a hallway safe: props can only reach the
+        two flanking lanes. If a blocking prop ever lands on the centre lane the
+        hallway is impassable in practice even though reachability still finds a
+        way around through the doorway.
+        """
+        furnished = trials = 0
         identity = generator.RoomIdentity("circulation", "hall", "spine", 0,
                                           "grand-halls", "corridor", "corridor")
-        _place_decorations(
-            [room], tiles, things, set(), (room.x - 2, travel_y), random.Random(6),
-            identities=[identity], traversal_pair_chance=1.0)
-        lamps = {(index % GRID, index // GRID)
-                 for index, item in enumerate(things) if item == 26}
-        self.assertGreaterEqual(len(lamps), 2)
-        self.assertEqual(len(lamps) % 2, 0)
-        self.assertTrue(all((x, 2 * travel_y - y) in lamps for x, y in lamps),
-                        "matched lamps must occupy opposite sides of the travel line")
+        # Both orientations. A horizontal-only version of this test passed while
+        # real floors were placing props on vertical corridors' centre columns,
+        # because the lane-protection logic has to pick an axis and only one
+        # branch was ever exercised. Also cover the no-doorway case: keep_clear
+        # takes the traversal path only when the frame finds entries, so a
+        # doorless corridor is the arrangement that lost its lane guard.
+        for length in (9, 11, 13):
+            for horizontal in (True, False):
+                for doors in (True, False):
+                    room = (Room(10, 12, length, 3) if horizontal
+                            else Room(12, 10, 3, length))
+                    tiles = [WALL] * (GRID * GRID)
+                    for y in range(room.y, room.y + room.h):
+                        for x in range(room.x, room.x + room.w):
+                            tiles[y * GRID + x] = FLOOR
+                    if horizontal:
+                        lane = room.y + 1
+                        ends = ((room.x - 1, lane), (room.x + room.w, lane))
+                        beyond = ((room.x - 2, lane), (room.x + room.w + 1, lane))
+                        door = generator.DOOR_EW
+                    else:
+                        lane = room.x + 1
+                        ends = ((lane, room.y - 1), (lane, room.y + room.h))
+                        beyond = ((lane, room.y - 2), (lane, room.y + room.h + 1))
+                        door = generator.DOOR_NS
+                    if doors:
+                        for x, y in ends:
+                            tiles[y * GRID + x] = door
+                        for x, y in beyond:
+                            tiles[y * GRID + x] = FLOOR
+                    start = beyond[0] if doors else room.center
+                    for seed in range(6):
+                        trials += 1
+                        things = [0] * len(tiles)
+                        _place_decorations([room], tiles[:], things, set(),
+                                           start, random.Random(seed),
+                                           identities=[identity])
+                        solid = [(index % GRID, index // GRID)
+                                 for index, item in enumerate(things)
+                                 if item in generator.STATIC_BLOCKING]
+                        for x, y in solid:
+                            on_lane = (y == lane) if horizontal else (x == lane)
+                            self.assertFalse(
+                                on_lane,
+                                f"{room.w}x{room.h} doors={doors} seed {seed}: "
+                                f"blocking prop at {x},{y} sits on the "
+                                f"corridor's only travel lane")
+                        furnished += bool(solid)
+        self.assertGreater(
+            furnished, 0,
+            f"no 3-wide corridor received any furniture across {trials} trials")
 
     def test_blocking_decor_stays_off_door_to_door_traversal(self):
         """Tables and barrels may frame a hall, but never occupy its path."""
