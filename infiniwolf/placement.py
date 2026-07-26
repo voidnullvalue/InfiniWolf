@@ -16,8 +16,9 @@ from dataclasses import dataclass
 from itertools import combinations
 import random
 
-from .mapgrid import Room, RoomIdentity, SpritePlacement, _at, _is_floor, _set
-from .tiles import DOORS
+from .grid import _at, _is_floor, _set
+from .model import Room, RoomIdentity, SpritePlacement
+from .wl6 import DOORS
 
 
 @dataclass(frozen=True, slots=True)

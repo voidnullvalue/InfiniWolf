@@ -39,7 +39,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "tools"))
 
-from infiniwolf import tiles as T
+from infiniwolf import wl6 as T
 from infiniwolf.config import CampaignConfig
 from inspect_map import parse_wad
 

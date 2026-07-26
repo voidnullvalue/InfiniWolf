@@ -16,10 +16,10 @@ from __future__ import annotations
 from collections import Counter, deque
 import random
 
-from .mapgrid import (Room, RoomIdentity, VineScreen, _at, _inside_room, _is_floor,
-                      _reachable, _set)
+from .grid import _at, _inside_room, _is_floor, _reachable, _set
+from .model import Room, RoomIdentity, VineScreen
 from .placement import _room_anchors, _room_traversal_frame, _traversal_pair_candidates
-from .tiles import (DECOR_WALLS, DOORS, ENEMY_CODES, GRID, LIGHTING_FAMILY_ITEMS,
+from .wl6 import (DECOR_WALLS, DOORS, ENEMY_CODES, GRID, LIGHTING_FAMILY_ITEMS,
                     LIGHTING_ITEMS, SPECIAL_WALL_TILES, STATIC_BLOCKING, STATIC_OPEN,
                     VINE_SCREEN_CONCEPTS, WALL_MATERIALS)
 

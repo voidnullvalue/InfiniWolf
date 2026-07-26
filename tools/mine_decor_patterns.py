@@ -14,7 +14,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / 'tools'))
-from infiniwolf import tiles as G
+from infiniwolf import wl6 as G
 from inspect_map import parse_wad
 
 # The hand-authored reference corpus: sibling ECWolf mods installed alongside

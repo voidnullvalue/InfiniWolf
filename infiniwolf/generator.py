@@ -23,7 +23,7 @@ from .config import CampaignConfig
 # than star) so it is re-exported from `infiniwolf.generator` exactly as
 # before: generator_validation, the test suite, and tools/ all import these
 # from here.
-from .tiles import (  # noqa: F401
+from .wl6 import (  # noqa: F401
     GRID, WALL, FLOOR, ZONE_MAX, DOOR_EW, DOOR_NS, DOOR_ELEVATOR, DOOR_ELEVATOR_NS,
     DOOR_GOLD_EW, DOOR_GOLD_NS, DOOR_SILVER_EW, DOOR_SILVER_NS, GOLD_DOORS, SILVER_DOORS,
     LOCKED_DOORS, DOORS, PLAYER_START_CODES, PLAYER_START, PUSHWALL, ELEVATOR_TILE,
@@ -40,13 +40,19 @@ from .tiles import (  # noqa: F401
     STATIC_BLOCKING, STATIC_OPEN, LIGHTING_ITEMS, LIGHTING_FAMILY_ITEMS, SPEAR_CONCEPTS,
     VINE_SCREEN_CONCEPTS,
 )
-from .mapgrid import (  # noqa: F401
+from .model import (  # noqa: F401
     Room, RoomSpec, RoomIdentity, SpritePlacement, VineScreen,
+)
+from .grid import (  # noqa: F401
     _at, _set, _is_floor, _inside_room, _door_zone, _reachable,
 )
 from .placement import (  # noqa: F401
     AUTHORED_PICKUP_TEMPLATES, RoomAnchors, TraversalFrame, _PlacementGrammar,
     _room_anchors, _room_traversal_frame, _traversal_pair_candidates,
+)
+from .generator_artifacts import (  # noqa: F401
+    _wad_bytes, _mapinfo, _display_name, _reproducibility_text,
+    read_manifest, validate_package,
 )
 from .decorations import (  # noqa: F401
     SKY_VISTA_COURTYARD_CHANCE, SKY_VISTA_INTERIOR_CHANCE, _DECOR_BLOCKING, _DECOR_OPEN,
@@ -113,17 +119,6 @@ VARIANT_STRONGHOLD = FloorVariant(
     "stronghold", theme_pool=(1, 15, 17, 19, 29, 35, 44))
 VARIANT_VAULT = FloorVariant(
     "vault", theme_pool=(12, 19, 40, 42, 44, 48))
-
-# In-game display flavor for mapinfo level names.
-_VARIANT_TITLES = {
-    "garrison": "The Garrison",
-    "catacombs": "The Catacombs",
-    "grand-halls": "Grand Halls",
-    "storehouse": "The Storehouse",
-    "quarters": "Officers' Quarters",
-    "stronghold": "The Stronghold",
-    "vault": "Treasure Vault",
-}
 
 DECORATION_MULTIPLIERS = (0.0, 0.70, 0.85, 1.00, 1.15, 1.30)
 SHAPE_MULTIPLIERS = (0.0, 0.65, 0.82, 1.00, 1.10, 1.20)
@@ -379,10 +374,6 @@ def _lock_schedule(config: CampaignConfig) -> tuple[GatePlan, ...]:
                         else ("gold",))
     plans[9] = GatePlan()
     return tuple(plans)
-
-
-CEILINGS = ("#383838", "#202840", "#402828", "#303820", "#382840")
-MUSIC = ("GETTHEM", "SEARCHN", "POW", "SUSPENSE", "WARMARCH", "NAZI_OMI")
 
 
 class GenerationCancelled(RuntimeError):
@@ -5703,13 +5694,15 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
     return result
 
 
+# Deferred deliberately: generator_validation still imports GeneratedMap and a
+# dozen route helpers from this module, so importing it at the top would close a
+# cycle. Those names move to model.py/grid.py/campaign.py next, after which this
+# goes to the top with the others. generator_artifacts already made that trip --
+# it no longer imports anything from here.
 from .generator_validation import (
     validate_map, validate_objects, _patrol_actor_direction, validate_patrols, validate_door_axes,
 )
 
-from .generator_artifacts import (
-    _wad_bytes, _mapinfo, _display_name, _reproducibility_text, read_manifest, validate_package,
-)
 
 def _set_distance(first: tuple[str, ...], second: tuple[str, ...]) -> float:
     left, right = set(first), set(second)

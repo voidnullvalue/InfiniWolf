@@ -7,10 +7,29 @@ from pathlib import Path
 import struct
 import zipfile
 
-from .generator import (
-    BUILD_COMMIT, CEILINGS, CampaignConfig, GRID, MUSIC, _VARIANT_TITLES,
-    __version__,
-)
+from . import __version__
+from .build_info import COMMIT as BUILD_COMMIT
+from .config import CampaignConfig
+from .wl6 import GRID
+
+# MAPINFO presentation tables. These live here rather than in the generator
+# because nothing in generation reads them -- they are consumed only by the
+# encoders below, and keeping them here is what lets this module stop importing
+# `generator` and closes half of the import cycle that previously forced
+# generator.py to import validation and artifacts from its own last lines.
+CEILINGS = ("#383838", "#202840", "#402828", "#303820", "#382840")
+MUSIC = ("GETTHEM", "SEARCHN", "POW", "SUSPENSE", "WARMARCH", "NAZI_OMI")
+
+# In-game display flavor for mapinfo level names.
+_VARIANT_TITLES = {
+    "garrison": "The Garrison",
+    "catacombs": "The Catacombs",
+    "grand-halls": "Grand Halls",
+    "storehouse": "The Storehouse",
+    "quarters": "Officers' Quarters",
+    "stronghold": "The Stronghold",
+    "vault": "Treasure Vault",
+}
 
 def _wad_bytes(name: str, tiles: list[int], things: list[int]) -> bytes:
     planes = (tiles, things, [0] * (GRID * GRID))

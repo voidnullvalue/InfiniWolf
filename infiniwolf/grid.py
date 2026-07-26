@@ -1,67 +1,24 @@
-"""Grid geometry: the room record types and the tile-plane primitives.
+"""Tile-plane primitives.
 
 Both map planes are flat GRID*GRID lists of native WL6 codes. `_at`/`_set`
 bounds-check against that grid so callers can probe freely off-map (`-1`), and
 `_reachable` is the flood fill every blocking placement re-runs before it
-commits. Imports only the `tiles` vocabulary, so this stays a leaf that the
-placement and decoration passes can both build on.
+commits.
+
+Purely spatial: these answer "what is at this cell" and "what can be walked to",
+never "what should go here". Progression, encounter and semantic policy belong to
+the modules that own those decisions -- a helper that consults a room's role or
+concept is in the wrong file.
 """
 
 from __future__ import annotations
 
 from collections import deque
-from dataclasses import dataclass
 
-from .tiles import (DOOR_ELEVATOR, DOOR_ELEVATOR_NS, DOOR_EW, DOOR_NS, FLOOR, GRID,
-                    LOCKED_DOORS, SECRET_EXIT_ZONE, WALL, ZONE_MAX)
+from .model import Room
+from .wl6 import (DOOR_ELEVATOR, DOOR_ELEVATOR_NS, DOOR_EW, DOOR_NS, FLOOR, GRID,
+                  LOCKED_DOORS, SECRET_EXIT_ZONE, ZONE_MAX)
 
-
-@dataclass(frozen=True, slots=True)
-class Room:
-    x: int
-    y: int
-    w: int
-    h: int
-
-    @property
-    def center(self) -> tuple[int, int]:
-        return self.x + self.w // 2, self.y + self.h // 2
-
-@dataclass(frozen=True, slots=True)
-class RoomSpec:
-    role: str
-    tier: str
-    district: int
-    motif: str = "spine"
-
-@dataclass(frozen=True, slots=True)
-class RoomIdentity:
-    """One semantic decision shared by wall, population and decor passes."""
-    role: str
-    tier: str
-    motif: str
-    district: int
-    variant: str
-    concept: str
-    base_theme: str
-    wall_base: int = WALL
-    special: str = ""
-
-@dataclass(frozen=True, slots=True)
-class SpritePlacement:
-    """Auditable proof that sprites belong to an authored composition."""
-    reason: str
-    template: str
-    room_index: int
-    cells: tuple[tuple[int, int, int], ...]
-
-@dataclass(frozen=True, slots=True)
-class VineScreen:
-    """One complete, auditable vine pseudowall composition."""
-    kind: str
-    room_index: int
-    cells: tuple[tuple[int, int], ...]
-    ambush_anchor: tuple[int, int] | None = None
 
 def _at(plane: list[int], x: int, y: int) -> int:
     return plane[y * GRID + x] if 0 <= x < GRID and 0 <= y < GRID else -1
