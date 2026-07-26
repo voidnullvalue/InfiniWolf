@@ -51,6 +51,7 @@ from .grid import (  # noqa: F401
     _at, _set, _is_floor, _inside_room, _door_zone, _reachable,
     _floor_components, _floor_distances, _shortest_floor_path, _path_bends,
     _overlaps, _rooms_by_distance, _room_graph_path, _room_predecessor,
+    _FLOOR_OR_DOOR,
 )
 from .placement import (  # noqa: F401
     AUTHORED_PICKUP_TEMPLATES, RoomAnchors, TraversalFrame, _PlacementGrammar,
@@ -343,17 +344,24 @@ def _carve_connection(tiles: list[int], a: Room, b: Room,
                     best_goal_state = state
                 continue
             for dx, dy in directions:
-                nxt = x + dx, y + dy
-                if not (2 <= nxt[0] < GRID - 2 and 2 <= nxt[1] < GRID - 2):
+                nx, ny = x + dx, y + dy
+                if not (2 <= nx < GRID - 2 and 2 <= ny < GRID - 2):
                     continue
-                if nxt in protected or _at(tiles, *nxt) != WALL:
+                nxt = nx, ny
+                base = ny * GRID + nx
+                if nxt in protected or tiles[base] != WALL:
                     continue
                 # A one-rock buffer stops unrelated routes and rooms from
                 # silently fusing before their planned door can separate them.
-                if (nxt != goal
-                        and any(_is_floor(_at(tiles, nxt[0] + sx, nxt[1] + sy))
-                                or _at(tiles, nxt[0] + sx, nxt[1] + sy) in DOORS
-                                for sx, sy in directions)):
+                # Indexed directly rather than through _at: nx and ny are
+                # already clamped to [2, GRID - 3], so every neighbour below is
+                # in bounds and _at's guard could never fire. _FLOOR_OR_DOOR
+                # folds the two predicates this used to call twice per direction
+                # into one table lookup.
+                if nxt != goal and (_FLOOR_OR_DOOR[tiles[base - GRID]]
+                                    or _FLOOR_OR_DOOR[tiles[base + GRID]]
+                                    or _FLOOR_OR_DOOR[tiles[base - 1]]
+                                    or _FLOOR_OR_DOOR[tiles[base + 1]]):
                     continue
                 next_state = nxt, (dx, dy)
                 next_cost = cost + 1 + (turn_penalty if (dx, dy) != heading else 0)

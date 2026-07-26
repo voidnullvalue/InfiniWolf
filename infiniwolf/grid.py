@@ -32,6 +32,16 @@ def _set(plane: list[int], x: int, y: int, value: int) -> None:
 def _is_floor(value: int) -> bool:
     return FLOOR <= value <= ZONE_MAX or value == SECRET_EXIT_ZONE
 
+# Precomputed `_is_floor(code) or code in DOORS` for every tile code. The
+# corridor router evaluates that test on all four neighbours of every candidate
+# cell it examines -- tens of millions of times per campaign -- and did it with
+# two bounds-checked _at calls per direction inside a generator expression. Built
+# from the same two predicates, so it is exact by construction. 256 entries
+# covers the whole vocabulary (ZONE_MAX is 143).
+_FLOOR_OR_DOOR = bytes(1 if (_is_floor(code) or code in DOORS) else 0
+                       for code in range(256))
+
+
 def _inside_room(rooms: list[Room], x: int, y: int) -> bool:
     return any(room.x <= x < room.x + room.w and room.y <= y < room.y + room.h
                for room in rooms)
