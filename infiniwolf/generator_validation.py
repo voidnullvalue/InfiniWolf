@@ -5,20 +5,28 @@ from __future__ import annotations
 from collections import Counter, deque
 import math
 
-from .generator import (
-    AMMO, AUTHORED_PICKUP_TEMPLATES, BOSSES, CHAINGUN,
-    CIRCULATION_MODES, CIRCULATION_SKELETONS, DECOR_WALLS, DOORS,
-    DOOR_ELEVATOR, DOOR_ELEVATOR_NS, DUMMY_ELEVATOR_TILE, ELEVATOR_TILE,
-    ENEMY_CODES, EncounterPlacement, GHOSTS, GOLD_DOORS, GOLD_KEY, GRID,
-    GeneratedMap, HALLWAY_FIRST_SKELETONS, KEY_DROP_BOSSES,
-    LIGHTING_FAMILY_ITEMS, LIGHTING_ITEMS, LOCKED_DOORS, MACHINE_GUN,
-    ONE_UP, PATROLS_BY_FAMILY, PATROL_POINT_DIRECTIONS, PICKUP_CODES,
-    PLAYER_START_CODES, PROGRESSION_GRAMMARS, PURPLE_MIN_FLOOR, PUSHWALL,
-    SECRET_EXIT_ZONE, SILVER_DOORS, SILVER_KEY,
-    SPEAR_CONCEPTS, TREASURE, _at, _codes_for_colors, _door_zone,
-    _floor_distances, _inside_room, _is_floor, _minimum_critical_route_rooms,
-    _path_bends, _reachable, _room_graph_path, _room_predecessor,
-    _shortest_floor_path,
+from .grid import (_at, _door_zone, _floor_distances, _inside_room, _is_floor,
+                   _path_bends, _reachable, _shortest_floor_path)
+from .model import EncounterPlacement, GeneratedMap
+from .wl6 import (AMMO, BOSSES, CHAINGUN, DECOR_WALLS, DOORS, DOOR_ELEVATOR,
+                  DOOR_ELEVATOR_NS, DUMMY_ELEVATOR_TILE, ELEVATOR_TILE,
+                  ENEMY_CODES, GHOSTS, GOLD_DOORS, GOLD_KEY, GRID,
+                  KEY_DROP_BOSSES, LIGHTING_FAMILY_ITEMS, LIGHTING_ITEMS,
+                  LOCKED_DOORS, MACHINE_GUN, ONE_UP, PATROLS_BY_FAMILY,
+                  PATROL_POINT_DIRECTIONS, PICKUP_CODES, PLAYER_START_CODES,
+                  PURPLE_MIN_FLOOR, PUSHWALL, SECRET_EXIT_ZONE, SILVER_DOORS,
+                  SILVER_KEY, SPEAR_CONCEPTS, TREASURE)
+
+# Still reaching back into generator.py, which is why this module cannot be
+# imported from generator.py's top. Each of these has a scheduled home: the four
+# circulation/progression vocabularies and _minimum_critical_route_rooms go to
+# campaign.py and progression.py, AUTHORED_PICKUP_TEMPLATES to pickups.py,
+# _codes_for_colors to wl6.py, and the two room-graph walks to whichever module
+# ends up owning the room adjacency graph. Closing this is Stage 2's deliverable.
+from .generator import (  # noqa: F401
+    AUTHORED_PICKUP_TEMPLATES, CIRCULATION_MODES, CIRCULATION_SKELETONS,
+    HALLWAY_FIRST_SKELETONS, PROGRESSION_GRAMMARS, _codes_for_colors,
+    _minimum_critical_route_rooms, _room_graph_path, _room_predecessor,
 )
 
 def validate_map(level: GeneratedMap) -> None:

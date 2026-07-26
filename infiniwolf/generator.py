@@ -41,10 +41,15 @@ from .wl6 import (  # noqa: F401
     VINE_SCREEN_CONCEPTS,
 )
 from .model import (  # noqa: F401
-    Room, RoomSpec, RoomIdentity, SpritePlacement, VineScreen,
+    ArrivalDetail, BossArenaDetail, EncounterPlacement, FloorPlan, FloorVariant,
+    GatePlan, GeneratedMap, GuardGallery, GuardRecess, KeyObjective, PatrolRoute,
+    PlacedPlan, RareMotifDetail, Room, RoomIdentity, RoomSpec, SecretDetail,
+    SpritePlacement, VineScreen,
 )
 from .grid import (  # noqa: F401
     _at, _set, _is_floor, _inside_room, _door_zone, _reachable,
+    _floor_components, _floor_distances, _shortest_floor_path, _path_bends,
+    _overlaps,
 )
 from .placement import (  # noqa: F401
     AUTHORED_PICKUP_TEMPLATES, RoomAnchors, TraversalFrame, _PlacementGrammar,
@@ -66,25 +71,6 @@ from .decorations import (  # noqa: F401
 # places (a cramped catacomb, a stately hall) instead of re-rolls of one
 # recipe. Every default equals the previous constant, so a default-valued
 # variant reproduces the pre-variant generator's behavior knob-for-knob.
-@dataclass(frozen=True, slots=True)
-class FloorVariant:
-    name: str
-    notch_chance: float = 0.22        # restrained _carve_notches
-    pillar_chance: float = 0.12       # rare structural _add_pillars landmark
-    widen_chance: float = 0.80        # _widen_corridors
-    hall_chance: float = 0.25         # _plan_floor spine-beat tier roll
-    closet_weight: float = 0.45       # _plan_floor filler closet-vs-branch
-    extra_motif_chance: float = 0.35  # _plan_floor motif budget roll
-    motif_pref: tuple[str, ...] = ()  # motifs promoted ahead of the shuffle
-    # Allowed wall-material bases; () = all. Must keep at least as many bases
-    # as the floor has districts (up to 3) or the pool is ignored.
-    theme_pool: tuple[int, ...] = ()
-    jail_probability: float = JAIL_CANDIDATE_PROBABILITY
-    decor_density: float = 1.0        # scales blocking/open decor budgets
-    # Remaps applied to _decor_theme's result (never to jail rooms).
-    decor_overrides: tuple[tuple[str, str], ...] = ()
-
-
 FLOOR_VARIANT_ROTATION = (
     # Tidy military bunker: hard materials, sparse cells, guard fittings.
     FloorVariant("garrison", pillar_chance=0.10, jail_probability=0.15,
@@ -316,12 +302,6 @@ def _rare_motif_schedule(config: CampaignConfig) -> int:
     return rng.choice((6, 7, 8, 9)) if rng.random() < RARE_MOTIF_CHANCE else 0
 
 
-@dataclass(frozen=True, slots=True)
-class GatePlan:
-    """Ordered key colors required by one floor's mandatory route."""
-    colors: tuple[str, ...] = ()
-
-
 def _lock_schedule(config: CampaignConfig) -> tuple[GatePlan, ...]:
     """Build a seeded campaign quota, weighted toward later floors.
 
@@ -392,184 +372,6 @@ def _snap_offsets(parent: Room, rw: int, rh: int, side: tuple[int, int],
         flushes = flushes[::-1]
     offsets = [0, *flushes, *(rng.randrange(-3, 4) for _ in range(3))]
     return list(dict.fromkeys(offsets))
-
-
-@dataclass(frozen=True, slots=True)
-class KeyObjective:
-    """A physical key staged as a measured exploration objective."""
-    color: str
-    cell: tuple[int, int]
-    host_room: int
-    stage: int
-    detour: int
-    treatment: str
-
-
-@dataclass(frozen=True, slots=True)
-class SecretDetail:
-    """Host and progression metadata for one bespoke secret pocket."""
-    shape: str
-    reward_count: int
-    host_room: int
-    depth_ratio: float
-    pushwall: tuple[int, int]
-    secret_exit: bool = False
-    hint_treatment: str = "single-landmark"
-    return_floor: int = 0
-    push_direction: int = 1
-
-
-@dataclass(frozen=True, slots=True)
-class RareMotifDetail:
-    kind: str
-    room_index: int
-    realization: str
-    endpoints: tuple[tuple[int, int], ...]
-
-
-@dataclass(frozen=True, slots=True)
-class BossArenaDetail:
-    family: str
-    profile: str
-    geometry: tuple[tuple[int, int], ...]
-    decorations: tuple[tuple[int, int, int], ...]
-
-
-@dataclass(frozen=True, slots=True)
-class ArrivalDetail:
-    """The inert elevator façade establishing how the player entered."""
-    kind: str
-    portal: tuple[int, int]
-    player: tuple[int, int]
-    facing: int
-    footprint: tuple[tuple[int, int], ...]
-    car_cells: tuple[tuple[int, int], ...] = ()
-    clearance: tuple[tuple[int, int], ...] = ()
-    item: tuple[int, int, int] | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class GuardRecess:
-    """A rare mirrored hallway composition built for a corner sentry."""
-    room_index: int
-    cells: tuple[tuple[int, int], tuple[int, int]]
-    actor_cell: tuple[int, int]
-
-
-@dataclass(frozen=True, slots=True)
-class GuardGallery:
-    """A symmetric, visible but physically inaccessible combat chamber."""
-    room_index: int
-    screen: tuple[tuple[int, int], ...]
-    actor_cells: tuple[tuple[int, int], tuple[int, int]]
-    rear_cells: tuple[tuple[int, int], ...]
-    facing: int
-    treatment: int = 30
-
-
-@dataclass(frozen=True, slots=True)
-class EncounterPlacement:
-    """Auditable room-owned actor composition and its reveal behavior."""
-    template: str
-    room_index: int
-    cells: tuple[tuple[int, int, int], ...]
-    hidden_cells: tuple[tuple[int, int], ...] = ()
-    patrol_kind: str = ""
-    patrol_path: tuple[tuple[int, int], ...] = ()
-    family: str = ""
-
-
-@dataclass(frozen=True, slots=True)
-class PatrolRoute:
-    """Engine-valid path plus fixed direction changes at marker cells."""
-    kind: str
-    cells: tuple[tuple[int, int], ...]
-    turns: tuple[tuple[tuple[int, int], int], ...]
-
-
-@dataclass(slots=True)
-class FloorPlan:
-    specs: list[RoomSpec]
-    edges: list[tuple[int, int]]
-    loop_edges: list[tuple[int, int]]
-    motifs: tuple[str, ...]
-    # Realization metadata keeps grammar membership out of gameplay roles.
-    critical: frozenset[int] = frozenset()
-    size_groups: tuple[tuple[int, ...], ...] = ()
-    skeleton: str = "bent-spine"
-    district_circulation: tuple[str, ...] = ()
-    special_family: str = "standard"
-    progression_grammar: str = "axial-journey"
-    motif_realizations: tuple[str, ...] = ()
-
-
-@dataclass(slots=True)
-class PlacedPlan:
-    rooms: list[Room]
-    spec_indices: list[int]
-    edges: list[tuple[int, int]]
-    loop_edges: list[tuple[int, int]]
-
-
-@dataclass(slots=True)
-class GeneratedMap:
-    number: int
-    tiles: list[int]
-    things: list[int]
-    start: tuple[int, int]
-    exit_stand: tuple[int, int]
-    secret_rewards: list[tuple[int, int]]
-    seed: int
-    has_secret_exit: bool = False
-    locked_doors: int = 0
-    boss: bool = False
-    enemy_tiers: tuple[int, int, int] = (0, 0, 0)
-    motifs: tuple[str, ...] = ()
-    motif_rooms: tuple[str, ...] = ()
-    secret_variants: tuple[str, ...] = ()
-    shortcut_pushwalls: tuple[tuple[int, int], ...] = ()
-    critique: tuple[str, ...] = ()
-    rooms: tuple[Room, ...] = ()
-    edges: tuple[tuple[int, int], ...] = ()
-    jail_rooms: frozenset[int] = frozenset()
-    variant: str = ""
-    room_concepts: tuple[str, ...] = ()
-    key_order: tuple[str, ...] = ()
-    critical_route: tuple[int, ...] = ()
-    room_districts: tuple[int, ...] = ()
-    exit_depth_ratio: float = 0.0
-    room_roles: tuple[str, ...] = ()
-    room_tiers: tuple[str, ...] = ()
-    circulation_skeleton: str = ""
-    district_circulation: tuple[str, ...] = ()
-    layout_signature: tuple[str, ...] = ()
-    pickup_placements: tuple[SpritePlacement, ...] = ()
-    room_shapes: tuple[str, ...] = ()
-    lighting_families: tuple[str, ...] = ()
-    vine_screens: tuple[VineScreen, ...] = ()
-    key_objectives: tuple[KeyObjective, ...] = ()
-    secret_details: tuple[SecretDetail, ...] = ()
-    special_family: str = "standard"
-    boss_arena_room: int = -1
-    preboss_room: int = -1
-    premium_room: int = -1
-    expedition_rooms: tuple[int, ...] = ()
-    secret_source: int = 0
-    arrival: ArrivalDetail | None = None
-    guard_recesses: tuple[GuardRecess, ...] = ()
-    guard_galleries: tuple[GuardGallery, ...] = ()
-    encounters: tuple[EncounterPlacement, ...] = ()
-    patrol_target: float = 0.0
-    progression_grammar: str = "axial-journey"
-    motif_realizations: tuple[str, ...] = ()
-    rare_motif: RareMotifDetail | None = None
-    boss_arena: BossArenaDetail | None = None
-    shape_target: float = 0.0
-    primary_hall_geometry: tuple[tuple[int, int, int, int, int], ...] = ()
-    barrel_families: tuple[str, ...] = ()
-    sky_vistas: tuple[tuple[tuple[int, int], ...], ...] = ()
-    sky_vista_recesses: tuple[tuple[tuple[int, int], ...], ...] = ()
-    sky_vista_supports: tuple[tuple[tuple[int, int], ...], ...] = ()
 
 
 def _room_identities(rooms: list[Room], specs: list[RoomSpec], districts: list[int],
@@ -705,18 +507,6 @@ def _room_identities(rooms: list[Room], specs: list[RoomSpec], districts: list[i
         result.append(RoomIdentity(spec.role, spec.tier, spec.motif, district,
                                    variant.name, concept, theme, wall_base, special))
     return result
-
-
-def _path_bends(path: list[tuple[int, int]]) -> int:
-    """Number of direction changes along a carved corridor path."""
-    headings = [(end[0] - start[0], end[1] - start[1])
-                for start, end in zip(path, path[1:])]
-    return sum(current != previous for previous, current in zip(headings, headings[1:]))
-
-
-def _overlaps(a: Room, b: Room, pad: int = 2) -> bool:
-    return not (a.x + a.w + pad <= b.x or b.x + b.w + pad <= a.x or
-                a.y + a.h + pad <= b.y or b.y + b.h + pad <= a.y)
 
 
 def _plan_floor(rng: random.Random, complexity: int, number: int,
@@ -2442,28 +2232,6 @@ def _key_spot(tiles: list[int], things: list[int], rooms: list[Room], roles: lis
     return None
 
 
-def _floor_components(tiles: list[int]) -> list[set[tuple[int, int]]]:
-    """Connected components of plain floor -- the same partition
-    _assign_sound_zones turns into zone ids. Doors and the secret-exit
-    modzone (107) are boundaries and never join a component."""
-    unassigned = {(x, y) for y in range(GRID) for x in range(GRID)
-                  if _is_floor(_at(tiles, x, y)) and _at(tiles, x, y) != SECRET_EXIT_ZONE}
-    components = []
-    while unassigned:
-        start = min(unassigned, key=lambda point: (point[1], point[0]))
-        component = {start}
-        queue = deque([start])
-        unassigned.remove(start)
-        while queue:
-            x, y = queue.popleft()
-            for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
-                nxt = x + dx, y + dy
-                if nxt in unassigned and _is_floor(_at(tiles, *nxt)):
-                    unassigned.remove(nxt); component.add(nxt); queue.append(nxt)
-        components.append(component)
-    return components
-
-
 def _spatial_districts(rooms: list[Room], k: int) -> list[int]:
     """Re-label rooms into count-balanced geometric districts.
 
@@ -3942,50 +3710,6 @@ def _carve_secret_pocket(tiles: list[int], things: list[int], px: int, py: int,
         protected.update(footprint)
         protected.update(reward_cells)
     return reward_cells[0]
-
-
-def _floor_distances(tiles: list[int], start: tuple[int, int]) -> dict[tuple[int, int], int]:
-    distances = {start: 0}
-    queue = deque([start])
-    while queue:
-        x, y = queue.popleft()
-        for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
-            nxt = x + dx, y + dy
-            if nxt in distances:
-                continue
-            tile = _at(tiles, *nxt)
-            if _is_floor(tile) or tile in DOORS:
-                distances[nxt] = distances[(x, y)] + 1
-                queue.append(nxt)
-    return distances
-
-
-def _shortest_floor_path(tiles: list[int], start: tuple[int, int],
-                         target: tuple[int, int]) -> list[tuple[int, int]]:
-    """Shortest geometric route with ordinary and locked doors open."""
-    parent: dict[tuple[int, int], tuple[int, int] | None] = {start: None}
-    queue = deque([start])
-    while queue:
-        cell = queue.popleft()
-        if cell == target:
-            break
-        x, y = cell
-        for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
-            neighbor = x + dx, y + dy
-            if neighbor in parent:
-                continue
-            tile = _at(tiles, *neighbor)
-            if _is_floor(tile) or tile in DOORS:
-                parent[neighbor] = cell
-                queue.append(neighbor)
-    if target not in parent:
-        return []
-    path = []
-    cursor: tuple[int, int] | None = target
-    while cursor is not None:
-        path.append(cursor)
-        cursor = parent[cursor]
-    return list(reversed(path))
 
 
 def _break_long_sightlines(tiles: list[int], things: list[int], rooms: list[Room],
