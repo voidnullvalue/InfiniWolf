@@ -370,12 +370,11 @@ def validate_map(level: GeneratedMap) -> None:
     if sky_walls:
         supports = [index for index, cell in enumerate(recess_cells)
                     if _at(level.things, *cell) == 30]
-        expected = ([0, len(recess_cells) - 1] if len(recess_cells) < 9
-                    else [0, len(recess_cells) // 2, len(recess_cells) - 1])
+        expected = list(range(len(recess_cells)))
         if supports != expected:
-            raise ValueError("sky vista lacks balanced original-plane supports")
-        if any(_at(level.things, *cell) not in ({30} if index in expected else {0})
-               for index, cell in enumerate(recess_cells)):
+            raise ValueError(
+                "sky vista does not front every outside wall with a pillar")
+        if any(_at(level.things, *cell) != 30 for cell in recess_cells):
             raise ValueError("sky vista recess contains unrelated decoration")
         if level.sky_vistas != (tuple(sorted(sky_walls)),):
             raise ValueError("sky vista metadata does not match realized geometry")

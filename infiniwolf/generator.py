@@ -6092,7 +6092,7 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
                                            not in material_family
                                            for cell in flanks)):
                                 valid = False
-                        supports = (0, span - 1) if span < 9 else (0, span // 2, span - 1)
+                        supports = tuple(range(span))
                         if not valid or static_headroom < len(supports):
                             continue
                         for interior_cell, wall_cell, sky_cell in geometry:

@@ -337,7 +337,7 @@ class GeneratorTests(unittest.TestCase):
     def test_sky_vistas_are_visible_in_one_tile_recesses(self):
         """A vista occupies a shallow exterior bay: the old wall plane is
         walkable recess floor, the next plane is one contiguous SKY run, and
-        a balanced pillar pair frames rather than completely hides the view."""
+        every recessed cell along the span is fronted by its own pillar."""
         room = Room(20, 20, 12, 10)
         realized = None
         for seed in range(160):
@@ -387,13 +387,8 @@ class GeneratorTests(unittest.TestCase):
         self.assertTrue(all(_is_floor(_at(tiles, *cell)) for cell in room_edge))
         supports = [cell for cell in recess if _at(things, *cell) == 30]
         support_axis = sorted(x if dy else y for x, y in supports)
-        expected_support_axis = ([varying[0], varying[-1]]
-                                 if len(varying) < 9
-                                 else [varying[0], varying[len(varying) // 2],
-                                       varying[-1]])
-        self.assertEqual(support_axis, expected_support_axis)
-        self.assertTrue(any(_at(things, *cell) != 30 for cell in recess),
-                        "pillar supports completely hide the sky vista")
+        self.assertEqual(support_axis, varying,
+                         "every outside wall cell must be fronted by a pillar")
         self.assertTrue(all(_at(things, *cell) in (0, 30) for cell in recess),
                         "later alcove decoration polluted the vista recess")
 
