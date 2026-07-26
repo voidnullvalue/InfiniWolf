@@ -287,3 +287,12 @@ LIGHTING_FAMILY_ITEMS = {
 }
 SPEAR_CONCEPTS = frozenset({"armory", "training-room", "guardpost", "workshop"})
 VINE_SCREEN_CONCEPTS = frozenset({"courtyard", "crypt", "burial-chamber"})
+
+
+def _codes_for_colors(colors: set[str] | frozenset[str]) -> frozenset[int]:
+    codes: set[int] = set()
+    if "gold" in colors:
+        codes.update(GOLD_DOORS)
+    if "silver" in colors:
+        codes.update(SILVER_DOORS)
+    return frozenset(codes)

@@ -5,8 +5,10 @@ bounds-check against that grid so callers can probe freely off-map (`-1`), and
 `_reachable` is the flood fill every blocking placement re-runs before it
 commits.
 
-Purely spatial: these answer "what is at this cell" and "what can be walked to",
-never "what should go here". Progression, encounter and semantic policy belong to
+Purely structural: these answer "what is at this cell", "what can be walked to"
+and "how are the rooms connected", never "what should go here". The room
+adjacency graph lives here for the same reason the tile plane does -- walking it
+is a query, while deciding what the walk means is policy. Progression, encounter and semantic policy belong to
 the modules that own those decisions -- a helper that consults a room's role or
 concept is in the wrong file.
 """
@@ -149,3 +151,68 @@ def _shortest_floor_path(tiles: list[int], start: tuple[int, int],
         path.append(cursor)
         cursor = parent[cursor]
     return list(reversed(path))
+
+
+def _rooms_by_distance(rooms: list[Room], edges: list[tuple[int, int]]) -> list[int]:
+    """Room indices ordered farthest-first from the start room's graph node."""
+    links = {i: [] for i in range(len(rooms))}
+    for a, b in edges:
+        links[a].append(b); links[b].append(a)
+    distance = {0: 0}
+    queue = deque([0])
+    while queue:
+        room = queue.popleft()
+        for nxt in links[room]:
+            if nxt not in distance:
+                distance[nxt] = distance[room] + 1
+                queue.append(nxt)
+    return sorted((i for i in distance if i != 0), key=distance.get, reverse=True)
+
+
+def _room_graph_path(room_count: int, edges: list[tuple[int, int]],
+                     target: int) -> list[int]:
+    """Stable shortest room path from the start room to ``target``."""
+    links: dict[int, list[int]] = {index: [] for index in range(room_count)}
+    for first, second in edges:
+        links[first].append(second)
+        links[second].append(first)
+    parent: dict[int, int | None] = {0: None}
+    queue = deque([0])
+    while queue:
+        room = queue.popleft()
+        if room == target:
+            break
+        for neighbor in links[room]:
+            if neighbor not in parent:
+                parent[neighbor] = room
+                queue.append(neighbor)
+    if target not in parent:
+        return []
+    path = []
+    cursor: int | None = target
+    while cursor is not None:
+        path.append(cursor)
+        cursor = parent[cursor]
+    return list(reversed(path))
+
+
+def _room_predecessor(room_count: int, edges: list[tuple[int, int]], target: int) -> int | None:
+    """Return `target`'s BFS parent from room 0 in the structural graph.
+
+    At a loop merge, an equally short predecessor resolves deterministically
+    from `edges`' stable iteration order, matching `_rooms_by_distance`.
+    """
+    if target == 0:
+        return None
+    links: dict[int, list[int]] = {i: [] for i in range(room_count)}
+    for a, b in edges:
+        links[a].append(b); links[b].append(a)
+    parent: dict[int, int | None] = {0: None}
+    queue = deque([0])
+    while queue:
+        room = queue.popleft()
+        for nxt in links[room]:
+            if nxt not in parent:
+                parent[nxt] = room
+                queue.append(nxt)
+    return parent.get(target)

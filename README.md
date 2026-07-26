@@ -138,6 +138,18 @@ python3 tools/check.py --full    # ~50m  the whole suite, sharded across cores
 `--fast` skips map generation entirely, so it cannot see reachability, actor-facing
 or placement regressions; run `--full` before committing.
 
+Two cheaper checks matter more when moving code between modules:
+
+```sh
+python3 tools/unresolved_names.py    # names a module uses but never imports
+python3 tools/fingerprint.py --check # generated maps still byte-identical
+```
+
+A name a moved function needs but did not bring along raises `NameError` only
+when that function runs, so the package imports fine and the pure-logic tier
+passes. The scanner catches it in milliseconds; the fingerprint gate catches it
+in minutes; the test suite may not catch it at all.
+
 Sharding is hand-rolled rather than delegated to `pytest-xdist` so a bare checkout
 needs no extra packages — but do not expect it to scale with core count. Measured
 on a 4-core machine, `--full -j 4` took *longer* than running the suite serially
