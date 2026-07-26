@@ -131,6 +131,19 @@ python3 tools/fuzz.py --seeds 1000
 python3 tools/smoke_ecwolf.py --ecwolf /path/to/ecwolf --data /path/to/wl6-data
 ```
 
+Decoration quality is measured rather than eyeballed. With a collection of
+hand-authored community maps installed alongside this repo, `tools/decor_stats.py`
+reports decoration density, wall-adjacency, clustering, and per-item frequency for
+that reference corpus and for freshly generated floors side by side, and
+`tools/mine_decor_patterns.py` regenerates
+[`docs/decor-corpus-patterns.md`](docs/decor-corpus-patterns.md), the per-item
+placement model mined from the same corpus:
+
+```sh
+python3 tools/decor_stats.py
+python3 tools/mine_decor_patterns.py
+```
+
 Generated packages contain only WAD map data, MAPINFO, and reproducibility metadata. Registered WL6 assets remain in the user's data directory.
 
 ## Building a release locally

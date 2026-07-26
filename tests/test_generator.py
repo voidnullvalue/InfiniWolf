@@ -9,6 +9,7 @@ import unittest
 from unittest import mock
 import zipfile
 
+import infiniwolf.decorations as decorations
 import infiniwolf.generator as generator
 from infiniwolf.config import CampaignConfig, Intensity, ThemeBias
 from infiniwolf.generator import GenerationCancelled, generate_campaign, generate_map, validate_map, validate_package
@@ -1624,7 +1625,10 @@ class GeneratorTests(unittest.TestCase):
             for y in range(room.y, room.y + room.h):
                 for x in range(room.x, room.x + room.w):
                     tiles[y * GRID + x] = FLOOR
-            with mock.patch.object(generator, "_place_zoned") as zoned:
+            # Patch the module _place_decorations actually resolves the name
+            # through. Patching the `generator` re-export instead would leave
+            # the real function running and the assertion below vacuously true.
+            with mock.patch.object(decorations, "_place_zoned") as zoned:
                 _place_decorations([room], tiles, [0] * len(tiles), set(), room.center,
                                    random.Random(0), roles=[specs[0].role], specs=specs)
             zoned.assert_not_called()
