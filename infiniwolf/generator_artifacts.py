@@ -292,6 +292,11 @@ def _manifest(config, levels, secret_from, vine_floor, vine_budget,
                                     "geometry": level.boss_arena.geometry,
                                     "decorations": level.boss_arena.decorations}
                                    if level.boss_arena else None),
+                    "landmarks": [
+                        {"room": plan.room_index, "rank": plan.rank,
+                         "purpose": plan.purpose, "score": plan.score,
+                         "approach_room": plan.approach_room}
+                        for plan in level.landmarks],
                     "room_concepts": level.room_concepts,
                     "room_shapes": level.room_shapes,
                     "lighting_families": level.lighting_families,

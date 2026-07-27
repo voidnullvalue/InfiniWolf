@@ -89,6 +89,8 @@ def _metadata(level) -> str:
         "pickups": [[p.reason, p.template, p.room_index,
                      [i for _, _, i in p.cells]] for p in level.pickup_placements],
         "secrets": [[d.shape, d.reward_count, d.host_room] for d in level.secret_details],
+        "landmarks": [[p.room_index, p.rank, p.purpose, p.approach_room]
+                      for p in level.landmarks],
         "critique": list(level.critique),
     }, sort_keys=True, separators=(",", ":"))
 

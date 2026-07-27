@@ -79,7 +79,7 @@ from .encounters import (  # noqa: F401
 )
 from .semantics import (  # noqa: F401
     _apply_wall_theme, _assign_area_themes, _room_identities,
-    _select_jail_rooms,
+    _select_jail_rooms, plan_landmarks,
 )
 from .geometry import (  # noqa: F401
     DOOR_SPACING, _add_pillars, _adjacent_to_room, _carve_connection,
@@ -535,6 +535,10 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
     deepest_room_distance = max((final_distances.get(room.center, 0) for room in rooms),
                                 default=1) or 1
     exit_depth_ratio = final_distances.get(exit_stand, 0) / deepest_room_distance
+    # Before decoration by design: decoration reinforces a landmark rather
+    # than inventing one, and the hierarchy must not depend on prop counts.
+    landmark_plans = plan_landmarks(
+        rooms, specs, roles, edges, districts, critical_route)
     layout_signature = _layout_signature(
         plan, specs, realized_shapes, guard_recesses, encounters, edges)
     result = GeneratedMap(number=number, tiles=tiles, things=things, start=start,
@@ -581,7 +585,8 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
                           barrel_families=barrel_families,
                           sky_vistas=sky_vistas,
                           sky_vista_recesses=sky_vista_recesses,
-                          sky_vista_supports=sky_vista_supports)
+                          sky_vista_supports=sky_vista_supports,
+                          landmarks=landmark_plans)
     validate_map(result)
     result.critique = _critique(result)
     return result

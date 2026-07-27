@@ -173,6 +173,17 @@ def _critique(level: GeneratedMap) -> tuple[str, ...]:
         if len(dead_ends) >= 2 and len(barren) / len(dead_ends) > 0.34:
             flags.append("dead_end_unrewarded")
 
+    # --- Landmark hierarchy ---
+    # A regression tripwire, not a live diagnosis: plan_landmarks nominates exactly
+    # one primary on every floor measured, so this is silent by construction and
+    # fires if selection starts failing to find a dominant space, or starts naming
+    # several. Both are the same defect -- a floor where everything is emphatic is
+    # as unnavigable as one where nothing is.
+    if level.rooms and level.landmarks is not None:
+        primaries = sum(plan.rank == "primary" for plan in level.landmarks)
+        if len(level.rooms) >= 8 and primaries != 1:
+            flags.append("landmark_hierarchy_broken")
+
     return tuple(flags)
 
 

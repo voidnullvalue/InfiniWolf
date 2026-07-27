@@ -22,7 +22,8 @@ import random
 
 from .decorations import _decor_theme
 from .grid import _at, _floor_components, _is_floor, _set
-from .model import FloorVariant, KeyObjective, Room, RoomIdentity, RoomSpec
+from .model import (FloorVariant, KeyObjective, LandmarkPlan, Room,
+                    RoomIdentity, RoomSpec)
 from .wl6 import (DAMAGED_WALL_CONCEPTS, DECOR_WALLS, DOORS,
                   FLOOR_TEN_STONE_THEME, GRID, JAIL_CANDIDATE_PROBABILITY,
                   MATERIAL_BY_BASE, PURPLE_MIN_FLOOR, WALL,
@@ -467,3 +468,102 @@ def _apply_wall_theme(tiles: list[int], things: list[int], rooms: list[Room],
                                 _set(things, *rng.choice(interior),
                                      rng.choice((42, 64, 65, 66)))
     return landmark_cells
+
+
+# How much each property contributes to a room's claim on being memorable. Ordered
+# by how strongly it reads in play: sheer size dominates, then whether the space is
+# structurally important, then whether it sits where a player will actually pass.
+_LANDMARK_WEIGHTS = {
+    "area": 1.0,
+    "anchor_tier": 3.0,
+    "graph_degree": 0.8,
+    "on_critical_route": 1.5,
+    "district_boundary": 1.2,
+    "special_role": 2.5,
+}
+
+# Ranks below primary. Three is the ceiling on purpose: a floor where everything is
+# emphatic has no hierarchy, which fails for the same reason as a floor with none.
+_MAX_SECONDARY = 3
+
+
+def plan_landmarks(rooms: list[Room], specs: list[RoomSpec], roles: list[str],
+                   edges: list[tuple[int, int]], districts: list[int],
+                   critical_route) -> tuple[LandmarkPlan, ...]:
+    """Nominate one primary landmark and up to three secondaries.
+
+    Deterministic and RNG-free: the same geometry always yields the same
+    hierarchy, so a landmark cannot appear or vanish between two candidates that
+    are otherwise identical. Scoring reads only realized geometry and the plan, so
+    this can run before any decoration exists.
+
+    Secondaries must not be graph-adjacent to the primary or to each other.
+    Adjacent landmarks compete rather than compose -- two grand rooms either side
+    of one door read as one confusing space, so spacing is a hard constraint
+    rather than a scoring term.
+    """
+    if not rooms:
+        return ()
+    degree: dict[int, int] = {index: 0 for index in range(len(rooms))}
+    neighbours: dict[int, set[int]] = {index: set() for index in range(len(rooms))}
+    for first, second in edges:
+        degree[first] += 1
+        degree[second] += 1
+        neighbours[first].add(second)
+        neighbours[second].add(first)
+
+    largest = max((room.w * room.h for room in rooms), default=1) or 1
+    busiest = max(degree.values(), default=1) or 1
+    route = set(critical_route)
+    special = {"boss-arena", "premium-vault", "victory", "climax"}
+
+    scored: list[tuple[float, int, str]] = []
+    for index, room in enumerate(rooms):
+        spec = specs[index] if index < len(specs) else None
+        role = roles[index] if index < len(roles) else ""
+        # A room bordering two districts is where a player notices the building
+        # changing material, which is exactly what makes a place recognizable.
+        crosses = any(districts[other] != districts[index]
+                      for other in neighbours[index]
+                      if other < len(districts) and index < len(districts))
+        parts = {
+            "area": (room.w * room.h) / largest,
+            "anchor_tier": 1.0 if spec is not None and spec.tier == "anchor" else 0.0,
+            "graph_degree": degree[index] / busiest,
+            "on_critical_route": 1.0 if index in route else 0.0,
+            "district_boundary": 1.0 if crosses else 0.0,
+            "special_role": 1.0 if role in special else 0.0,
+        }
+        total = sum(_LANDMARK_WEIGHTS[key] * value for key, value in parts.items())
+        reason = max(parts.items(), key=lambda kv: _LANDMARK_WEIGHTS[kv[0]] * kv[1])[0]
+        # Utility spaces are not landmarks however large they measure.
+        if spec is not None and spec.tier in ("closet", "corridor"):
+            continue
+        if role in ("start", "arrival", "exit"):
+            continue
+        scored.append((total, index, reason))
+
+    if not scored:
+        return ()
+    # Sort by score, then by index so ties are stable rather than dict-ordered.
+    scored.sort(key=lambda item: (-item[0], item[1]))
+    primary_score, primary_index, primary_reason = scored[0]
+
+    def approach_of(index: int) -> int:
+        """The neighbour a player most likely arrives from: earliest on the route."""
+        on_route = [other for other in neighbours[index] if other in route]
+        return min(on_route) if on_route else (
+            min(neighbours[index]) if neighbours[index] else -1)
+
+    plans = [LandmarkPlan(primary_index, "primary", primary_reason,
+                          round(primary_score, 3), approach_of(primary_index))]
+    claimed = {primary_index} | neighbours[primary_index]
+    for score, index, reason in scored[1:]:
+        if len(plans) > _MAX_SECONDARY:
+            break
+        if index in claimed:
+            continue
+        plans.append(LandmarkPlan(index, "secondary", reason, round(score, 3),
+                                  approach_of(index)))
+        claimed |= {index} | neighbours[index]
+    return tuple(plans)

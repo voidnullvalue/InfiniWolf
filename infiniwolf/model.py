@@ -208,6 +208,27 @@ class PlacedPlan:
     loop_edges: list[tuple[int, int]]
 
 
+@dataclass(frozen=True, slots=True)
+class LandmarkPlan:
+    """One room nominated to anchor a player's mental map of the floor.
+
+    A landmark is not a room with more props. It is a space a player can navigate
+    *by* -- distinctive enough to recognize on return and to describe to someone
+    else. Rank separates the one space that should dominate from the two or three
+    that support it; a floor with four equally emphatic rooms has no hierarchy at
+    all, which is the same failure as a floor with none.
+
+    Selected before decoration deliberately: decoration reinforces a landmark, it
+    does not invent one. The approach room is recorded so later work can frame the
+    view into it.
+    """
+    room_index: int
+    rank: str                       # "primary" or "secondary"
+    purpose: str                    # why this room earned it
+    score: float
+    approach_room: int = -1
+
+
 @dataclass(slots=True)
 class GeneratedMap:
     number: int
@@ -267,6 +288,7 @@ class GeneratedMap:
     sky_vistas: tuple[tuple[tuple[int, int], ...], ...] = ()
     sky_vista_recesses: tuple[tuple[tuple[int, int], ...], ...] = ()
     sky_vista_supports: tuple[tuple[tuple[int, int], ...], ...] = ()
+    landmarks: tuple[LandmarkPlan, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
