@@ -95,7 +95,7 @@ from .campaign import (  # noqa: F401
     VARIANT_STRONGHOLD, VARIANT_VAULT, _aardwolf_variant, _candidate_score,
     _circulation_sequence, _lock_schedule, _progression_sequence,
     _rare_motif_schedule, _set_distance, _variant_sequence,
-    CampaignSchedule, resolve_schedule,
+    CampaignSchedule, resolve_schedule, _layout_signature,
 )
 from .generator_artifacts import (  # noqa: F401
     _manifest, _wad_bytes, _mapinfo, _display_name,
@@ -701,18 +701,8 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
     deepest_room_distance = max((final_distances.get(room.center, 0) for room in rooms),
                                 default=1) or 1
     exit_depth_ratio = final_distances.get(exit_stand, 0) / deepest_room_distance
-    corridor_edges = sum(specs[first].tier == "corridor" or specs[second].tier == "corridor"
-                         for first, second in edges)
-    mediated_ratio = corridor_edges / max(1, len(edges))
-    layout_signature = (
-        plan.special_family, plan.progression_grammar, plan.skeleton,
-        *plan.motif_realizations, *plan.district_circulation,
-        f"corridors-{sum(spec.tier == 'corridor' for spec in specs)}",
-        f"mediated-{round(mediated_ratio, 1):.1f}",
-        f"shapes-{','.join(sorted(Counter(realized_shapes).elements()))}",
-        f"recesses-{len(guard_recesses)}",
-        f"patrols-{sum(bool(encounter.patrol_kind) for encounter in encounters)}",
-    )
+    layout_signature = _layout_signature(
+        plan, specs, realized_shapes, guard_recesses, encounters, edges)
     result = GeneratedMap(number=number, tiles=tiles, things=things, start=start,
                           exit_stand=exit_stand, secret_rewards=rewards, seed=seed,
                           has_secret_exit=secret_exit, locked_doors=locks, boss=is_boss,

@@ -16,6 +16,7 @@ never rescue an invalid one.
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+from collections import Counter
 from itertools import combinations
 import math
 import random
@@ -445,3 +446,27 @@ def _candidate_score(level: GeneratedMap, previous: list[GeneratedMap],
     handedness = -1 if config.aardwolf_seed(level.number) & 1 else 1
     score += 0.5 if (center - level.start[0]) * handedness > 0 else 0.0
     return score
+
+
+def _layout_signature(plan, specs, realized_shapes, guard_recesses,
+                      encounters, edges) -> tuple[str, ...]:
+    """A compact fingerprint of how this floor is organized.
+
+    campaign.py compares these between adjacent floors to reject a campaign that
+    repeats itself. It belongs beside the planning vocabulary it summarizes rather
+    than in the orchestrator: every component is a plan or realization fact, and
+    what counts as "the same shape of floor" is a campaign-composition judgement.
+    """
+    corridor_edges = sum(specs[first].tier == "corridor" or specs[second].tier == "corridor"
+                         for first, second in edges)
+    mediated_ratio = corridor_edges / max(1, len(edges))
+    layout_signature = (
+        plan.special_family, plan.progression_grammar, plan.skeleton,
+        *plan.motif_realizations, *plan.district_circulation,
+        f"corridors-{sum(spec.tier == 'corridor' for spec in specs)}",
+        f"mediated-{round(mediated_ratio, 1):.1f}",
+        f"shapes-{','.join(sorted(Counter(realized_shapes).elements()))}",
+        f"recesses-{len(guard_recesses)}",
+        f"patrols-{sum(bool(encounter.patrol_kind) for encounter in encounters)}",
+    )
+    return layout_signature
