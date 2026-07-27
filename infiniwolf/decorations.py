@@ -1759,3 +1759,19 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
             static_headroom -= 1
 
     return tuple(lighting_families), tuple(vine_screens)
+
+
+def _barrel_families(rooms, things) -> tuple[str, ...]:
+    """Which barrel material each room ended up carrying.
+
+    Read back rather than remembered: a room commits to green or blue once and
+    every later pass reuses that choice, so the plane is the authority. validate_map
+    rejects a room holding both, and this is what it reads.
+    """
+    barrel_families = tuple(
+        ("green" if 24 in present else "blue" if 58 in present else "none")
+        for room in rooms
+        for present in ({_at(things, x, y)
+                         for y in range(room.y, room.y + room.h)
+                         for x in range(room.x, room.x + room.w)},))
+    return barrel_families

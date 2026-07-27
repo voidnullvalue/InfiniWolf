@@ -88,6 +88,7 @@ from .geometry import (  # noqa: F401
     _assign_sound_zones, _break_long_sightlines, _heal_pinched_room_door_pairs,
     _limit_theme_merge_size, _remove_redundant_plain_doors,
     _spatial_districts, _split_oversized_zones, _harvest_sky_vistas,
+    _primary_hall_geometry,
 )
 from .campaign import (  # noqa: F401
     CIRCULATION_MODES, CIRCULATION_SKELETONS, FLOOR_VARIANT_ROTATION,
@@ -104,7 +105,7 @@ from .generator_artifacts import (  # noqa: F401
 from .decorations import (  # noqa: F401
     SKY_VISTA_COURTYARD_CHANCE, SKY_VISTA_INTERIOR_CHANCE, _DECOR_BLOCKING, _DECOR_OPEN,
     _DECOR_ZONES, _FRAMEABLE, _LIGHTING_OPTIONS, _decor_theme, _lighting_family,
-    _place_decorations, _place_zoned,
+    _place_decorations, _place_zoned, _barrel_families,
 )
 
 
@@ -685,16 +686,8 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
         paths=paths, identities=identities, atmosphere=int(config.atmosphere),
         notch_anchors=notch_anchors, hallway_vine_budget=hallway_vine_budget,
         allow_sky_vista=sky_vista_enabled)
-    primary_hall_geometry = tuple(
-        (index, room.x, room.y, room.w, room.h)
-        for index, (room, spec) in enumerate(zip(rooms, specs))
-        if plan.skeleton in HALLWAY_FIRST_SKELETONS and spec.tier == "corridor")
-    barrel_families = tuple(
-        ("green" if 24 in present else "blue" if 58 in present else "none")
-        for room in rooms
-        for present in ({_at(things, x, y)
-                         for y in range(room.y, room.y + room.h)
-                         for x in range(room.x, room.x + room.w)},))
+    primary_hall_geometry = _primary_hall_geometry(plan, rooms, specs)
+    barrel_families = _barrel_families(rooms, things)
     sky_vistas, sky_vista_recesses, sky_vista_supports = _harvest_sky_vistas(
         tiles, things)
     final_distances = _floor_distances(tiles, start)

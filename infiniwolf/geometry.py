@@ -1808,3 +1808,18 @@ def _harvest_sky_vistas(tiles: list[int], things: list[int]) -> tuple[
             cell for cell in recess if _at(things, *cell) == 30))
     return (tuple(sky_vistas), tuple(sky_vista_recesses),
             tuple(sky_vista_supports))
+
+
+def _primary_hall_geometry(plan, rooms, specs) -> tuple[
+        tuple[int, int, int, int, int], ...]:
+    """The realized rectangles of a hallway-first floor's scaffold arms.
+
+    validate_map requires that a hallway-first skeleton records its concourse
+    exactly, so this is the readback proving geometry built the footprint the
+    schedule asked for. Empty for graph-first floors.
+    """
+    primary_hall_geometry = tuple(
+        (index, room.x, room.y, room.w, room.h)
+        for index, (room, spec) in enumerate(zip(rooms, specs))
+        if plan.skeleton in HALLWAY_FIRST_SKELETONS and spec.tier == "corridor")
+    return primary_hall_geometry
