@@ -242,6 +242,32 @@ class PlacedPlan:
 
 
 @dataclass(frozen=True, slots=True)
+class AuthoredSightline:
+    """A long view kept on purpose instead of being broken up.
+
+    The generator otherwise suppresses every unobstructed run past 21 cells,
+    because an accidental one is a firing lane the player cannot answer and the
+    clearest sign that geometry fell out of a router rather than a plan. But a
+    building with no long views is equally artificial: seeing the anchor hall from
+    its approach, or the exit lift across an antechamber, is how a real space tells
+    you where you are going.
+
+    So a small number of over-long runs are authored rather than repaired --
+    specifically the ones that already terminate on a room worth looking at. The
+    record exists so the view is auditable and so critique can tell a deliberate
+    vista from an accident, which is otherwise the same measurement.
+    """
+    cells: tuple[tuple[int, int], ...]
+    origin_room: int
+    target_room: int
+    purpose: str
+
+    @property
+    def length(self) -> int:
+        return len(self.cells)
+
+
+@dataclass(frozen=True, slots=True)
 class LandmarkPlan:
     """One room nominated to anchor a player's mental map of the floor.
 
@@ -324,6 +350,7 @@ class GeneratedMap:
     landmarks: tuple[LandmarkPlan, ...] = ()
     # The one composition each room realized, or "" for deliberately plain.
     room_motifs: tuple[str, ...] = ()
+    authored_sightlines: tuple[AuthoredSightline, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

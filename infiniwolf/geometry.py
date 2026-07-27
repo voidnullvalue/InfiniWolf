@@ -40,9 +40,9 @@ import random
 from .campaign import HALLWAY_FIRST_SKELETONS
 from .grid import (_FLOOR_OR_DOOR, _at, _floor_components, _inside_room,
                    _is_floor, _overlaps, _reachable, _set)
-from .model import FloorPlan, PlacedPlan, Room
-from .wl6 import (DOOR_EW, DOOR_GOLD_EW, DOOR_NS, DOORS, FLOOR, GRID, WALL,
-                  ZONE_MAX)
+from .model import AuthoredSightline, FloorPlan, PlacedPlan, Room
+from .wl6 import (DOOR_EW, DOOR_GOLD_EW, DOOR_NS, DOORS, FLOOR, GRID,
+                  STATIC_BLOCKING, WALL, ZONE_MAX)
 from .ledger import reserve as ledger_reserve
 
 
@@ -1624,12 +1624,82 @@ def _assign_sound_zones(tiles: list[int]) -> int:
     return len(components)
 
 
+def _room_at(rooms: list[Room], cell: tuple[int, int]) -> int:
+    """Index of the room containing `cell`, or -1."""
+    x, y = cell
+    for index, room in enumerate(rooms):
+        if room.x <= x < room.x + room.w and room.y <= y < room.y + room.h:
+            return index
+    return -1
+
+
+def plan_authored_sightlines(tiles: list[int], things: list[int],
+                             rooms: list[Room], landmarks,
+                             budget: int = 2
+                             ) -> tuple[AuthoredSightline, ...]:
+    """Frame each primary landmark from the doorway a player arrives through.
+
+    The first approach to this tried to *keep* accidental over-long runs when they
+    happened to join two rooms worth looking at. Measurement killed it: across 60
+    floors there were 13 runs of 20 cells or more, and 505 of 510 long runs had at
+    most one endpoint inside a room. They are corridors. The generator is too good
+    at avoiding room-to-room lanes for that plan to ever fire, which is the right
+    behaviour -- an accidental long lane is an unanswerable firing line.
+
+    A framed view is the other thing the design wants and it does not need a long
+    lane. Standing in the connecting doorway, the line straight ahead into the
+    landmark should be clear, so entering the room shows you the room rather than
+    the back of a barrel. That is a reservation, not a carve: no geometry changes,
+    so reachability, sound zones and door axes are all untouched.
+    """
+    found: list[AuthoredSightline] = []
+    for plan in landmarks:
+        if plan.rank != "primary" or plan.approach_room < 0:
+            continue
+        if not 0 <= plan.room_index < len(rooms):
+            continue
+        room = rooms[plan.room_index]
+        approach = rooms[plan.approach_room]
+        # Which way does the player face on entry? Toward the landmark's centre
+        # from the approach room's centre, along the dominant axis.
+        dx = room.center[0] - approach.center[0]
+        dy = room.center[1] - approach.center[1]
+        if abs(dx) >= abs(dy):
+            step = (1 if dx > 0 else -1, 0)
+            entry = (room.x if step[0] > 0 else room.x + room.w - 1, room.center[1])
+        else:
+            step = (0, 1 if dy > 0 else -1)
+            entry = (room.center[0], room.y if step[1] > 0 else room.y + room.h - 1)
+        cells: list[tuple[int, int]] = []
+        cursor = entry
+        while (room.x <= cursor[0] < room.x + room.w
+               and room.y <= cursor[1] < room.y + room.h
+               and _is_floor(_at(tiles, *cursor))):
+            # Stop at anything solid already standing there. Population and
+            # pickups run before this, so a sentry or a supply cache can be in
+            # the way; the honest record is how far the view actually reaches
+            # rather than a line that claims cells it does not own.
+            if _at(things, *cursor) in STATIC_BLOCKING:
+                break
+            cells.append(cursor)
+            cursor = (cursor[0] + step[0], cursor[1] + step[1])
+        # Three cells is the shortest run that reads as a view rather than a gap.
+        if len(cells) >= 3:
+            found.append(AuthoredSightline(tuple(cells), plan.approach_room,
+                                           plan.room_index,
+                                           "framed-landmark-approach"))
+        if len(found) >= budget:
+            break
+    return tuple(found)
+
+
 def _break_long_sightlines(tiles: list[int], things: list[int], rooms: list[Room],
                            reserved: set[tuple[int, int]], rng: random.Random,
                            start: tuple[int, int],
                            max_run: int = 21,
                            allow_doors: bool = True,
-                           walls_for_redundant_doors: bool = False) -> int:
+                           walls_for_redundant_doors: bool = False,
+                           authored: frozenset[tuple[int, int]] = frozenset()) -> int:
     centers = {room.center for room in rooms}
     doors = {(x, y) for y in range(GRID) for x in range(GRID)
              if _at(tiles, x, y) in DOORS}
@@ -1658,6 +1728,10 @@ def _break_long_sightlines(tiles: list[int], things: list[int], rooms: list[Room
             candidates = list(enumerate(run))
             rng.shuffle(candidates)
             candidates.sort(key=lambda item: abs(item[0] - midpoint))
+            # An authored view is left whole. Breaking one cell of it would undo
+            # the whole point, so every cell of a kept run is off limits.
+            if any(cell in authored for cell in run):
+                continue
             for _, (x, y) in candidates:
                 if (x, y) in centers or (x, y) in reserved or _at(things, x, y):
                     continue

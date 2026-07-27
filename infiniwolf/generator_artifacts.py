@@ -301,6 +301,12 @@ def _manifest(config, levels, secret_from, vine_floor, vine_budget,
                     # deliberately left plain. This is the audit trail for motif
                     # selection: without it there is no way to tell from a package
                     # whether a floor's rooms were composed or merely filled.
+                    "authored_sightlines": [
+                        {"purpose": line.purpose, "length": line.length,
+                         "origin_room": line.origin_room,
+                         "target_room": line.target_room,
+                         "cells": [list(c) for c in line.cells]}
+                        for line in level.authored_sightlines],
                     "room_motifs": level.room_motifs,
                     "room_concepts": level.room_concepts,
                     "room_shapes": level.room_shapes,

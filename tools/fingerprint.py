@@ -92,6 +92,9 @@ def _metadata(level) -> str:
         "secrets": [[d.shape, d.reward_count, d.host_room] for d in level.secret_details],
         "landmarks": [[p.room_index, p.rank, p.purpose, p.approach_room]
                       for p in level.landmarks],
+        "sightlines": [[line.purpose, line.origin_room, line.target_room,
+                        line.length] for line in level.authored_sightlines],
+        "motifs": list(level.room_motifs),
         "critique": list(level.critique),
     }, sort_keys=True, separators=(",", ":"))
 

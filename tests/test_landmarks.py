@@ -229,3 +229,95 @@ class BossGatingTests(unittest.TestCase):
             with self.subTest(seed=seed):
                 self.assertEqual("gold" in gate.colors, drops,
                                  f"gate {gate.colors} vs drop={drops}")
+
+
+class AuthoredSightlineTests(unittest.TestCase):
+    """A framed view into the primary landmark, reserved rather than carved.
+
+    The first design tried to keep accidental over-long runs when they happened to
+    join two rooms worth looking at, and measurement killed it: across 60 floors
+    there were 13 runs of 20 cells or more, and 505 of 510 long runs had at most one
+    endpoint inside a room. They are corridors. The generator is deliberately good
+    at avoiding room-to-room lanes, and an accidental one is an unanswerable firing
+    line, so that plan could never have fired and should not have.
+    """
+
+    def _room_floor(self, room, extra=()):
+        from infiniwolf.wl6 import FLOOR, GRID, WALL
+        tiles = [WALL] * (GRID * GRID)
+        for y in range(room.y, room.y + room.h):
+            for x in range(room.x, room.x + room.w):
+                tiles[y * GRID + x] = FLOOR
+        for x, y in extra:
+            tiles[y * GRID + x] = FLOOR
+        return tiles
+
+    def test_a_view_runs_from_the_entry_wall_into_the_room(self):
+        from infiniwolf.geometry import plan_authored_sightlines
+        from infiniwolf.model import LandmarkPlan, Room
+        from infiniwolf.wl6 import GRID
+        rooms = [Room(10, 20, 6, 6), Room(20, 20, 12, 12)]
+        tiles = self._room_floor(rooms[0])
+        for y in range(rooms[1].y, rooms[1].y + rooms[1].h):
+            for x in range(rooms[1].x, rooms[1].x + rooms[1].w):
+                tiles[y * GRID + x] = tiles[rooms[0].y * GRID + rooms[0].x]
+        things = [0] * (GRID * GRID)
+        plans = (LandmarkPlan(1, "primary", "anchor_tier", 9.0, 0),)
+        lines = plan_authored_sightlines(tiles, things, rooms, plans)
+        self.assertEqual(len(lines), 1)
+        line = lines[0]
+        self.assertEqual(line.purpose, "framed-landmark-approach")
+        self.assertEqual((line.origin_room, line.target_room), (0, 1))
+        self.assertGreaterEqual(line.length, 3)
+        # Every cell inside the landmark room, on one straight axis.
+        self.assertEqual(len({y for _, y in line.cells}), 1)
+        for x, y in line.cells:
+            self.assertTrue(rooms[1].x <= x < rooms[1].x + rooms[1].w)
+
+    def test_a_solid_prop_truncates_rather_than_invalidates_the_view(self):
+        """Population and pickups run first, so something can already be there.
+
+        The honest record is how far the view actually reaches. Claiming cells it
+        does not own would make validate_map reject a floor for a prop the view
+        never had a chance at.
+        """
+        from infiniwolf.geometry import plan_authored_sightlines
+        from infiniwolf.model import LandmarkPlan, Room
+        from infiniwolf.wl6 import GRID
+        rooms = [Room(10, 20, 6, 6), Room(20, 20, 12, 12)]
+        tiles = self._room_floor(rooms[0])
+        for y in range(rooms[1].y, rooms[1].y + rooms[1].h):
+            for x in range(rooms[1].x, rooms[1].x + rooms[1].w):
+                tiles[y * GRID + x] = tiles[rooms[0].y * GRID + rooms[0].x]
+        plans = (LandmarkPlan(1, "primary", "anchor_tier", 9.0, 0),)
+
+        clear = plan_authored_sightlines(tiles, [0] * (GRID * GRID), rooms, plans)
+        things = [0] * (GRID * GRID)
+        blocked_at = clear[0].cells[4]
+        things[blocked_at[1] * GRID + blocked_at[0]] = 30      # WhitePillar
+        shorter = plan_authored_sightlines(tiles, things, rooms, plans)
+        self.assertEqual(len(shorter), 1)
+        self.assertLess(shorter[0].length, clear[0].length)
+        self.assertNotIn(blocked_at, shorter[0].cells)
+
+    def test_secondary_landmarks_do_not_get_views(self):
+        """One framed view per landmark rank that matters, and a budget of two.
+
+        A floor where every space is framed has no focus, which is the same failure
+        as the landmark hierarchy itself guards against.
+        """
+        from infiniwolf.geometry import plan_authored_sightlines
+        from infiniwolf.model import LandmarkPlan, Room
+        from infiniwolf.wl6 import GRID
+        rooms = [Room(10, 20, 6, 6), Room(20, 20, 12, 12), Room(40, 20, 10, 10)]
+        tiles = [0] * (GRID * GRID)
+        from infiniwolf.wl6 import FLOOR, WALL
+        tiles = [WALL] * (GRID * GRID)
+        for room in rooms:
+            for y in range(room.y, room.y + room.h):
+                for x in range(room.x, room.x + room.w):
+                    tiles[y * GRID + x] = FLOOR
+        plans = (LandmarkPlan(1, "primary", "anchor_tier", 9.0, 0),
+                 LandmarkPlan(2, "secondary", "area", 3.0, 0))
+        lines = plan_authored_sightlines(tiles, [0] * (GRID * GRID), rooms, plans)
+        self.assertEqual([line.target_room for line in lines], [1])

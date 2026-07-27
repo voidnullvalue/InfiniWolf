@@ -16,7 +16,7 @@ from .wl6 import (AMMO, BOSSES, CHAINGUN, DECOR_WALLS, DOORS, DOOR_ELEVATOR,
                   LOCKED_DOORS, MACHINE_GUN, ONE_UP, PATROLS_BY_FAMILY,
                   PATROL_POINT_DIRECTIONS, PICKUP_CODES, PLAYER_START_CODES,
                   PURPLE_MIN_FLOOR, PUSHWALL, SECRET_EXIT_ZONE, SILVER_DOORS,
-                  SILVER_KEY, SPEAR_CONCEPTS, TREASURE,
+                  SILVER_KEY, SPEAR_CONCEPTS, STATIC_BLOCKING, TREASURE,
                   _codes_for_colors, _patrol_actor_direction)
 
 # Still reaching back into generator.py, which is why this module cannot be
@@ -732,6 +732,18 @@ def validate_map(level: GeneratedMap) -> None:
             raise ValueError("secret elevator is unusable after opening its pushwall")
     elif zone_count:
         raise ValueError("secret exit zone on a floor with no secret route")
+    # An authored view is a promise about the finished map, so check the finished
+    # map. Decoration reserves these cells, but a reservation is a convention and
+    # this is the guarantee: if a later pass ever fills one in, the floor is
+    # rejected rather than shipping a framed view of a barrel.
+    for line in level.authored_sightlines:
+        if len(line.cells) < 3:
+            raise ValueError("authored sightline is too short to read as a view")
+        for cell in line.cells:
+            if not _is_floor(_at(level.tiles, *cell)):
+                raise ValueError("authored sightline crosses a wall")
+            if _at(level.things, *cell) in STATIC_BLOCKING:
+                raise ValueError("authored sightline is blocked by a solid prop")
     validate_door_axes(level.tiles)
     actual_locks = [(index % GRID, index // GRID, tile)
                     for index, tile in enumerate(level.tiles) if tile in LOCKED_DOORS]

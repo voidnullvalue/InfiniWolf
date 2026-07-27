@@ -89,7 +89,7 @@ from .geometry import (  # noqa: F401
     _assign_sound_zones, _break_long_sightlines, _heal_pinched_room_door_pairs,
     _limit_theme_merge_size, _remove_redundant_plain_doors,
     _spatial_districts, _split_oversized_zones, _harvest_sky_vistas,
-    _primary_hall_geometry,
+    _primary_hall_geometry, plan_authored_sightlines,
 )
 from .campaign import (  # noqa: F401
     CIRCULATION_MODES, CIRCULATION_SKELETONS, FLOOR_VARIANT_ROTATION,
@@ -542,6 +542,18 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
     # Releasing the architectural reservation must not erase that later,
     # independent reason to keep the cell clear.
     reserved.reserve(actor_clearance, "encounters", "actor-clearance")
+    # Landmarks before decoration, not after: decoration reinforces a landmark
+    # rather than inventing one, and the framed approach below has to be reserved
+    # before any prop can occupy it.
+    landmark_plans = plan_landmarks(
+        rooms, specs, roles, edges, districts, critical_route)
+    authored_sightlines = plan_authored_sightlines(tiles, things, rooms, landmark_plans)
+    # Hard claims: a decoration pass may not fill in the view a player gets on
+    # entering the floor's primary space. Reserving rather than carving means no
+    # geometry moves, so reachability, sound zones and door axes are untouched.
+    for line in authored_sightlines:
+        reserved.reserve(line.cells, "semantics", "framed-landmark-view",
+                         room_index=line.target_room)
     lighting_families, vine_screens, room_motifs = _place_decorations(
         rooms, tiles, things, reserved, start, rng, roles=roles, specs=specs,
         jail_rooms=jail_rooms,
@@ -559,10 +571,6 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
     deepest_room_distance = max((final_distances.get(room.center, 0) for room in rooms),
                                 default=1) or 1
     exit_depth_ratio = final_distances.get(exit_stand, 0) / deepest_room_distance
-    # Before decoration by design: decoration reinforces a landmark rather
-    # than inventing one, and the hierarchy must not depend on prop counts.
-    landmark_plans = plan_landmarks(
-        rooms, specs, roles, edges, districts, critical_route)
     layout_signature = _layout_signature(
         plan, specs, realized_shapes, guard_recesses, encounters, edges)
     result = GeneratedMap(number=number, tiles=tiles, things=things, start=start,
@@ -611,7 +619,8 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
                           sky_vista_recesses=sky_vista_recesses,
                           sky_vista_supports=sky_vista_supports,
                           landmarks=landmark_plans,
-                          room_motifs=room_motifs)
+                          room_motifs=room_motifs,
+                          authored_sightlines=authored_sightlines)
     validate_map(result)
     result.critique = _critique(result)
     return result
