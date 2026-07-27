@@ -25,14 +25,38 @@ re-verified by a full run**. Do that first.
 
    Do **not** push `main`, open a PR, or cut a release without being asked.
 
-2. **Expect the `fingerprints` job to be green.** The corpus was re-recorded
-   after the last deliberate output change. If it is red, something after
-   `3f15cc0` changed output unintentionally — investigate, do not re-record.
+2. **Re-record the fingerprint corpus.** It is stale and the gate is correctly
+   red. The door-junction and terminus commits changed output after the last
+   re-record at `3f15cc0`, which was expected and flagged at the time.
+
+   ```sh
+   python3 tools/fingerprint.py --check    # confirm the diff is only these
+   python3 tools/fingerprint.py --record   # then commit on its own
+   ```
+
+   Confirmed locally: combinations differ, e.g. `castle/sparse/{1,5,9,10}`.
+   Re-record in a **standalone commit** so the corpus change is never bundled
+   with a code change. Do not touch the workflow to make it pass.
 
 3. **Confirm the two most recent test fixes hold** (see §4). They pass
    individually; they have not been through a full run together.
 
 4. **Then look at clustering**, the one open quality regression (§5).
+
+### CI status as of the first run
+
+Run `30314651210`, on push of `8658805`. Two jobs failed, both understood:
+
+| job | result | why |
+|---|---|---|
+| Static checks and pure logic | **failed** | `No module named pytest`. `tools/check.py` shells out to pytest for every tier; the runner had none. Fixed by adding a `pip install pytest` step — **committed but not yet verified by a run.** |
+| Byte-identity gate | **failed** | Stale corpus, see item 2. Legitimate. |
+| Full suite | still running | uses `unittest`, stdlib only, so it needs no install |
+| Fuzz and package | still running | stdlib only |
+
+The generator itself is pure stdlib. pytest is needed only because `check.py`
+uses it as its runner — the `tests` job deliberately uses `unittest discover`,
+which is also what `release.yml` has always used, and both collect the same set.
 
 ---
 

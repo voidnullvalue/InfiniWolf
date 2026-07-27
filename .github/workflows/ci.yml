@@ -29,6 +29,12 @@ jobs:
         with:
           python-version: "3.11"
 
+      # `tools/check.py` shells out to pytest for every tier. The generator
+      # itself is pure stdlib, and the `tests` job below runs on `unittest`, so
+      # this is the only place a third-party package is needed.
+      - name: Install the test runner
+        run: python3 -m pip install --quiet pytest
+
       # Names a module uses but never imports. A NameError in a moved function
       # body does not fire until it runs, so the test tiers can pass while
       # generation is broken -- this has caught that exact bug more than once.
