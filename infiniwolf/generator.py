@@ -41,6 +41,7 @@ from .wl6 import (  # noqa: F401
     STATIC_BLOCKING, STATIC_OPEN, LIGHTING_ITEMS, LIGHTING_FAMILY_ITEMS, SPEAR_CONCEPTS,
     VINE_SCREEN_CONCEPTS,
 )
+from .watermark import apply_campaign_watermark
 from .ledger import Ledger
 from .model import (  # noqa: F401
     AestheticPhase, ArrivalDetail, BossArenaDetail, EncounterPlacement, FloorPlan, FloorVariant,
@@ -727,7 +728,6 @@ def generate_campaign(config: CampaignConfig, output: Path,
         raise RuntimeError("campaign rare-motif schedule was violated")
     # Encode metadata-independent provenance only after every gameplay choice
     # is final. Zone-label permutations preserve all acoustic grouping.
-    from .watermark import apply_campaign_watermark
     apply_campaign_watermark(levels, config.seed)
     for level in levels:
         validate_map(level)

@@ -12,6 +12,8 @@ from . import __version__
 from .build_info import COMMIT as BUILD_COMMIT
 from .config import CampaignConfig
 from .wl6 import GRID
+from .watermark import (_parse_wad, floor_target, plane_residue,
+                        plane_residue_secondary, secondary_target)
 
 # MAPINFO presentation tables. These live here rather than in the generator
 # because nothing in generation reads them -- they are consumed only by the
@@ -173,9 +175,6 @@ def validate_package(package_path: Path) -> dict[str, object]:
         # Provenance is part of the installed artifact contract, not merely
         # descriptive manifest data. Recompute it from the map planes before
         # the temporary package is allowed to replace the previous campaign.
-        from .watermark import (floor_target, plane_residue,
-                                plane_residue_secondary, secondary_target,
-                                _parse_wad)
         primary = []
         for number in range(1, 11):
             record = _parse_wad(package.read(f"maps/iw{number:02d}.wad"))
