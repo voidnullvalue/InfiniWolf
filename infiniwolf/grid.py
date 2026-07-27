@@ -115,22 +115,43 @@ def _reachable(tiles: list[int], start: tuple[int, int], locked_open: bool,
                ) -> set[tuple[int, int]]:
     extra_passable = extra_passable or set()
     blocked = blocked or set()
+    # These sets are membership-only in this function. Their iteration order
+    # cannot reach an RNG draw or returned collection, so integer keys are
+    # safe here. `seen` remains tuple-keyed because it is returned to callers.
+    extra_cells = {y * GRID + x for x, y in extra_passable}
+    blocked_cells = {y * GRID + x for x, y in blocked}
     seen = {start}
-    queue = deque([start])
+    grid = GRID
+    start_cell = start[1] * grid + start[0]
+    visited = [False] * (grid * grid)
+    visited[start_cell] = True
+    queue = deque([start_cell])
+    append = queue.append
+    popleft = queue.popleft
+    plane = tiles
+    floor_or_door = _FLOOR_OR_DOOR
+    locked_doors = LOCKED_DOORS
+    neighbours = ((1, 0), (-1, 0), (0, 1), (0, -1))
     while queue:
-        x, y = queue.popleft()
-        for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+        cell = popleft()
+        x, y = cell % grid, cell // grid
+        for dx, dy in neighbours:
             nxt = x + dx, y + dy
-            if nxt in seen or nxt in blocked:
+            nx, ny = nxt
+            if not (0 <= nx < grid and 0 <= ny < grid):
                 continue
-            tile = _at(tiles, *nxt)
-            passable = _is_floor(tile) or tile in (DOOR_EW, DOOR_NS, DOOR_ELEVATOR,
-                                                   DOOR_ELEVATOR_NS)
+            next_cell = ny * grid + nx
+            if visited[next_cell] or next_cell in blocked_cells:
+                continue
+            tile = plane[next_cell]
+            passable = floor_or_door[tile] and tile not in locked_doors
             if ((locked_open and tile in LOCKED_DOORS)
                     or (open_lock_codes is not None and tile in open_lock_codes)):
                 passable = True
-            if passable or nxt in extra_passable:
-                seen.add(nxt); queue.append(nxt)
+            if passable or next_cell in extra_cells:
+                visited[next_cell] = True
+                seen.add(nxt)
+                append(next_cell)
     return seen
 
 

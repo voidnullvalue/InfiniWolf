@@ -920,6 +920,9 @@ def _carve_connection(tiles: list[int], a: Room, b: Room,
     """Carve the shortest rock-backed route between two clean thresholds."""
     avoid = set() if avoid is None else avoid
     protected = set() if protected is None else protected
+    # This set is only queried by the router. It is never iterated there, so
+    # changing its representation cannot affect candidate or RNG order.
+    protected_cells = {y * GRID + x for x, y in protected}
 
     def portals(room: Room) -> list[tuple[tuple[int, int], tuple[int, int],
                                            tuple[int, int], tuple[int, int]]]:
@@ -981,20 +984,37 @@ def _carve_connection(tiles: list[int], a: Room, b: Room,
     ))
     directions = [(1, 0), (-1, 0), (0, 1), (0, -1)]
     rng.shuffle(directions)
+
     def find_route(start: tuple[int, int], goal: tuple[int, int],
                    start_heading: tuple[int, int],
                    goal_heading: tuple[int, int]) -> list[tuple[int, int]] | None:
-        start_state = start, start_heading
-        previous: dict[tuple[tuple[int, int], tuple[int, int]],
-                       tuple[tuple[int, int], tuple[int, int]] | None] = {start_state: None}
-        dist = {start_state: 0}
+        # The heap retains tuple cells/headings exactly as before, including
+        # its sequence tie-break; lists are only the private per-cell state.
+        state_count = GRID * GRID * 4
+        previous = [-1] * state_count
+        dist = [math.inf] * state_count
+        start_key = start[1] * GRID + start[0]
+        start_heading_index = (0 if start_heading[0] == 1 else
+                               1 if start_heading[0] == -1 else
+                               2 if start_heading[1] == 1 else 3)
+        start_state = start_key * 4 + start_heading_index
+        dist[start_state] = 0
         queue = [(0, 0, start, start_heading)]
         sequence = 1
-        best_goal_state = None
+        best_goal_state = -1
         best_goal_cost = math.inf
+        grid = GRID
+        walls = tiles
+        floor_or_door = _FLOOR_OR_DOOR
+        push = heapq.heappush
+        pop = heapq.heappop
         while queue:
-            cost, _, (x, y), heading = heapq.heappop(queue)
-            state = (x, y), heading
+            cost, _, (x, y), heading = pop(queue)
+            cell_key = y * grid + x
+            heading_index = (0 if heading[0] == 1 else
+                             1 if heading[0] == -1 else
+                             2 if heading[1] == 1 else 3)
+            state = cell_key * 4 + heading_index
             if cost != dist[state]:
                 continue
             if cost >= best_goal_cost:
@@ -1009,11 +1029,11 @@ def _carve_connection(tiles: list[int], a: Room, b: Room,
                 continue
             for dx, dy in directions:
                 nx, ny = x + dx, y + dy
-                if not (2 <= nx < GRID - 2 and 2 <= ny < GRID - 2):
+                if not (2 <= nx < grid - 2 and 2 <= ny < grid - 2):
                     continue
                 nxt = nx, ny
-                base = ny * GRID + nx
-                if nxt in protected or tiles[base] != WALL:
+                base = ny * grid + nx
+                if base in protected_cells or walls[base] != WALL:
                     continue
                 # A one-rock buffer stops unrelated routes and rooms from
                 # silently fusing before their planned door can separate them.
@@ -1022,25 +1042,29 @@ def _carve_connection(tiles: list[int], a: Room, b: Room,
                 # in bounds and _at's guard could never fire. _FLOOR_OR_DOOR
                 # folds the two predicates this used to call twice per direction
                 # into one table lookup.
-                if nxt != goal and (_FLOOR_OR_DOOR[tiles[base - GRID]]
-                                    or _FLOOR_OR_DOOR[tiles[base + GRID]]
-                                    or _FLOOR_OR_DOOR[tiles[base - 1]]
-                                    or _FLOOR_OR_DOOR[tiles[base + 1]]):
+                if nxt != goal and (floor_or_door[walls[base - grid]]
+                                    or floor_or_door[walls[base + grid]]
+                                    or floor_or_door[walls[base - 1]]
+                                    or floor_or_door[walls[base + 1]]):
                     continue
-                next_state = nxt, (dx, dy)
+                next_heading_index = (0 if dx == 1 else 1 if dx == -1 else
+                                      2 if dy == 1 else 3)
+                next_state = base * 4 + next_heading_index
                 next_cost = cost + 1 + (turn_penalty if (dx, dy) != heading else 0)
-                if next_cost >= dist.get(next_state, math.inf):
+                if next_cost >= dist[next_state]:
                     continue
                 dist[next_state] = next_cost
                 previous[next_state] = state
-                heapq.heappush(queue, (next_cost, sequence, nxt, (dx, dy)))
+                push(queue, (next_cost, sequence, nxt, (dx, dy)))
                 sequence += 1
-        if best_goal_state is None:
+        if best_goal_state == -1:
             return None
         state = best_goal_state
         route = []
-        while state is not None:
-            route.append(state[0]); state = previous[state]
+        while state != -1:
+            cell_key = state // 4
+            route.append((cell_key % grid, cell_key // grid))
+            state = previous[state]
         route.reverse()
         return route
 
