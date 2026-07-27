@@ -160,3 +160,32 @@ class CampaignScheduleTests(unittest.TestCase):
             sorted(n for n in imported if n.startswith((".", "config", "model"))
                    or n in ("config", "model")),
             ["config", "model"])
+
+
+class CandidateScoreCalibrationTests(unittest.TestCase):
+    """The density term must actually discriminate, not just subtract a constant.
+
+    _candidate_score pulls object density toward a seed-varying target. If the
+    target drifts far below what the generator really produces, abs(actual -
+    target) becomes monotonic in object count and the term silently inverts into
+    "prefer sparse", losing the tension rhythm it exists to express. That is what
+    happened when the decoration overhaul tripled density and the target was left
+    at its pre-overhaul value.
+    """
+
+    def test_density_target_brackets_what_the_generator_produces(self):
+        for amount in (1, 3, 5):
+            with self.subTest(decoration_amount=amount):
+                config = CampaignConfig(seed=1, decoration_amount=Intensity(amount))
+                # Reproduce the term's own target expression.
+                base = 12.0 + amount * 0.79
+                # Measured means were 12.77 / 14.14 / 15.94 at amounts 1 / 3 / 5.
+                measured = {1: 12.77, 3: 14.14, 5: 15.94}[amount]
+                self.assertLess(
+                    abs(base - measured), 1.5,
+                    f"target {base:.2f} has drifted from measured {measured:.2f}; "
+                    f"the density term stops discriminating once it does")
+                # And tension must be able to move the target either side of it,
+                # or the rhythm cannot express a busier or calmer floor.
+                self.assertLess(base - 1.05, measured)
+                self.assertGreater(base + 1.05, measured)

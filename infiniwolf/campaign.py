@@ -440,7 +440,17 @@ def _candidate_score(level: GeneratedMap, previous: list[GeneratedMap],
     target_actors = 0.45 + int(config.guard_density) * 0.20 + tension * 0.18
     score -= abs(actor_density - target_actors) * 1.8
     object_density = sum(bool(thing) for thing in level.things) / max(1, len(level.rooms))
-    target_objects = 3.0 + int(config.decoration_amount) * 0.55 - tension * 0.35
+    # Recalibrated against measurement. The old target (3.0 + amount * 0.55, so
+    # 3.6-5.8 objects per room) predated the density overhaul, which brought
+    # floors to a measured 12.8/14.1/15.9 at decoration_amount 1/3/5. Because the
+    # actual value always exceeded the target, the penalty had become monotonically
+    # decreasing in object count: it simply preferred sparser candidates and the
+    # tension modulation that makes some floors deliberately busier was dead.
+    # Slope 0.79 per setting step and intercept 12.0 are fitted to those
+    # measurements; the tension amplitude keeps its original share of the target
+    # rather than its absolute size.
+    target_objects = (12.0 + int(config.decoration_amount) * 0.79
+                      - tension * 1.05)
     score -= abs(object_density - target_objects) * 0.20
     center = sum(room.center[0] for room in level.rooms) / max(1, len(level.rooms))
     handedness = -1 if config.aardwolf_seed(level.number) & 1 else 1
