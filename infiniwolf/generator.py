@@ -97,8 +97,8 @@ from .campaign import (  # noqa: F401
     _rare_motif_schedule, _set_distance, _variant_sequence,
 )
 from .generator_artifacts import (  # noqa: F401
-    _wad_bytes, _mapinfo, _display_name, _reproducibility_text,
-    read_manifest, validate_package,
+    _manifest, _wad_bytes, _mapinfo, _display_name,
+    _reproducibility_text, read_manifest, validate_package,
 )
 from .decorations import (  # noqa: F401
     SKY_VISTA_COURTYARD_CHANCE, SKY_VISTA_INTERIOR_CHANCE, _DECOR_BLOCKING, _DECOR_OPEN,
@@ -916,146 +916,10 @@ def generate_campaign(config: CampaignConfig, output: Path,
     apply_campaign_watermark(levels, config.seed)
     for level in levels:
         validate_map(level)
-    manifest = {
-        "generator": "infiniwolf", "version": __version__,
-        "commit": BUILD_COMMIT or "unknown", "seed": config.seed,
-        "seed_source": "LittleEntropyMachine",
-        "watermark": {"scheme": "zone-item-geometry-v2",
-                      "primary_modulus": 43, "secondary_modulus": 17,
-                      "per_map": True, "campaign_residue": 42},
-        "settings": json.loads(config.to_json()), "secret_from": secret_from,
-        "vine_schedule": {"floor": vine_floor, "requested_runs": vine_budget,
-                          "realized_runs": realized_vine_runs},
-        "guard_gallery_schedule": {"floor": gallery_floor,
-                                   "realized": bool(realized_gallery_floors)},
-        "rare_motif_schedule": {"floor": rare_motif_floor,
-                                "realized_floor": (realized_rare[0]
-                                                   if realized_rare else 0)},
-        "sky_vista_schedule": {
-            "eligible_parity": vista_parity,
-            "realized_floors": [level.number for level in levels
-                                if level.sky_vistas]},
-        "lock_schedule": [plan.colors for plan in _lock_schedule(config)],
-        "floors": [{"number": level.number,
-                    "name": _display_name(level.number, level.variant),
-                    "seed": level.seed,
-                    "secrets": len(level.secret_rewards),
-                    "locked_doors": level.locked_doors,
-                    "key_order": level.key_order,
-                    "critical_route_rooms": len(level.critical_route),
-                    "exit_depth_ratio": round(level.exit_depth_ratio, 4),
-                    "exit_stand": level.exit_stand,
-                    "boss": level.boss,
-                    "special_family": level.special_family,
-                    "secret_source": level.secret_source,
-                    "boss_arena_room": level.boss_arena_room,
-                    "preboss_room": level.preboss_room,
-                    "premium_room": level.premium_room,
-                    "expedition_rooms": level.expedition_rooms,
-                    "arrival": ({"kind": level.arrival.kind,
-                                  "portal": level.arrival.portal,
-                                  "player": level.arrival.player,
-                                  "facing": level.arrival.facing,
-                                  "car_cells": level.arrival.car_cells,
-                                  "item": level.arrival.item}
-                                 if level.arrival else None),
-                    "guard_recesses": [
-                        {"room": recess.room_index, "cells": recess.cells,
-                         "actor_cell": recess.actor_cell}
-                        for recess in level.guard_recesses],
-                    "guard_galleries": [
-                        {"room": gallery.room_index, "screen": gallery.screen,
-                         "actors": gallery.actor_cells,
-                         "rear_cells": gallery.rear_cells,
-                         "treatment": gallery.treatment}
-                        for gallery in level.guard_galleries],
-                    "encounters": [
-                        {"template": encounter.template,
-                         "room": encounter.room_index,
-                         "actors": [item for _, _, item in encounter.cells],
-                         "hidden_cells": encounter.hidden_cells,
-                         "family": encounter.family,
-                         "patrol_kind": encounter.patrol_kind,
-                         "patrol_path": encounter.patrol_path}
-                        for encounter in level.encounters],
-                    "patrol_target": level.patrol_target,
-                    "enemy_tiers": level.enemy_tiers,
-                    "variant": level.variant,
-                    "circulation_skeleton": level.circulation_skeleton,
-                    "progression_grammar": level.progression_grammar,
-                    "district_circulation": level.district_circulation,
-                    "layout_signature": level.layout_signature,
-                    "primary_hall_geometry": level.primary_hall_geometry,
-                    "barrel_families": level.barrel_families,
-                    "sky_vistas": level.sky_vistas,
-                    "sky_vista_recesses": level.sky_vista_recesses,
-                    "sky_vista_supports": level.sky_vista_supports,
-                    "door_axis_parity": [
-                        {"room": index, "width": room.w,
-                         "height": room.h,
-                         "odd_width": bool(room.w % 2),
-                         "odd_height": bool(room.h % 2)}
-                        for index, room in enumerate(level.rooms)],
-                    "motif_realizations": level.motif_realizations,
-                    "shape_target": level.shape_target,
-                    "rare_motif": ({"kind": level.rare_motif.kind,
-                                    "room": level.rare_motif.room_index,
-                                    "realization": level.rare_motif.realization,
-                                    "endpoints": level.rare_motif.endpoints}
-                                   if level.rare_motif else None),
-                    "boss_arena": ({"family": level.boss_arena.family,
-                                    "profile": level.boss_arena.profile,
-                                    "geometry": level.boss_arena.geometry,
-                                    "decorations": level.boss_arena.decorations}
-                                   if level.boss_arena else None),
-                    "room_concepts": level.room_concepts,
-                    "room_shapes": level.room_shapes,
-                    "lighting_families": level.lighting_families,
-                    "vine_screens": [
-                        {"kind": screen.kind, "room": screen.room_index,
-                         "cells": screen.cells,
-                         "ambush_anchor": screen.ambush_anchor}
-                        for screen in level.vine_screens],
-                    "motifs": level.motifs,
-                    "secret_variants": level.secret_variants,
-                    "secret_details": [
-                        {"shape": detail.shape,
-                         "reward_count": detail.reward_count,
-                         "host_room": detail.host_room,
-                         "depth_ratio": round(detail.depth_ratio, 4),
-                         "pushwall": detail.pushwall,
-                         "secret_exit": detail.secret_exit,
-                         "hint_treatment": detail.hint_treatment,
-                         "return_floor": detail.return_floor,
-                         "push_direction": detail.push_direction}
-                        for detail in level.secret_details],
-                    "key_objectives": [
-                        {"color": objective.color, "cell": objective.cell,
-                         "host_room": objective.host_room,
-                         "stage": objective.stage, "detour": objective.detour,
-                         "treatment": objective.treatment}
-                        for objective in level.key_objectives],
-                    "pickup_compositions": [
-                        {"reason": placement.reason,
-                         "template": placement.template,
-                         "room": placement.room_index,
-                         "items": [item for _, _, item in placement.cells]}
-                        for placement in level.pickup_placements],
-                    "critique": level.critique,
-                    "validation": {
-                        "passed": True,
-                        "checks": ["bounds", "connectivity", "door_axes", "elevator",
-                                   "exit_depth", "critical_route",
-                                   "dual_key_progression", "key_room_separation",
-                                   "pushwall_clearance", "rewarded_secrets",
-                                   "secret_hints", "secret_route", "boss",
-                                   "circulation_hierarchy", "arrival_elevator",
-                                   "hallway_first_scaffold", "sky_vista_depth",
-                                   "room_barrel_family", "wall_backed_blue_urn",
-                                   "encounter_provenance", "patrol_routes",
-                                   "wall_backed_flags", "pickup_provenance"],
-                    }} for level in levels],
-    }
+    manifest = _manifest(
+        config, levels, secret_from, vine_floor, vine_budget, realized_vine_runs,
+        gallery_floor, realized_gallery_floors, rare_motif_floor, realized_rare,
+        vista_parity, _lock_schedule(config))
     output = output.resolve()
     output.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.NamedTemporaryFile(dir=output.parent, suffix=".tmp", delete=False) as temporary:
