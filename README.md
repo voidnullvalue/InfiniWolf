@@ -146,6 +146,7 @@ Two cheaper checks matter more when moving code between modules:
 ```sh
 python3 tools/unresolved_names.py    # names a module uses but never imports
 python3 tools/fingerprint.py --check # generated maps still byte-identical
+python3 tools/reservation_sites.py   # who writes to the shared cell reservations
 ```
 
 A name a moved function needs but did not bring along raises `NameError` only
