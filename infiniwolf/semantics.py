@@ -140,9 +140,14 @@ def _room_identities(rooms: list[Room], specs: list[RoomSpec], districts: list[i
             palette = vault_palettes[special_family]
             ordered = palette[(index + district) % len(palette):] + palette[:
                 (index + district) % len(palette)]
+            decided = [concepts[neighbor] for neighbor in neighbors[index]
+                       if neighbor < len(concepts)]
+            # Repel duplicates first, then attract a functional partner, then
+            # balance counts. Ordering matters: two adjacent identical rooms read
+            # worse than a missed pairing, so repulsion stays dominant.
             concept = min(ordered, key=lambda candidate: (
-                sum(concepts[neighbor] == candidate
-                    for neighbor in neighbors[index] if neighbor < len(concepts)),
+                decided.count(candidate),
+                -_affinity_with(candidate, decided),
                 counts[candidate], ordered.index(candidate)))
         elif theme == "grand" and spec.role == "hub":
             concept = "courtyard"
@@ -150,9 +155,14 @@ def _room_identities(rooms: list[Room], specs: list[RoomSpec], districts: list[i
             palette = palettes.get(theme, (theme,))
             offset = (index + district) % len(palette)
             ordered = palette[offset:] + palette[:offset]
+            decided = [concepts[neighbor] for neighbor in neighbors[index]
+                       if neighbor < len(concepts)]
+            # Repel duplicates first, then attract a functional partner, then
+            # balance counts. Ordering matters: two adjacent identical rooms read
+            # worse than a missed pairing, so repulsion stays dominant.
             concept = min(ordered, key=lambda candidate: (
-                sum(concepts[neighbor] == candidate
-                    for neighbor in neighbors[index] if neighbor < len(concepts)),
+                decided.count(candidate),
+                -_affinity_with(candidate, decided),
                 counts[candidate], ordered.index(candidate)))
         concepts.append(concept)
         counts[concept] += 1
@@ -468,6 +478,46 @@ def _apply_wall_theme(tiles: list[int], things: list[int], rooms: list[Room],
                                 _set(things, *rng.choice(interior),
                                      rng.choice((42, 64, 65, 66)))
     return landmark_cells
+
+
+# Functionally related room concepts. A garrison puts its mess beside the barracks
+# and its armoury near the training floor; a catacomb keeps ossuary and burial
+# chamber together. Placing these next to each other is one of the strongest
+# signals that a floor was laid out by someone rather than shuffled, because it
+# implies the building had a purpose before it had rooms.
+#
+# One table, two consumers: concept assignment below uses it to *attract* partners,
+# and campaign.py's candidate scoring uses it to reward floors that realized them.
+# It used to exist twice, and only the scoring copy could influence anything -- a
+# floor was rewarded for adjacencies it had no mechanism to seek.
+CONCEPT_AFFINITIES: frozenset[frozenset[str]] = frozenset({
+    frozenset(("barracks", "mess-kitchen")),
+    frozenset(("barracks", "armory")),
+    frozenset(("armory", "training-room")),
+    frozenset(("armory", "ready-room")),
+    frozenset(("storage", "ready-room")),
+    frozenset(("storage", "workshop")),
+    frozenset(("storage", "mess-kitchen")),
+    frozenset(("supply-cache", "checkpoint")),
+    frozenset(("supply-cache", "storage")),
+    frozenset(("officers-quarters", "war-room")),
+    frozenset(("war-room", "checkpoint")),
+    frozenset(("gallery", "trophy-hall")),
+    frozenset(("crypt", "ossuary")),
+    frozenset(("crypt", "burial-chamber")),
+    frozenset(("ossuary", "burial-chamber")),
+    frozenset(("holding-cell", "interrogation-room")),
+    frozenset(("jail", "interrogation-room")),
+    frozenset(("jail", "holding-cell")),
+    frozenset(("lounge", "dining-hall")),
+    frozenset(("dining-hall", "mess-kitchen")),
+})
+
+
+def _affinity_with(candidate: str, neighbour_concepts) -> int:
+    """How many already-decided neighbours this concept belongs beside."""
+    return sum(frozenset((candidate, other)) in CONCEPT_AFFINITIES
+               for other in neighbour_concepts)
 
 
 # How much each property contributes to a room's claim on being memorable. Ordered

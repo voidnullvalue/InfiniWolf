@@ -25,6 +25,7 @@ from .config import CampaignConfig
 from .wl6 import BOSSES, KEY_DROP_BOSSES
 from .model import FloorVariant, GatePlan, GeneratedMap
 from .quality import weighted_distance
+from .semantics import CONCEPT_AFFINITIES
 
 
 # A floor's "base variant": one named bundle of the parameters that used to
@@ -459,19 +460,11 @@ def _candidate_score(level: GeneratedMap, previous: list[GeneratedMap],
     score += weighted_distance(level.room_concepts[:-1],
                                level.room_concepts[1:])
     score += 0.35 * len(set(level.room_concepts))
-    pairs = {
-        frozenset(("storage", "ready-room")),
-        frozenset(("supply-cache", "checkpoint")),
-        frozenset(("armory", "training-room")),
-        frozenset(("barracks", "mess-kitchen")),
-        frozenset(("officers-quarters", "war-room")),
-        frozenset(("gallery", "trophy-hall")),
-        frozenset(("crypt", "ossuary")),
-        frozenset(("holding-cell", "interrogation-room")),
-    }
+    # The same table planning used to seek these adjacencies, so the score rewards
+    # a floor for something it actually tried to do.
     score += 0.6 * sum(
         frozenset((level.room_concepts[first], level.room_concepts[second]))
-        in pairs for first, second in level.edges)
+        in CONCEPT_AFFINITIES for first, second in level.edges)
     rhythm = random.Random(config.aardwolf_seed(10) ^ 0xA4D0F)
     phase = rhythm.random() * math.tau
     tension = math.sin(phase + level.number * math.tau / 4.5)
