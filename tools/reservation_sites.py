@@ -32,6 +32,24 @@ MUTATORS = {"add", "update", "discard", "remove", "difference_update",
 RELEASING = {"discard", "remove", "difference_update", "clear"}
 
 
+def shared_collections(tree: ast.AST) -> set[str]:
+    """Names that arrive as parameters, i.e. are shared across module boundaries.
+
+    A collection built and consumed inside one function has exactly one owner by
+    construction and needs no ledger -- `keep_clear` never leaves the decoration
+    pass. Only the sets handed between modules can suffer the ownership problem,
+    and counting the locals alongside them overstates it.
+    """
+    shared = set()
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            args = node.args
+            for arg in (*args.posonlyargs, *args.args, *args.kwonlyargs):
+                if arg.arg in NAMES:
+                    shared.add(arg.arg)
+    return shared
+
+
 def enclosing_functions(tree: ast.AST) -> dict[int, str]:
     """Map every line number to the innermost function that contains it."""
     owner: dict[int, str] = {}
@@ -62,6 +80,7 @@ def collect():
         lines = source.splitlines()
         tree = ast.parse(source)
         owners = enclosing_functions(tree)
+        shared = shared_collections(tree)
         for node in ast.walk(tree):
             if not (isinstance(node, ast.Call)
                     and isinstance(node.func, ast.Attribute)
@@ -77,6 +96,7 @@ def collect():
                 "function": owners.get(node.lineno, "<module>"),
                 "releases": node.func.attr in RELEASING,
                 "reason": reason_for(lines, node.lineno),
+                "shared": node.func.value.id in shared,
             })
     return sites
 
@@ -93,8 +113,13 @@ def main(argv=None) -> int:
     for site in sites:
         by_module[site["module"]][site["collection"]] += 1
 
-    print(f"{len(sites)} reservation writes across {len(by_module)} modules "
-          f"and {len(by_collection)} shared collections\n")
+    shared_sites = [s for s in sites if s["shared"]]
+    local_sites = [s for s in sites if not s["shared"]]
+    print(f"{len(sites)} reservation writes across {len(by_module)} modules\n"
+          f"  {len(shared_sites)} to collections passed between modules "
+          f"(these need provenance)\n"
+          f"  {len(local_sites)} to function-local working sets "
+          f"(single owner by construction)\n")
     print(f"{'collection':<18}{'writes':>7}{'releases':>10}  modules")
     for name, count in by_collection.most_common():
         releases = sum(1 for s in sites
@@ -102,11 +127,12 @@ def main(argv=None) -> int:
         mods = sorted({s["module"] for s in sites if s["collection"] == name})
         print(f"{name:<18}{count:>7}{releases:>10}  {', '.join(mods)}")
 
-    unexplained = [s for s in sites if not s["reason"]]
-    print(f"\n{len(unexplained)} of {len(sites)} writes carry no explanatory "
-          f"comment above them")
-    print("A ledger would make the reason a required field rather than a "
-          "convention.")
+    unexplained = [s for s in shared_sites if not s["reason"]]
+    print(f"\n{len(unexplained)} of {len(shared_sites)} cross-module writes carry "
+          f"no explanatory comment")
+    if shared_sites:
+        print("Cross-module writes should go through ledger.reserve(), which makes "
+              "owner and reason required rather than conventional.")
 
     if args.detail:
         print()

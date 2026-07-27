@@ -720,8 +720,11 @@ def _carve_secret_pocket(tiles: list[int], things: list[int], px: int, py: int,
         _set(tiles, wx + direction * 2, wy, SECRET_EXIT_ZONE)
     _set(things, *entry, PUSHWALL)
     if protected is not None:
-        protected.update(footprint)
-        protected.update(reward_cells)
+        # The whole pocket, not just its reward. Downstream records secret loot as
+        # an authored composition, and a pocket can straddle another room's
+        # rectangular bookkeeping.
+        ledger_reserve(protected, footprint, "progression", "secret-pocket-shell")
+        ledger_reserve(protected, reward_cells, "progression", "secret-reward")
     return reward_cells[0]
 
 
@@ -955,7 +958,10 @@ def install_secrets(canvas: FloorCanvas, config: CampaignConfig, number: int,
                     fallback_depth = min(1.0, approach_distance / max_room_distance)
                     break
         if reward:
-            rewards.append(reward); secret_variants.append(variant); reserved.add(reward)
+            rewards.append(reward)
+            secret_variants.append(variant)
+            ledger_reserve(reserved, [reward], "progression",
+                           "secret-reward-fallback")
             if fallback_push is None:
                 raise ValueError("fallback secret lost its pushwall metadata")
             secret_details.append(SecretDetail(
