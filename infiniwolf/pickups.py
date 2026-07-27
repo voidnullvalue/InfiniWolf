@@ -31,6 +31,7 @@ from .placement import _room_anchors
 from .wl6 import (AMMO, AMMO_COST, AMMO_SUPPLY_EXEMPT_FLOORS, AMMO_SUPPLY_SCALE,
                   CHAINGUN, DOG_FOOD, FAMILY_BY_CODE, FIRST_AID, FOOD, GRID,
                   MACHINE_GUN, ONE_UP, TREASURE, DOORS)
+from .ledger import reserve as ledger_reserve
 
 
 AUTHORED_PICKUP_TEMPLATES = frozenset({
@@ -177,7 +178,8 @@ class _PlacementGrammar:
             pieces = tuple((x, y, item) for (x, y), item in zip(cells, items))
             for x, y, item in pieces:
                 _set(self.things, x, y, item)
-                self.reserved.add((x, y))
+                ledger_reserve(self.reserved, [(x, y)], "pickups",
+                               "authored-composition")
             placement = SpritePlacement(reason, template, room_index, pieces)
             self.placements.append(placement)
             self.last_template_by_district[identity.district] = template

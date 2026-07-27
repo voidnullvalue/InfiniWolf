@@ -41,6 +41,7 @@ from .wl6 import (  # noqa: F401
     STATIC_BLOCKING, STATIC_OPEN, LIGHTING_ITEMS, LIGHTING_FAMILY_ITEMS, SPEAR_CONCEPTS,
     VINE_SCREEN_CONCEPTS,
 )
+from .ledger import Ledger
 from .model import (  # noqa: F401
     ArrivalDetail, BossArenaDetail, EncounterPlacement, FloorPlan, FloorVariant,
     GatePlan, GeneratedMap, GuardGallery, GuardRecess, KeyObjective, PatrolRoute,
@@ -289,9 +290,17 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
         minimum_route_rooms, required_post_anchor, preplaced_exit_index,
         preplaced_exit_route, planned_exit_index)
     notch_cells = {cell for cells in notch_anchors.values() for cell in cells}
-    reserved = ({start, exit_stand, *notch_cells}
-                | (set(arrival.clearance) | set(arrival.car_cells)
-                   if arrival else set()))
+    # A Ledger is a set subclass, so every existing .add/.update/in/|/- keeps
+    # working and adopting it cannot change generated output. Attribution is added
+    # pass by pass; anything still calling .add() records as unattributed, and
+    # ledger.report() shows how far that migration has reached.
+    reserved = Ledger()
+    reserved.reserve([start], "progression", "player-start")
+    reserved.reserve([exit_stand], "progression", "exit-elevator-stand")
+    reserved.reserve(notch_cells, "geometry", "shape-anchor", hard=False)
+    if arrival:
+        reserved.reserve(arrival.clearance, "progression", "arrival-clearance")
+        reserved.reserve(arrival.car_cells, "progression", "arrival-car")
     # One record for the working state every remaining phase touches. Built here
     # rather than at the top of generate_map because `reserved` only becomes
     # meaningful once the elevators and shape anchors have claimed their cells.
@@ -306,14 +315,15 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
     secret_details = list(installation.details)
     shortcut_pushwalls = list(installation.shortcut_pushwalls)
     secret_protected = installation.protected
-    reserved.update(secret_protected)
+    reserved.reserve(secret_protected, "progression", "secret-footprint")
     rare_room_index = rare_profile[0] if rare_profile is not None else -1
     known_push_directions = {detail.pushwall: detail.push_direction
                              for detail in secret_details}
-    reserved.update((index % GRID
-                     - known_push_directions.get((index % GRID, index // GRID), 1),
-                     index // GRID)
-                    for index, thing in enumerate(things) if thing == PUSHWALL)
+    reserved.reserve(((index % GRID
+                       - known_push_directions.get((index % GRID, index // GRID), 1),
+                       index // GRID)
+                      for index, thing in enumerate(things) if thing == PUSHWALL),
+                     "progression", "pushwall-travel")
     if is_boss and scheduled_gate.colors[:1] == ("silver",):
         anchor_route_end = critical_route.index(anchor_index) + 1
         door_gate_plan = GatePlan(("silver",))
@@ -334,11 +344,15 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
             (x, y) for y in range(rare_room.y, rare_room.y + rare_room.h)
             for x in range(rare_room.x, rare_room.x + rare_room.w)
             if _is_floor(_at(tiles, x, y))}
-        reserved.update(rare_key_reservations)
+        # Soft and briefly held: this keeps the rare motif's room out of the
+        # door planner's reach, and is released immediately afterwards.
+        reserved.reserve(rare_key_reservations, "special_floors",
+                         "rare-motif-key-exclusion", hard=False)
     locks, key_order, key_objectives = _place_doors(
         tiles, things, rooms, edges, paths, rng, start, door_target, roles,
         reserved, door_gate_plan, door_route)
-    reserved.difference_update(rare_key_reservations)
+    reserved.release(rare_key_reservations, "special_floors",
+                     "rare-motif-exclusion-expired")
     for objective in key_objectives:
         room = rooms[objective.host_room]
         inward = sorted(
@@ -351,7 +365,8 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
             key=lambda cell: (abs(cell[0] - room.center[0])
                               + abs(cell[1] - room.center[1]), cell))
         if inward:
-            reserved.add(inward[0])
+            reserved.reserve(inward[:1], "progression", "key-approach",
+                             room_index=objective.host_room)
     _break_long_sightlines(tiles, things, rooms, reserved, rng, start)
     _split_oversized_zones(tiles, rooms, rng, reserved)
     if _remove_redundant_plain_doors(tiles):
@@ -454,7 +469,7 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
             if (_is_floor(_at(tiles, *cell)) and _at(things, *cell) == 0
                     and cell not in reserved):
                 _set(things, *cell, item)
-                reserved.add(cell)
+                reserved.reserve([cell], "special_floors", "rare-motif-accent")
         rare_motif_detail = RareMotifDetail(
             "swastika", room_index, realization, endpoints)
     gallery_eligible = frozenset(
@@ -496,11 +511,13 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
         premium_index=premium_index,
         expedition_candidates=tuple(optional_rooms),
         expedition_rooms_out=expedition_rooms)
-    reserved.difference_update(notch_cells)
+    # Shape anchors were reserved soft precisely so decoration can have them
+    # back once population and pickups have finished with the room.
+    reserved.release(notch_cells, "geometry", "shape-anchor-released")
     # A notch anchor can also be the open tile directly in front of an actor.
     # Releasing the architectural reservation must not erase that later,
     # independent reason to keep the cell clear.
-    reserved.update(actor_clearance)
+    reserved.reserve(actor_clearance, "encounters", "actor-clearance")
     lighting_families, vine_screens = _place_decorations(
         rooms, tiles, things, reserved, start, rng, roles=roles, specs=specs,
         jail_rooms=jail_rooms,

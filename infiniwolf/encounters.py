@@ -29,6 +29,7 @@ from .wl6 import (ACTOR_BUDGET_SCALE, ACTOR_SPACING, DOG_FOOD, DOOR_EW, DOOR_NS,
                   DOORS, ENEMY_FAMILIES, FAKE_HITLER, FLOOR, GHOSTS, GRID,
                   GUARDS, NOVELTY_SPAWN_CHANCE, PATROL_POINT_CODES,
                   PATROLS_BY_FAMILY, WALL)
+from .ledger import reserve as ledger_reserve
 
 
 def _carve_guard_recesses(tiles: list[int], things: list[int], rooms: list[Room],
@@ -94,7 +95,8 @@ def _carve_guard_recesses(tiles: list[int], things: list[int], rooms: list[Room]
             for cell in cells:
                 _set(tiles, *cell, FLOOR)
             actor_cell = rng.choice(cells)
-            reserved.update(cells)
+            ledger_reserve(reserved, cells, "encounters",
+                           "guard-recess")
             return (GuardRecess(room_index, cells, actor_cell),)
     return ()
 
@@ -193,8 +195,10 @@ def _place_guard_gallery(tiles: list[int], things: list[int], rooms: list[Room],
                 continue
             for cell in screen:
                 _set(things, *cell, 30)  # one matched white-pillar screen
-            reserved.update(screen)
-            reserved.update(rear_cells)
+            ledger_reserve(reserved, screen, "encounters",
+                           "gallery-screen")
+            ledger_reserve(reserved, rear_cells, "encounters",
+                           "gallery-rear-chamber")
             return (GuardGallery(room_index, screen, actors, rear_cells, facing),)
     return ()
 
@@ -345,7 +349,8 @@ def _place_population(config: CampaignConfig, number: int, rooms: list[Room],
         # actor's face.
         dx, dy = facings[facing]
         facing_cell = (x + dx, y + dy)
-        reserved.add(facing_cell)
+        ledger_reserve(reserved, [facing_cell], "encounters",
+                       "stationary-facing")
         if actor_clearance is not None:
             actor_clearance.add(facing_cell)
         return x, y, code
@@ -586,7 +591,8 @@ def _place_population(config: CampaignConfig, number: int, rooms: list[Room],
             planned_patrols.setdefault(ridx, []).append(route)
             for cell, direction in route.turns:
                 _set(things, *cell, PATROL_POINT_CODES[direction])
-            reserved.update(route.cells)
+            ledger_reserve(reserved, route.cells, "encounters",
+                           "patrol-route")
             if sum(len(routes) for routes in planned_patrols.values()) >= patrol_target:
                 break
 
@@ -749,7 +755,8 @@ def _place_population(config: CampaignConfig, number: int, rooms: list[Room],
         if candidates:
             cell = rng.choice(candidates)
             _set(things, *cell, novelty)
-            reserved.add(cell)
+            ledger_reserve(reserved, [cell], "encounters",
+                           "actor-cell")
             if encounter_out is not None:
                 owner = next((index for index, room in enumerate(rooms)
                               if room.x <= cell[0] < room.x + room.w
@@ -775,7 +782,8 @@ def _place_population(config: CampaignConfig, number: int, rooms: list[Room],
             abs(cell[0] - dx) + abs(cell[1] - dy) for dx, dy in pack))
         if candidates:
             _set(things, *candidates[0], DOG_FOOD)
-            reserved.add(candidates[0])
+            ledger_reserve(reserved, [candidates[0]], "encounters",
+                           "dog-food")
             if placements is not None:
                 room_index = rooms.index(room)
                 placements.append(SpritePlacement(

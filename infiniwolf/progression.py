@@ -35,6 +35,7 @@ from .wl6 import (AMMO, CHAINGUN, DECOR_WALLS, DOOR_ELEVATOR, DOOR_ELEVATOR_NS,
                   FIRST_AID, FLOOR, FOOD, GOLD_KEY, GRID, MACHINE_GUN, ONE_UP,
                   PUSHWALL, SECRET_EXIT_ZONE, SECRET_HINT_BY_BASE, SILVER_KEY,
                   TREASURE, WALL, WALL_THEMES, _codes_for_colors)
+from .ledger import reserve as ledger_reserve
 
 
 def _minimum_critical_route_rooms(roles: list[str] | tuple[str, ...]) -> int:
@@ -198,7 +199,8 @@ def _place_doors(tiles: list[int], things: list[int], rooms: list[Room],
         for stage, (color, key) in enumerate(zip(colors, key_spots), 1):
             spot, host_room, detour, treatment = key
             _set(things, *spot, GOLD_KEY if color == "gold" else SILVER_KEY)
-            reserved.add(spot)
+            ledger_reserve(reserved, [spot], "progression",
+                           "key-objective")
             objectives.append(KeyObjective(color, spot, host_room, stage,
                                            detour, treatment))
         return len(trial), colors, tuple(objectives)
@@ -868,7 +870,8 @@ def install_secrets(canvas: FloorCanvas, config: CampaignConfig, number: int,
             realized_variant, 3, room_index_by_room[exit_host], depth_ratio,
             push_cell, True, "symmetric-landmark", number + 1,
             exit_direction))
-        reserved.add(reward)
+        ledger_reserve(reserved, [reward], "progression",
+                       "secret-reward")
         candidates.remove(exit_host)
 
     rng.shuffle(candidates)
@@ -906,7 +909,8 @@ def install_secrets(canvas: FloorCanvas, config: CampaignConfig, number: int,
                 realized_variant, 7 if number == 9 else 3,
                 room_index_by_room[host],
                 room_distances[host] / max_room_distance, push_cell, False))
-            reserved.add(reward)
+            ledger_reserve(reserved, [reward], "progression",
+                           "secret-reward")
             candidates.remove(host)
         else:
             break

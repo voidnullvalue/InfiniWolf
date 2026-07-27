@@ -43,6 +43,7 @@ from .grid import (_FLOOR_OR_DOOR, _at, _floor_components, _inside_room,
 from .model import FloorPlan, PlacedPlan, Room
 from .wl6 import (DOOR_EW, DOOR_GOLD_EW, DOOR_NS, DOORS, FLOOR, GRID, WALL,
                   ZONE_MAX)
+from .ledger import reserve as ledger_reserve
 
 
 def _snap_offsets(parent: Room, rw: int, rh: int, side: tuple[int, int],
@@ -1404,7 +1405,8 @@ def _limit_theme_merge_size(tiles: list[int], rooms: list[Room], rng: random.Ran
         if cell is None:
             break
         _set(tiles, *cell, _door_axis(tiles, *cell))
-        reserved.add(cell)
+        ledger_reserve(reserved, [cell], "geometry",
+                       "sightline-repair-pillar")
         door_zones.add(cell)
         placed += 1
     return placed

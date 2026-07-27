@@ -17,6 +17,7 @@ from collections import Counter, deque
 import random
 
 from .grid import _at, _inside_room, _is_floor, _reachable, _set
+from .ledger import reserve as ledger_reserve
 from .model import Room, RoomIdentity, VineScreen
 from .placement import _room_anchors, _room_traversal_frame, _traversal_pair_candidates
 from .wl6 import (DECOR_WALLS, DOORS, ENEMY_CODES, GRID, LIGHTING_FAMILY_ITEMS,
@@ -190,7 +191,8 @@ def _place_zoned(room: Room,
                 place_open(cell, item)
             else:
                 _set(things, *cell, item)
-                reserved.add(cell)
+                ledger_reserve(reserved, [cell], "decorations",
+                               "zoned-open-accent")
                 free.discard(cell)
 
 # Every concept carries a fixture language, and none of them may resolve to
@@ -530,7 +532,8 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
                     if cell in reserved or _at(things, *cell) != 0:
                         continue
                     _set(things, *cell, fixture)
-                    reserved.add(cell)
+                    ledger_reserve(reserved, [cell], "decorations",
+                                   "ceiling-fixture-lattice")
                     static_headroom -= 1
                     placed += 1
                 # The lattice can be fully occupied (small rooms have only one
@@ -542,7 +545,8 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
                     if cell in reserved or _at(things, *cell) != 0:
                         continue
                     _set(things, *cell, fixture)
-                    reserved.add(cell)
+                    ledger_reserve(reserved, [cell], "decorations",
+                                   "ceiling-fixture-spare")
                     static_headroom -= 1
                     placed += 1
                     break
@@ -758,7 +762,8 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
                 return False
             for c, item in pieces:
                 _set(things, *c, item)
-                reserved.add(c)
+                ledger_reserve(reserved, [c], "decorations",
+                               "blocking-composition")
                 blocked_cells.add(c)
                 room_blocked.append(c)
                 if item == 26:
@@ -786,7 +791,8 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
             if static_headroom <= 0 or _at(things, *cell) != 0:
                 return False
             _set(things, *cell, item)
-            reserved.add(cell)
+            ledger_reserve(reserved, [cell], "decorations",
+                           "open-prop")
             free.discard(cell)
             edge_free.discard(cell)
             static_headroom -= 1
@@ -926,7 +932,8 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
                             # prevents the later tiny-alcove fallback from
                             # scattering an unrelated skeleton/plant between
                             # the architectural supports.
-                            reserved.add(wall_cell)
+                            ledger_reserve(reserved, [wall_cell], "decorations",
+                                           "sky-vista-support")
                         for support in supports:
                             cell = geometry[support][1]
                             _set(things, *cell, 30)
@@ -967,7 +974,8 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
                     continue
                 for cell in cells:
                     _set(things, *cell, 70)
-                    reserved.add(cell)
+                    ledger_reserve(reserved, [cell], "decorations",
+                                   "landmark-frame-clearance")
                     free.discard(cell)
                     edge_free.discard(cell)
                 static_headroom -= len(cells)
@@ -1472,7 +1480,8 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
                 if cell in reserved or _at(things, *cell) != 0 or static_headroom <= 0:
                     continue
                 _set(things, *cell, 37)
-                reserved.add(cell)
+                ledger_reserve(reserved, [cell], "decorations",
+                               "density-fill")
                 free.discard(cell)
                 edge_free.discard(cell)
                 static_headroom -= 1
@@ -1610,7 +1619,8 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
                 if cell in reserved or _at(things, *cell) != 0 or static_headroom <= 0:
                     continue
                 _set(things, *cell, 37)
-                reserved.add(cell)
+                ledger_reserve(reserved, [cell], "decorations",
+                               "flush-to-wall-relocation")
                 free.discard(cell)
                 edge_free.discard(cell)
                 static_headroom -= 1
@@ -1693,7 +1703,8 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
             continue
         for cell in cells:
             _set(things, *cell, 70)
-            reserved.add(cell)
+            ledger_reserve(reserved, [cell], "decorations",
+                           "corridor-rhythm")
         static_headroom -= len(cells)
         vine_screens.append(VineScreen("hallway-run", -1, cells, anchor))
         chosen_path = path_index
@@ -1705,7 +1716,8 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
                 break
             if cell not in reserved and _at(things, *cell) == 0:
                 _set(things, *cell, 37)   # CeilingLight
-                reserved.add(cell)
+                ledger_reserve(reserved, [cell], "decorations",
+                               "vine-screen")
                 static_headroom -= 1
 
     # --- Alcove niches: a dead-end pocket earns one deliberate piece ---
@@ -1744,7 +1756,8 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
                 if len(_reachable(tiles, start, locked_open=True,
                                   blocked=candidate)) == baseline - len(candidate):
                     _set(things, *deep, rng.choice((31, 26, 58)))
-                    reserved.add(deep)
+                    ledger_reserve(reserved, [deep], "decorations",
+                                   "alcove-prop")
                     blocked_cells.add(deep)
                     static_headroom -= 1
                     continue
@@ -1755,7 +1768,8 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
                                for m in mouths
                                for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)))
             _set(things, *deep, 32 if touches_room else 37)
-            reserved.add(deep)
+            ledger_reserve(reserved, [deep], "decorations",
+                           "niche-prop")
             static_headroom -= 1
 
     return tuple(lighting_families), tuple(vine_screens)

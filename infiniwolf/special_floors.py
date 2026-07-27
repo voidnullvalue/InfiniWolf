@@ -23,6 +23,7 @@ import random
 from .grid import _at, _is_floor, _set
 from .model import BossArenaDetail, Room, SpritePlacement
 from .wl6 import AMMO, FIRST_AID, KEY_DROP_BOSSES, WALL
+from .ledger import reserve as ledger_reserve
 
 
 def _prepare_boss_arena(tiles: list[int], things: list[int], room: Room,
@@ -60,7 +61,8 @@ def _prepare_boss_arena(tiles: list[int], things: list[int], room: Room,
             continue
         for cell in pair:
             _set(tiles, *cell, WALL)
-            reserved.add(cell)
+            ledger_reserve(reserved, [cell], "special_floors",
+                           "boss-arena-geometry")
             geometry.append(cell)
 
     decor_specs = {
@@ -89,7 +91,8 @@ def _prepare_boss_arena(tiles: list[int], things: list[int], room: Room,
         if (_is_floor(_at(tiles, x, y)) and _at(things, x, y) == 0
                 and (x, y) not in reserved):
             _set(things, x, y, item)
-            reserved.add((x, y))
+            ledger_reserve(reserved, [(x, y)], "special_floors",
+                           "boss-arena-decoration")
             decorations.append((x, y, item))
     return BossArenaDetail(family, profiles.get(family, "symmetric-arena"),
                            tuple(geometry), tuple(decorations))
@@ -111,7 +114,8 @@ def _place_boss(tiles: list[int], things: list[int], room: Room,
     # loose physical key for other bosses lets the player leave them alive.
     boss = boss or rng.choice(tuple(sorted(KEY_DROP_BOSSES)))
     _set(things, bx, by, boss)
-    reserved.add((bx, by))
+    ledger_reserve(reserved, [(bx, by)], "special_floors",
+                   "boss-stand")
     supply_patterns = {
         "throne-stronghold": ((cx - 3, cy + 5, FIRST_AID),
                                (cx + 3, cy + 5, AMMO)),
@@ -130,7 +134,8 @@ def _place_boss(tiles: list[int], things: list[int], room: Room,
     for x, y, thing in supplies:
         if _at(things, x, y) == 0 and _is_floor(_at(tiles, x, y)):
             _set(things, x, y, thing)
-            reserved.add((x, y))
+            ledger_reserve(reserved, [(x, y)], "special_floors",
+                           "boss-support-supply")
             placed_supplies.append((x, y, thing))
     if placements is not None and placed_supplies:
         placements.append(SpritePlacement(
