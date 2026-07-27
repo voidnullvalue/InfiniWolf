@@ -54,8 +54,7 @@ from .grid import (  # noqa: F401
     _FLOOR_OR_DOOR,
 )
 from .placement import (  # noqa: F401
-    AUTHORED_PICKUP_TEMPLATES, RoomAnchors, TraversalFrame, _PlacementGrammar,
-    _room_anchors, _room_traversal_frame, _traversal_pair_candidates,
+    RoomAnchors, TraversalFrame, _room_anchors, _room_traversal_frame, _traversal_pair_candidates,
 )
 from .generator_validation import (  # noqa: F401
     validate_map, validate_objects, validate_patrols, validate_door_axes,
@@ -69,6 +68,9 @@ from .progression import (  # noqa: F401
 )
 from .planning import _plan_floor  # noqa: F401
 from .quality import _critique  # noqa: F401
+from .pickups import (  # noqa: F401
+    AUTHORED_PICKUP_TEMPLATES, _PlacementGrammar, _place_authored_pickups,
+)
 from .encounters import (  # noqa: F401
     _carve_guard_recesses, _place_guard_gallery, _place_population,
     _populate_guard_galleries, _spread_actor_cells,
@@ -116,225 +118,6 @@ SHAPE_TARGETS = (0.0, 0.15, 0.25, 0.40, 0.48, 0.55)
 
 class GenerationCancelled(RuntimeError):
     """Raised when a caller cancels before atomic package installation."""
-
-
-def _place_authored_pickups(config: CampaignConfig, number: int, rooms: list[Room],
-                            tiles: list[int], things: list[int],
-                            reserved: set[tuple[int, int]], rng: random.Random,
-                            start: tuple[int, int], identities: list[RoomIdentity],
-                            critical_route: list[int], edges: list[tuple[int, int]],
-                            placements: list[SpritePlacement],
-                            preboss_index: int | None = None,
-                            premium_index: int | None = None,
-                            expedition_candidates: tuple[int, ...] = (),
-                            expedition_rooms_out: list[int] | None = None) -> None:
-    """Allocate gameplay needs, then realize each as an authored vignette."""
-    grammar = _PlacementGrammar(rooms, tiles, things, reserved, identities, rng,
-                                placements)
-    distances = _floor_distances(tiles, start)
-    max_distance = max((distances.get(room.center, 0) for room in rooms),
-                       default=1) or 1
-    depths = [distances.get(room.center, 0) / max_distance for room in rooms]
-    degrees = [sum(index in edge for edge in edges) for index in range(len(rooms))]
-    route_position = {room_index: index
-                      for index, room_index in enumerate(critical_route)}
-    vignette_counts: Counter[int] = Counter(
-        placement.room_index for placement in placements if placement.room_index >= 0)
-
-    def room_threat(room_index: int) -> float:
-        room = rooms[room_index]
-        return sum(AMMO_COST.get(FAMILY_BY_CODE.get(
-            _at(things, x, y)), 0.0)
-            for y in range(room.y, room.y + room.h)
-            for x in range(room.x, room.x + room.w))
-
-    threats = [room_threat(index) for index in range(len(rooms))]
-
-    def place_group(items: tuple[int, ...], reason: str,
-                    candidates: list[int], templates: tuple[str, ...]) -> bool:
-        unique = list(dict.fromkeys(candidates))
-        preference = {index: position for position, index in enumerate(unique)}
-        ranked = sorted(unique, key=lambda index: (
-            vignette_counts[index], identities[index].special in ("start", "exit", "boss"),
-            identities[index].tier == "corridor", preference[index]))
-        for room_index in ranked:
-            room_templates = templates
-            if (reason == "exploration-treasure"
-                    and identities[room_index].concept in
-                    ("gallery", "trophy-hall", "courtyard", "war-room")):
-                room_templates += ("center-dais",)
-            placement = grammar.place(room_index, items, reason, room_templates)
-            if placement is not None:
-                vignette_counts[room_index] += 1
-                return True
-        return False
-
-    # The pre-boss room is a visible staging area, not loose supplies left on
-    # arbitrary remaining population cells.
-    if preboss_index is not None:
-        loot = [FIRST_AID, AMMO]
-        if rng.random() < 0.35:
-            loot.append(rng.choice((MACHINE_GUN, CHAINGUN)))
-        if rng.random() < 0.2:
-            loot.append(ONE_UP)
-        if not place_group(tuple(loot), "preboss-stockup", [preboss_index],
-                           ("wall-cache", "corner-cache", "center-dais")):
-            raise ValueError("pre-boss room cannot fit an authored stock-up cache")
-
-    if number == 10 and premium_index is not None:
-        premium_pool = [CHAINGUN, TREASURE[3]]
-        if ONE_UP not in things:
-            premium_pool.append(ONE_UP)
-        premium = rng.choice(premium_pool)
-        if not place_group((premium,), "floor-ten-premium", [premium_index],
-                           ("center-dais", "treasure-display")):
-            raise ValueError("floor 10 premium chamber cannot stage its focal reward")
-        if expedition_rooms_out is not None:
-            expedition_rooms_out.append(placements[-1].room_index)
-
-        # Two to four open expeditions each tell a different supply story.
-        # The family and identities select the rooms; the pickup grammar owns
-        # exact geometry, preserving variation without free scatter.
-        ordered_candidates = list(dict.fromkeys(expedition_candidates))
-        rng.shuffle(ordered_candidates)
-        ordered_candidates.sort(key=lambda index: (
-            vignette_counts[index], identities[index].concept,
-            -depths[index], index))
-        selected: list[int] = []
-        seen_concepts: set[str] = set()
-        for index in ordered_candidates:
-            concept = identities[index].concept
-            if concept in seen_concepts and len(ordered_candidates) > 2:
-                continue
-            selected.append(index)
-            seen_concepts.add(concept)
-            if len(selected) == min(4, max(2, len(ordered_candidates) // 2)):
-                break
-        realized = 0
-        for index in selected:
-            concept = identities[index].concept
-            if concept in ("armory", "training-room", "workshop"):
-                items = (MACHINE_GUN, AMMO)
-                templates = ("wall-cache", "corner-cache")
-            elif concept in ("lounge", "dining-hall", "officers-quarters"):
-                items = (FIRST_AID, FOOD)
-                templates = ("recovery-station", "wall-cache")
-            elif concept in ("supply-cache", "storage"):
-                items = (AMMO, AMMO)
-                templates = ("corner-cache", "wall-cache")
-            else:
-                items = (rng.choice(TREASURE[1:]), rng.choice(TREASURE[2:]))
-                templates = ("treasure-display", "center-dais")
-            if place_group(items, "floor-ten-expedition", [index], templates):
-                realized += 1
-                if expedition_rooms_out is not None:
-                    expedition_rooms_out.append(placements[-1].room_index)
-        if realized < 2:
-            raise ValueError("floor 10 lacks two realized reward expeditions")
-
-    # Guarantee one early recovery beat through the same grammar. Existing
-    # secret health does not count because closed pushwalls are not in this
-    # distance field.
-    within = {cell for cell, distance in distances.items() if distance <= 20}
-    if not any(_at(things, *cell) in (DOG_FOOD, FOOD, FIRST_AID)
-               for cell in within):
-        early = [index for index in critical_route[:max(2, len(critical_route) // 4)]
-                 if identities[index].special not in ("exit", "boss")]
-        early.sort(key=lambda index: (
-            identities[index].concept not in
-            ("mess-kitchen", "officers-quarters", "lounge", "barracks"),
-            route_position[index]))
-        if not place_group((FOOD,), "early-recovery", early,
-                           ("recovery-station", "wall-cache")):
-            raise ValueError("early route cannot fit an authored recovery item")
-
-    # Preserve the expected-bullet-sink economy, but count and distribute
-    # clips only after encounters exist. Necessary ammo stays on the mandatory
-    # route, staged before its most expensive forthcoming rooms.
-    expected_need = sum(AMMO_COST.get(FAMILY_BY_CODE.get(code), 0.0)
-                        for code in things if code)
-    supply_scale = (1.0 if number in AMMO_SUPPLY_EXEMPT_FLOORS
-                    else AMMO_SUPPLY_SCALE)
-    target_ratio = (1.15 + 0.05 * int(config.supplies)) * supply_scale
-    styled_items = [item for placement in placements
-                    for _, _, item in placement.cells]
-    ammo_target = max(0, math.ceil((expected_need * target_ratio
-                                   - (8 + 8 * styled_items.count(AMMO))) / 8))
-    ammo_rooms = list(critical_route[:-1])
-    ammo_rooms.sort(key=lambda index: (
-        identities[index].concept not in
-        ("supply-cache", "armory", "storage", "checkpoint", "guardpost",
-         "workshop", "war-room", "corridor"),
-        -threats[critical_route[min(len(critical_route) - 1,
-                                   route_position[index] + 1)]],
-        route_position[index]))
-    while ammo_target:
-        count = min(2, ammo_target)
-        if not place_group((AMMO,) * count, "route-ammo", ammo_rooms,
-                           ("entry-staging", "wall-cache", "corner-cache")):
-            raise ValueError("mandatory route cannot fit required authored ammo")
-        ammo_target -= count
-
-    total_enemies = sum(1 for code in things if code in FAMILY_BY_CODE)
-    health_target = max(1, total_enemies // max(6, 14 - int(config.supplies)))
-    health_now = sum(item in (DOG_FOOD, FOOD, FIRST_AID) for item in styled_items)
-    health_needed = max(0, health_target - health_now)
-    health_rooms = list(critical_route[1:-1])
-    health_rooms.sort(key=lambda index: (
-        identities[index].concept not in
-        ("mess-kitchen", "officers-quarters", "lounge", "barracks",
-         "ready-room", "dining-hall"),
-        -threats[critical_route[max(0, route_position[index] - 1)]],
-        route_position[index]))
-    while health_needed:
-        count = min(2, health_needed)
-        if not place_group((FIRST_AID,) * count, "post-combat-recovery",
-                           health_rooms,
-                           ("recovery-station", "wall-cache", "corner-cache")):
-            raise ValueError("mandatory route cannot fit required authored health")
-        health_needed -= count
-
-    # Treasure rewards exploration rather than an arbitrary room-index cadence.
-    # Dead ends, branches, relief spaces, and display-oriented concepts rank
-    # ahead of mandatory circulation rooms.
-    cadence = max(2, 7 - int(config.treasure) - (2 if number == 10 else 0))
-    treasure_target = max(1, math.ceil((len(rooms) - 1) / cadence))
-    if number == 10:
-        treasure_target *= 2
-    optional = [index for index in range(1, len(rooms))
-                if index not in route_position and not identities[index].special]
-    fallback = [index for index in range(1, len(rooms))
-                if identities[index].special not in ("exit", "boss")
-                and identities[index].tier != "corridor"]
-    treasure_rooms = optional + fallback
-    treasure_rooms.sort(key=lambda index: (
-        vignette_counts[index],
-        identities[index].concept not in
-        ("gallery", "trophy-hall", "courtyard", "supply-cache", "storage",
-         "burial-chamber", "officers-quarters"),
-        identities[index].role not in ("branch", "ring", "relief", "closet"),
-        degrees[index] != 1, -depths[index], index))
-    if not treasure_rooms:
-        raise ValueError("floor has no room eligible for authored treasure")
-    treasure_preference = {index: position
-                           for position, index in enumerate(treasure_rooms)}
-    group_size = 2 if number == 10 else 1
-    while treasure_target:
-        count = min(group_size, treasure_target)
-        target_room = min(treasure_rooms, key=lambda index: (
-            vignette_counts[index], treasure_preference[index]))
-        depth = depths[target_room]
-        if depth < 0.35:
-            pool = TREASURE[:2]
-        elif depth < 0.70:
-            pool = TREASURE[:3]
-        else:
-            pool = TREASURE[1:]
-        items = tuple(rng.choice(pool) for _ in range(count))
-        if not place_group(items, "exploration-treasure", treasure_rooms,
-                           ("treasure-display", "corner-cache")):
-            raise ValueError("floor cannot fit its authored treasure budget")
-        treasure_target -= count
 
 
 def _prepare_boss_arena(tiles: list[int], things: list[int], room: Room,

@@ -27,7 +27,7 @@ from .wl6 import (AMMO, BOSSES, CHAINGUN, DECOR_WALLS, DOORS, DOOR_ELEVATOR,
 # ends up owning the room adjacency graph. Closing this is Stage 2's deliverable.
 from .campaign import (CIRCULATION_MODES, CIRCULATION_SKELETONS,
                        HALLWAY_FIRST_SKELETONS, PROGRESSION_GRAMMARS)
-from .placement import AUTHORED_PICKUP_TEMPLATES
+from .pickups import AUTHORED_PICKUP_TEMPLATES
 from .progression import _minimum_critical_route_rooms
 
 def validate_map(level: GeneratedMap) -> None:
