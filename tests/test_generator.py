@@ -11,7 +11,8 @@ import zipfile
 
 import infiniwolf.decorations as decorations
 import infiniwolf.generator as generator
-from infiniwolf.config import CampaignConfig, Intensity, ThemeBias
+from infiniwolf.config import (CampaignConfig, GenerationQuality, Intensity,
+                               ThemeBias)
 from infiniwolf.generator import GenerationCancelled, generate_campaign, generate_map, validate_map, validate_package
 from infiniwolf.generator import (BOSSES, DECOR_WALLS, DOGS, ELEVATOR_TILE, FAKE_HITLER,
                                    GHOSTS, GOLD_KEY, GRID, GUARDS, KEY_DROP_BOSSES, OFFICERS,
@@ -37,6 +38,15 @@ def _generate_with_retries(config: CampaignConfig, floor: int, attempts: int = 5
         except ValueError as error:
             last_error = error
     raise AssertionError(f"floor {floor} never validated in {attempts} attempts: {last_error}")
+
+
+# Campaign-level tests pin the fast quality setting. The shipping default ranks
+# eight valid candidates per floor, which is the right trade for a player
+# generating once and playing for an hour, and the wrong one for a test that only
+# needs a valid package -- it multiplied the suite's runtime several times over.
+# Selection itself is covered by tests/test_selection.py and by the aardwolf case
+# below, which deliberately keeps the thorough path.
+FAST = GenerationQuality.FAST
 
 
 class GeneratorTests(unittest.TestCase):
@@ -262,7 +272,13 @@ class GeneratorTests(unittest.TestCase):
         matched set.  A storage room may repeat either family but must not
         scatter both old-num 24 and 58 into the same composition."""
         observed = set()
-        for concept in ("storage", "supply-cache"):
+        # One concept from each barrel family. Storage rooms take green -- the
+        # corpus carries more green than blue, and stores are where barrels pile
+        # up -- while the formal military spaces keep blue. Testing only the
+        # storage concepts would prove a room never mixes families while quietly
+        # never observing blue at all.
+        for concept, theme in (("storage", "storage"), ("supply-cache", "storage"),
+                               ("barracks", "barracks"), ("armory", "barracks")):
             for seed in range(48):
                 room = Room(20, 20, 12, 10)
                 tiles = [WALL] * (GRID * GRID)
@@ -272,7 +288,7 @@ class GeneratorTests(unittest.TestCase):
                         generator._set(tiles, x, y, FLOOR)
                 identity = generator.RoomIdentity(
                     "beat", "standard", "spine", 0,
-                    "storehouse", concept, "storage")
+                    "storehouse", concept, theme)
                 _place_decorations(
                     [room], tiles, things, set(), room.center,
                     random.Random(seed), identities=[identity], density=1.3,
@@ -459,13 +475,21 @@ class GeneratorTests(unittest.TestCase):
                 for x in range(room.x, room.x + room.w):
                     tiles[y * GRID + x] = FLOOR
             things = [0] * len(tiles)
+            # Force the signature: one composition per room is chosen by weight,
+            # so without this the kitchen's own signature only wins sometimes and
+            # the test would be asserting the outcome of a draw.
             _place_decorations([room], tiles, things, set(), room.center,
-                               random.Random(seed), identities=[identity])
+                               random.Random(seed), identities=[identity],
+                               force_motif="signature")
             self.assertEqual(things.count(68), 1)
             sink_presence.add(things.count(33) == 1)
+            # Pots (67) are deliberately excluded. They are clutter, not an
+            # appliance: the authored corpus puts them in open floor 74% of the
+            # time and against a wall only 10%, the same profile as a ceiling
+            # light. The plumbed and vented fittings are what must be wall-backed.
             kitchen = [(index % GRID, index // GRID)
                        for index, item in enumerate(things)
-                       if item in (33, 38, 67, 68)]
+                       if item in (33, 38, 68)]
             for x, y in kitchen:
                 outside = []
                 if x == room.x:
@@ -1268,12 +1292,14 @@ class GeneratorTests(unittest.TestCase):
                 validate_map(_generate_with_retries(config, 9))
 
     def test_campaign_is_deterministic_and_asset_free(self):
-        config = CampaignConfig(seed=8675309)
+        config = CampaignConfig(seed=8675309, generation_quality=FAST)
         with tempfile.TemporaryDirectory() as directory:
             first = generate_campaign(config, Path(directory) / "first.pk3")
             second = generate_campaign(config, Path(directory) / "second.pk3")
             self.assertEqual(first.read_bytes(), second.read_bytes())
-            different = generate_campaign(CampaignConfig(seed=8675310), Path(directory) / "different.pk3")
+            different = generate_campaign(
+                CampaignConfig(seed=8675310, generation_quality=FAST),
+                Path(directory) / "different.pk3")
             self.assertNotEqual(first.read_bytes(), different.read_bytes())
             with zipfile.ZipFile(first) as package:
                 names = package.namelist()
@@ -1340,7 +1366,7 @@ class GeneratorTests(unittest.TestCase):
             self.assertNotIn("--say-aardwolf True", settings)
 
     def test_cancellation_preserves_previous_output(self):
-        config = CampaignConfig(seed=1001)
+        config = CampaignConfig(seed=1001, generation_quality=FAST)
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "campaign.pk3"
             output.write_bytes(b"previous-valid-package")
@@ -2491,7 +2517,7 @@ class GeneratorTests(unittest.TestCase):
         self.assertEqual(realized, [expected, expected])
 
     def test_manifest_names_each_floors_variant(self):
-        config = CampaignConfig(seed=4242)
+        config = CampaignConfig(seed=4242, generation_quality=FAST)
         expected = [variant.name for variant in generator._variant_sequence(config)]
         expected_skeletons = list(generator._circulation_sequence(config))
         with tempfile.TemporaryDirectory() as directory:

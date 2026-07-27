@@ -94,12 +94,12 @@ _DECOR_OPEN: dict[str, tuple[int, ...]] = {
     "burial-chamber": (27, 42, 64, 65, 66, 23),
     "storage": (46, 23, 67),
     "supply-cache": (46, 67, 23),
-    "workshop": (37, 67, 38, 23),
+    "workshop": (37, 67, 23),
     "lounge": (27, 25),
     "gallery": (27, 37, 25),
-    "dining-hall": (27, 25, 67, 38),
+    "dining-hall": (27, 25, 67),
     "officers-quarters": (27, 37, 25),
-    "mess-kitchen": (37, 38, 67, 23),
+    "mess-kitchen": (37, 67, 23),
     "corridor": (37, 23),
     "jail": (61, 61, 42, 64, 65, 66, 23),
     "holding-cell": (42, 64, 65, 66, 61, 23),
@@ -556,6 +556,7 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
                        traversal_pair_chance: float | None = None,
                        hallway_vine_budget: int = 0,
                        allow_sky_vista: bool = True,
+                       force_motif: str = "",
                        ) -> tuple[tuple[str, ...], tuple[VineScreen, ...],
                                   tuple[str, ...]]:
     """Place purposeful, themed furniture in rooms following community-map patterns.
@@ -1169,6 +1170,12 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
             motif_overrides["landmark-frame"] = _MOTIF_FORCED
         elif landmark_frame_chance <= 0.0:
             motif_overrides["landmark-frame"] = 0.0
+        # A named seam for examining one composition in isolation. Selection is a
+        # weighted draw, so a test that wants to inspect the barracks signature
+        # would otherwise have to hunt seeds until that motif happened to win --
+        # which passes for the wrong reason the moment the weights change.
+        if force_motif:
+            motif_overrides[force_motif] = _MOTIF_FORCED
         motif = _choose_motif(eligible_motifs, rng, motif_overrides)
         room_motifs[ridx] = motif
         concept_frames = {
