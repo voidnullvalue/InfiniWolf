@@ -576,7 +576,7 @@ class GeneratorTests(unittest.TestCase):
                 for x in range(room.x, room.x + room.w):
                     tiles[y * GRID + x] = FLOOR
             things = [0] * len(tiles)
-            families, _ = _place_decorations(
+            families, _, _ = _place_decorations(
                 [room], tiles, things, set(), room.center, random.Random(seed),
                 identities=[identity])
             family = families[0]

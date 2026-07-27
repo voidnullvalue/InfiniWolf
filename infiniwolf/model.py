@@ -289,6 +289,8 @@ class GeneratedMap:
     sky_vista_recesses: tuple[tuple[tuple[int, int], ...], ...] = ()
     sky_vista_supports: tuple[tuple[tuple[int, int], ...], ...] = ()
     landmarks: tuple[LandmarkPlan, ...] = ()
+    # The one composition each room realized, or "" for deliberately plain.
+    room_motifs: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

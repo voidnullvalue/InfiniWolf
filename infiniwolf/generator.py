@@ -536,7 +536,7 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
     # Releasing the architectural reservation must not erase that later,
     # independent reason to keep the cell clear.
     reserved.reserve(actor_clearance, "encounters", "actor-clearance")
-    lighting_families, vine_screens = _place_decorations(
+    lighting_families, vine_screens, room_motifs = _place_decorations(
         rooms, tiles, things, reserved, start, rng, roles=roles, specs=specs,
         jail_rooms=jail_rooms,
         density=(floor_variant.decor_density
@@ -604,7 +604,8 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
                           sky_vistas=sky_vistas,
                           sky_vista_recesses=sky_vista_recesses,
                           sky_vista_supports=sky_vista_supports,
-                          landmarks=landmark_plans)
+                          landmarks=landmark_plans,
+                          room_motifs=room_motifs)
     validate_map(result)
     result.critique = _critique(result)
     return result

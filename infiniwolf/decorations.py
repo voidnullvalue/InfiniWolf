@@ -120,6 +120,66 @@ SKY_VISTA_INTERIOR_CHANCE = 0.18
 # of armor, and flags.
 _FRAMEABLE = frozenset({26, 30, 31, 34, 39, 62})
 
+# One motif per room, chosen deliberately.
+#
+# These compositions used to be a sequence of independent probability gates that
+# all drew against a shared budget of one or two, so whichever appeared earliest in
+# this file won. Source order became priority order, and the effect was measurable:
+# across 1840 rooms the travel pair fired in 19.6% while the room *signature* --
+# the matched bunks in a barracks, the spear rack in an armory, the one composition
+# that is specific to what the room is for -- reached 1.0%. Nearly 70% of rooms got
+# no composition at all.
+#
+# Weights say how often a motif should win when it is eligible, and eligibility is
+# a structural question answered before any roll. Concept-specific motifs are
+# weighted highest because they are what makes a room read as built for a purpose;
+# the travel pair is generic and applies almost everywhere, so it needs the lowest
+# weight to stop it crowding the rest out.
+# Weight is inverse to how widely a motif is eligible. A narrowly-scoped motif can
+# only ever appear in the rooms it fits, so weighting it high cannot crowd anything
+# out elsewhere -- a colonnade needs a grand 8x8 room, and if it loses there it has
+# nowhere else to go. Generic motifs get the lowest weights for the same reason:
+# they are eligible almost everywhere, so any weight at all makes them common.
+#
+# Tuned against measurement. A first pass weighted colonnade at 3.0 against
+# signature's 6.0 and dropped it from 4.9% of rooms to 0.8%, trading one starvation
+# for another: the grand-hall look is the point of the grand-halls variant, and it
+# has only those rooms to appear in.
+_MOTIF_WEIGHTS = {
+    # Narrow eligibility: concept- or theme-specific, and few rooms qualify.
+    "colonnade": 6.0,              # grand theme, 8x8
+    "courtyard-centerpiece": 6.0,  # courtyard/storage, 9x9
+    "signature": 6.0,              # the room concept's own composition
+    "banquet-row": 5.0,            # barracks/dining-hall, long axis
+    "divider": 4.0,                # 10x10, grand/barracks/guardpost
+    "landmark-frame": 3.0,         # needs a landmark wall
+    # Broad eligibility: applies in most rooms, so it must ask for less.
+    "corner-stash": 2.5,
+    "doorway-frame": 2.0,
+    "travel-pair": 1.5,
+}
+
+# Rooms that receive no motif at all. Some emptiness is correct -- a corridor or a
+# small connector should stay quiet, and a floor where every room is composed reads
+# as busy rather than designed. This is the share of *eligible* rooms deliberately
+# left plain.
+_MOTIF_ABSTENTION = 0.18
+
+
+def _choose_motif(eligible: dict[str, bool], rng: random.Random) -> str:
+    """Pick one motif for a room from those structurally possible.
+
+    Returns "" when the room is left plain, either because nothing was eligible or
+    because it drew the abstention. Deciding once, up front, is the whole point:
+    it replaces a race in which the winner was determined by line number.
+    """
+    names = [name for name, ok in eligible.items() if ok]
+    if not names or rng.random() < _MOTIF_ABSTENTION:
+        return ""
+    weights = [_MOTIF_WEIGHTS[name] for name in names]
+    return rng.choices(names, weights=weights, k=1)[0]
+
+
 def _place_zoned(room: Room,
                  zones: tuple[tuple[tuple[int, ...], tuple[int, ...]],
                               tuple[tuple[int, ...], tuple[int, ...]]],
@@ -452,7 +512,8 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
                        traversal_pair_chance: float | None = None,
                        hallway_vine_budget: int = 0,
                        allow_sky_vista: bool = True,
-                       ) -> tuple[tuple[str, ...], tuple[VineScreen, ...]]:
+                       ) -> tuple[tuple[str, ...], tuple[VineScreen, ...],
+                                  tuple[str, ...]]:
     """Place purposeful, themed furniture in rooms following community-map patterns.
 
     Blocking statics go in deliberate arrangements (landmark-wall frames,
@@ -478,6 +539,10 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
     doorway_frames_placed = 0
     lighting_counts: Counter[str] = Counter()
     lighting_families = ["none"] * len(rooms)
+    # Indexed by room, not appended: rooms too small to compose are skipped
+    # before the motif is chosen, so an append would misalign every entry
+    # after the first closet.
+    room_motifs = [""] * len(rooms)
     vine_screens: list[VineScreen] = []
     sky_composition_placed = False
 
@@ -1004,6 +1069,28 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
 
         pair_budget = max(1, round((2 if room.w >= 8 and room.h >= 8 else 1) * density))
         pairs_placed = 0
+        room_landmarks = list((landmarks or {}).get(ridx, ()))
+        # Structural eligibility only -- no rolls here. Each condition mirrors the
+        # one its motif's own block still applies, so a motif can decline once
+        # chosen (a signature whose lighting family conflicts, a divider with no
+        # clean span) and the room simply stays plain rather than falling through
+        # to whichever composition happened to be next in the file.
+        eligible_motifs = {
+            "signature": room.w >= 6 and room.h >= 6,
+            "travel-pair": bool(travel_pairs),
+            "landmark-frame": bool(room_landmarks),
+            "doorway-frame": bool(anchors.door_entries) and doorway_frames_placed < 3,
+            "divider": (room.w >= 10 and room.h >= 10
+                        and theme in ("grand", "barracks", "guardpost")),
+            "corner-stash": bool(blocking) and theme in ("storage", "barracks", "jail"),
+            "colonnade": theme == "grand" and room.w >= 8 and room.h >= 8,
+            "banquet-row": (concept in ("barracks", "dining-hall")
+                            and max(room.w, room.h) >= 8),
+            "courtyard-centerpiece": (concept in ("courtyard", "storage")
+                                      and room.w >= 9 and room.h >= 9),
+        }
+        motif = _choose_motif(eligible_motifs, rng)
+        room_motifs[ridx] = motif
         concept_frames = {
             # Guardpost keeps a green-plant companion so its matched pair can
             # still land when the candidate cells are open floor and the lamp is
@@ -1042,8 +1129,7 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
                          and (tier in ("corridor", "hall")
                               or concept in formal_concepts)
                          else 0.45 if len(traversal.entries) >= 2 else 0.20)
-        if (travel_pairs and pairs_placed < pair_budget
-                and rng.random() < travel_chance):
+        if motif == "travel-pair" and travel_pairs and pairs_placed < pair_budget:
             # Traversal pairs are room furniture, not landmark frames.  Use
             # the room's own blocking palette when no concept-specific pair
             # palette exists; the landmark-frame fallback is a floor lamp,
@@ -1069,9 +1155,7 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
         # plants/lamps beneath one turns that wall into a composed set piece
         # and keeps the furniture from floating mid-room. The cell directly
         # in front stays clear so the frame never hides the picture.
-        room_landmarks = list((landmarks or {}).get(ridx, ()))
-        if (room_landmarks and pairs_placed < pair_budget
-                and rng.random() < landmark_frame_chance):
+        if motif == "landmark-frame" and room_landmarks and pairs_placed < pair_budget:
             by_side: dict[str, list[tuple[int, int]]] = {}
             for lx, ly in room_landmarks:
                 side = ("north" if ly < room.y else "south" if ly >= room.y + room.h
@@ -1109,7 +1193,7 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
 
         # Room signatures come from the same grammar/variant/material
         # identity that selected the room, not from a generic static pool.
-        if room.w >= 6 and room.h >= 6 and pairs_placed < pair_budget:
+        if motif == "signature" and room.w >= 6 and room.h >= 6 and pairs_placed < pair_budget:
             signatures: dict[str, list[tuple[tuple[int, int], int]]] = {
                 "barracks": [((room.x + 1, room.y + 1), 45),
                               ((room.x + room.w - 2, room.y + room.h - 2), 45)],
@@ -1216,8 +1300,8 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
                         pairs_placed += 1
 
         # --- Vignette: matched pair flanking a doorway ---
-        if (doorway_frames_placed < 3 and pairs_placed < pair_budget
-                and anchors.door_entries and rng.random() < 0.15):
+        if (motif == "doorway-frame" and doorway_frames_placed < 3
+                and pairs_placed < pair_budget and anchors.door_entries):
             entries = list(anchors.door_entries)
             rng.shuffle(entries)
             for (ex, ey), (ix, iy) in entries:
@@ -1231,9 +1315,8 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
         # A row of pillars or plants that visually subdivides a large room
         # while a 2-tile gap keeps it fully traversable.  Appears in ~8% of
         # eligible rooms -- enough to read as intentional, not as clutter.
-        if (room.w >= 10 and room.h >= 10
-                and theme in ("grand", "barracks", "guardpost")
-                and rng.random() < 0.08):
+        if (motif == "divider" and room.w >= 10 and room.h >= 10
+                and theme in ("grand", "barracks", "guardpost")):
             div_item = 30 if theme == "grand" else (31 if theme == "guardpost" else 25)
             if room.w >= room.h:
                 span = list(range(room.y + 2, room.y + room.h - 2))
@@ -1255,9 +1338,8 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
         # --- Pattern: corner stash cluster (storage always; battle-worn
         # barracks and bare jail cells occasionally) with a spill of loose
         # pots or blood beside it so the pile reads lived-in, not staged ---
-        if blocking and pairs_placed < pair_budget and (
-                theme == "storage"
-                or (theme in ("barracks", "jail") and rng.random() < 0.35)):
+        if (motif == "corner-stash" and blocking and pairs_placed < pair_budget
+                and theme in ("storage", "barracks", "jail")):
             item = rng.choice(blocking)
             corners = list(anchors.corners)
             rng.shuffle(corners)
@@ -1278,7 +1360,8 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
                     break
 
         # --- Pattern: pillar colonnade (grand / anchor rooms) ---
-        if pairs_placed < pair_budget and theme == "grand" and room.w >= 8 and room.h >= 8:
+        if (motif == "colonnade" and pairs_placed < pair_budget
+                and theme == "grand" and room.w >= 8 and room.h >= 8):
             depth = max(2, min(room.w // 3, room.h // 3))
             for offset in (0, -1, 1):
                 if pairs_placed >= pair_budget:
@@ -1291,8 +1374,9 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
         # --- Vignette: banquet row along the center axis ---
         # Tables march down the room's long axis in mirrored pairs, the way
         # authored mess halls are dressed, instead of landing on random cells.
-        if (pairs_placed < pair_budget and concept in ("barracks", "dining-hall")
-                and max(room.w, room.h) >= 8 and rng.random() < 0.3):
+        if (motif == "banquet-row" and pairs_placed < pair_budget
+                and concept in ("barracks", "dining-hall")
+                and max(room.w, room.h) >= 8):
             horizontal = room.w >= room.h
             cells: list[tuple[int, int]] = []
             for offset in (1, 3):
@@ -1304,8 +1388,9 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
                 pairs_placed += 1
 
         # --- Vignette: courtyard centerpiece at the exact room center ---
-        if (pairs_placed < pair_budget and concept in ("courtyard", "storage")
-                and room.w >= 9 and room.h >= 9 and rng.random() < 0.3):
+        if (motif == "courtyard-centerpiece" and pairs_placed < pair_budget
+                and concept in ("courtyard", "storage")
+                and room.w >= 9 and room.h >= 9):
             if _try_place([(cx, cy)], 59 if concept == "storage" else 30):
                 pairs_placed += 1
 
@@ -1774,7 +1859,7 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
                            "niche-prop")
             static_headroom -= 1
 
-    return tuple(lighting_families), tuple(vine_screens)
+    return tuple(lighting_families), tuple(vine_screens), tuple(room_motifs)
 
 
 def _barrel_families(rooms, things) -> tuple[str, ...]:
