@@ -538,6 +538,43 @@ def _candidate_score(level: GeneratedMap, previous: list[GeneratedMap],
     return score
 
 
+def validate_campaign_budgets(levels: list[GeneratedMap], schedule: CampaignSchedule) -> None:
+    """Enforce the campaign schedule against the maps that actually realized."""
+    realized_vine_floors = {
+        level.number for level in levels
+        if any(screen.kind == "hallway-run" for screen in level.vine_screens)}
+    realized_vine_runs = sum(
+        screen.kind == "hallway-run" for level in levels for screen in level.vine_screens)
+    if (realized_vine_floors - {schedule.vine_floor}
+            or len(realized_vine_floors) > 1
+            or realized_vine_runs > schedule.vine_budget):
+        raise RuntimeError("campaign hallway-vine budget was violated")
+    realized_gallery_floors = {
+        level.number for level in levels if level.guard_galleries}
+    if (realized_gallery_floors - {schedule.gallery_floor}
+            or len(realized_gallery_floors) > 1):
+        raise RuntimeError("campaign guard-gallery budget was violated")
+    if any(first.variant == second.variant
+           for first, second in zip(levels, levels[1:])):
+        raise RuntimeError("campaign repeated the same floor type consecutively")
+    if any(first.circulation_skeleton == second.circulation_skeleton
+           for first, second in zip(levels, levels[1:])):
+        raise RuntimeError("campaign repeated the same circulation skeleton consecutively")
+    if sum(level.circulation_skeleton in HALLWAY_FIRST_SKELETONS
+           for level in levels) != 3:
+        raise RuntimeError("campaign violated its three-floor hallway-first schedule")
+    if any(first.progression_grammar == second.progression_grammar
+           for first, second in zip(levels, levels[1:])):
+        raise RuntimeError("campaign repeated the same progression grammar consecutively")
+    if any(first.sky_vistas and second.sky_vistas
+           for first, second in zip(levels, levels[1:])):
+        raise RuntimeError("campaign repeated the exterior-vista motif consecutively")
+    realized_rare = [level.number for level in levels if level.rare_motif is not None]
+    expected_rare = [schedule.rare_motif_floor] if schedule.rare_motif_floor else []
+    if realized_rare != expected_rare:
+        raise RuntimeError("campaign rare-motif schedule was violated")
+
+
 def _layout_signature(plan, specs, realized_shapes, guard_recesses,
                       encounters, edges) -> tuple[str, ...]:
     """A compact fingerprint of how this floor is organized.

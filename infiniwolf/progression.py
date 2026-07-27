@@ -42,6 +42,94 @@ from .wl6 import (AMMO, CHAINGUN, DECOR_WALLS, DOOR_ELEVATOR, DOOR_ELEVATOR_NS,
 from .ledger import reserve as ledger_reserve
 
 
+def select_exit_host(tiles: list[int], rooms: list[Room], edges: list[tuple[int, int]],
+                     *, anchor_index: int, minimum_route_rooms: int,
+                     required_post_anchor: int | None, planned_exit_index: int,
+                     boss_locks_exit: bool, arrival: ArrivalDetail | None
+                     ) -> tuple[int, list[int], tuple[int, int], set[tuple[int, int]]]:
+    """Reserve the deepest feasible elevator host and its terminal footprint."""
+    # Reserve the terminal car at the same architectural stage. Prefer the
+    # planned final spine room, then another sufficiently deep post-anchor
+    # route when its horizontal exterior wall is the one that remains clean.
+    exit_geometry_candidates: list[tuple[int, list[int]]] = []
+    for room_index in range(1, len(rooms)):
+        route = _room_graph_path(len(rooms), edges, room_index)
+        if (anchor_index not in route[:-1] or room_index == anchor_index
+                or len(route) < minimum_route_rooms
+                or (required_post_anchor is not None
+                    and required_post_anchor not in route[:-1])):
+            continue
+        exit_geometry_candidates.append((room_index, route))
+    exit_geometry_candidates.sort(
+        key=lambda item: (item[0] == planned_exit_index, len(item[1])),
+        reverse=True)
+    preplaced_exit_index = -1
+    preplaced_exit_route: list[int] = []
+    exit_stand = None
+    for room_index, route in exit_geometry_candidates:
+        trial_tiles = tiles.copy()
+        try:
+            trial_stand = _place_elevator(
+                trial_tiles, rooms[room_index], locked=boss_locks_exit)
+        except ValueError:
+            continue
+        tiles[:] = trial_tiles
+        preplaced_exit_index = room_index
+        preplaced_exit_route = route
+        exit_stand = trial_stand
+        break
+    if exit_stand is None:
+        raise ValueError("no post-climax room has a rock-backed horizontal elevator wall")
+
+    switch_dx = next(dx for dx in (-1, 1)
+                     if _at(tiles, exit_stand[0] + dx, exit_stand[1])
+                     == ELEVATOR_TILE)
+    exit_portal = (exit_stand[0] - 2 * switch_dx, exit_stand[1])
+    terminal_footprint = {
+        (exit_portal[0] + switch_dx * depth, exit_portal[1] + side)
+        for depth in range(5) for side in (-2, -1, 0, 1, 2)}
+    protected_elevators = ((set(arrival.footprint) if arrival else set())
+                            | terminal_footprint)
+    return preplaced_exit_index, preplaced_exit_route, exit_stand, protected_elevators
+
+
+def gate_plan_for_floor(is_boss: bool, scheduled_gate: GatePlan,
+                        critical_route: list[int], anchor_index: int,
+                        rooms: list[Room], exit_stand: tuple[int, int]
+                        ) -> tuple[GatePlan, list[int], tuple[int, int]]:
+    """Choose the route and target governed by this floor's progression gate."""
+    if is_boss and scheduled_gate.colors[:1] == ("silver",):
+        anchor_route_end = critical_route.index(anchor_index) + 1
+        door_gate_plan = GatePlan(("silver",))
+        door_route = critical_route[:anchor_route_end]
+        door_target = rooms[anchor_index].center
+    elif is_boss:
+        door_gate_plan = GatePlan()
+        door_route = critical_route
+        door_target = rooms[anchor_index].center
+    else:
+        door_gate_plan = scheduled_gate
+        door_route = critical_route
+        door_target = exit_stand
+    return door_gate_plan, door_route, door_target
+
+
+def add_boss_gate_objective(key_objectives: tuple[KeyObjective, ...], locks: int,
+                            key_order: tuple[str, ...], boss_cell: tuple[int, int],
+                            boss_index: int
+                            ) -> tuple[tuple[KeyObjective, ...], int, tuple[str, ...]]:
+    """Record the native boss gold drop that unlocks a boss-gated elevator."""
+    # The gold elevator door and its key travel together: counting the
+    # lock without the drop, or the reverse, makes the recorded
+    # progression disagree with the tiles and validation rejects it.
+    key_objectives = key_objectives + (
+        KeyObjective("gold", boss_cell, boss_index, len(key_order) + 1,
+                     0, "boss-drop"),)
+    locks += 1
+    key_order = key_order + ("gold",)
+    return key_objectives, locks, key_order
+
+
 def _minimum_critical_route_rooms(roles: list[str] | tuple[str, ...]) -> int:
     """Require most of the progression spine, independent of side-room count.
 

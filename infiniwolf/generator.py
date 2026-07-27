@@ -65,7 +65,8 @@ from .progression import (  # noqa: F401
     _carve_secret_pocket, _hint_secrets, _key_spot, _key_spot_in_region,
     _lock_code, _minimum_critical_route_rooms, _pick_secret_variant,
     _place_arrival_elevator, _place_doors, _place_elevator, _place_secret,
-    _secret_reward, verify_exit_depth, install_secrets,
+    _secret_reward, verify_exit_depth, install_secrets, select_exit_host,
+    gate_plan_for_floor, add_boss_gate_objective,
 )
 from .planning import _plan_floor  # noqa: F401
 from .quality import _critique  # noqa: F401
@@ -85,7 +86,9 @@ from .geometry import (  # noqa: F401
     DOOR_SPACING, _add_pillars, _adjacent_to_room, _carve_connection,
     _carve_notches, _carve_swastika_profile, _carve_symmetric_profiles,
     _door_axis, _door_candidate, _far_from_doors, _place_planned_rooms,
-    _room_size, _snap_offsets, _widen_corridors,
+    _room_size, _snap_offsets, _widen_corridors, ShapeBudget, shape_budget,
+    realize_room_shapes,
+    SHAPE_MULTIPLIERS, SHAPE_TARGETS,
     _assign_sound_zones, _break_long_sightlines, _heal_pinched_room_door_pairs,
     _limit_theme_merge_size, _remove_redundant_plain_doors,
     _spatial_districts, _split_oversized_zones, _harvest_sky_vistas,
@@ -97,7 +100,7 @@ from .campaign import (  # noqa: F401
     VARIANT_STRONGHOLD, VARIANT_VAULT, _aardwolf_variant, _candidate_score,
     _circulation_sequence, _lock_schedule, _progression_sequence,
     _rare_motif_schedule, _set_distance, _variant_sequence,
-    CampaignSchedule, resolve_schedule, _layout_signature,
+    CampaignSchedule, resolve_schedule, _layout_signature, validate_campaign_budgets,
 )
 from .generator_artifacts import (  # noqa: F401
     _manifest, _wad_bytes, _mapinfo, _display_name,
@@ -112,13 +115,10 @@ from .decorations import (  # noqa: F401
 
 
 DECORATION_MULTIPLIERS = (0.0, 0.70, 0.85, 1.00, 1.15, 1.30)
-SHAPE_MULTIPLIERS = (0.0, 0.65, 0.82, 1.00, 1.10, 1.20)
 # Target share of ordinary actors that should visibly patrol. The old values
 # were per-room attempt chances and produced only ~3% moving actors at the
 # normal setting because most full-room loops failed geometry reservations.
 PATROL_TARGETS = (0.0, 0.04, 0.09, 0.16, 0.23, 0.30)
-
-SHAPE_TARGETS = (0.0, 0.15, 0.25, 0.40, 0.48, 0.55)
 
 
 class GenerationCancelled(RuntimeError):
@@ -158,41 +158,15 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
     roles = [spec.role for spec in specs]
     districts = _spatial_districts(rooms, len({spec.district for spec in specs}))
     paint_room_floors(tiles, rooms)
-    shape_scale = SHAPE_MULTIPLIERS[int(config.room_shape_variation)]
-    shape_target = SHAPE_TARGETS[int(config.room_shape_variation)]
-    shape_budget = max(1, round(len(rooms) * shape_target))
-    utility_shapes = frozenset(
-        index for index, spec in enumerate(specs)
-        if spec.role in {"start", "arrival", "exit", "victory", "recovery"}
-        or spec.tier in {"closet", "corridor", "motif"}
-        or spec.role == "boss-arena")
-    rare_profile: tuple[int, str, tuple[tuple[int, int], ...]] | None = None
-    for room_index, (room, spec) in enumerate(zip(rooms, specs)):
-        if spec.motif != "swastika":
-            continue
-        carved = _carve_swastika_profile(tiles, room, rng)
-        if carved is not None:
-            rare_profile = (room_index, carved[0], carved[1])
-        break
-    if rare_motif_enabled and rare_profile is None:
-        raise ValueError("scheduled rare motif could not be realized")
-    notch_budget = max(1, round(shape_budget * 0.30))
-    notch_anchors = _carve_notches(
-        tiles, rooms, rng,
-        chance=min(1.0, floor_variant.notch_chance * shape_scale),
-        max_rooms=notch_budget, excluded=utility_shapes)
-    authored_shape_count = (1 if rare_profile is not None else 0) + (1 if number == 9 else 0)
-    profile_anchors, profile_shapes = _carve_symmetric_profiles(
-        tiles, rooms, rng,
-        chance=min(1.0, shape_scale),
-        max_rooms=max(0, shape_budget - len(notch_anchors) - authored_shape_count),
-        excluded=frozenset(notch_anchors) | utility_shapes)
-    notch_anchors.update(profile_anchors)
-    realized_shapes = ["rectangle"] * len(rooms)
-    for room_index in notch_anchors:
-        realized_shapes[room_index] = profile_shapes.get(room_index, "mirrored-notch")
-    if rare_profile is not None:
-        realized_shapes[rare_profile[0]] = "swastika-profile"
+    shape_policy = shape_budget(config, specs)
+    shape_scale = shape_policy.scale
+    shape_target = shape_policy.target
+    shape_budget_limit = shape_policy.budget
+    utility_shapes = shape_policy.utility_shapes
+    rare_profile, notch_anchors, realized_shapes = realize_room_shapes(
+        tiles, rooms, specs, rng, rare_motif_enabled=rare_motif_enabled,
+        number=number, floor_variant=floor_variant, shape_scale=shape_scale,
+        shape_budget=shape_budget_limit, utility_shapes=utility_shapes)
     overrides = dict(floor_variant.decor_overrides)
     for room, spec in zip(rooms, specs):
         predicted = overrides.get(_decor_theme(spec.role, spec.tier),
@@ -230,48 +204,13 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
         arrival = _place_arrival_elevator(
             tiles, rooms[0], rooms[first_neighbor].center, rng,
             floor_variant.name)
-    # Reserve the terminal car at the same architectural stage. Prefer the
-    # planned final spine room, then another sufficiently deep post-anchor
-    # route when its horizontal exterior wall is the one that remains clean.
-    exit_geometry_candidates: list[tuple[int, list[int]]] = []
-    for room_index in range(1, len(rooms)):
-        route = _room_graph_path(len(rooms), edges, room_index)
-        if (anchor_index not in route[:-1] or room_index == anchor_index
-                or len(route) < minimum_route_rooms
-                or (required_post_anchor is not None
-                    and required_post_anchor not in route[:-1])):
-            continue
-        exit_geometry_candidates.append((room_index, route))
-    exit_geometry_candidates.sort(
-        key=lambda item: (item[0] == planned_exit_index, len(item[1])),
-        reverse=True)
-    preplaced_exit_index = -1
-    preplaced_exit_route: list[int] = []
-    exit_stand = None
-    for room_index, route in exit_geometry_candidates:
-        trial_tiles = tiles.copy()
-        try:
-            trial_stand = _place_elevator(
-                trial_tiles, rooms[room_index], locked=boss_locks_exit)
-        except ValueError:
-            continue
-        tiles[:] = trial_tiles
-        preplaced_exit_index = room_index
-        preplaced_exit_route = route
-        exit_stand = trial_stand
-        break
-    if exit_stand is None:
-        raise ValueError("no post-climax room has a rock-backed horizontal elevator wall")
-
-    switch_dx = next(dx for dx in (-1, 1)
-                     if _at(tiles, exit_stand[0] + dx, exit_stand[1])
-                     == ELEVATOR_TILE)
-    exit_portal = (exit_stand[0] - 2 * switch_dx, exit_stand[1])
-    terminal_footprint = {
-        (exit_portal[0] + switch_dx * depth, exit_portal[1] + side)
-        for depth in range(5) for side in (-2, -1, 0, 1, 2)}
-    protected_elevators = ((set(arrival.footprint) if arrival else set())
-                            | terminal_footprint)
+    (preplaced_exit_index, preplaced_exit_route, exit_stand,
+     protected_elevators) = select_exit_host(
+         tiles, rooms, edges, anchor_index=anchor_index,
+         minimum_route_rooms=minimum_route_rooms,
+         required_post_anchor=required_post_anchor,
+         planned_exit_index=planned_exit_index, boss_locks_exit=boss_locks_exit,
+         arrival=arrival)
     door_zones: set[tuple[int, int]] = ({arrival.portal} if arrival else set())
     paths = [_carve_connection(tiles, rooms[a], rooms[b], rng, complexity,
                                door_zones, protected_elevators)
@@ -336,19 +275,8 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
                        index // GRID)
                       for index, thing in enumerate(things) if thing == PUSHWALL),
                      "progression", "pushwall-travel")
-    if is_boss and scheduled_gate.colors[:1] == ("silver",):
-        anchor_route_end = critical_route.index(anchor_index) + 1
-        door_gate_plan = GatePlan(("silver",))
-        door_route = critical_route[:anchor_route_end]
-        door_target = rooms[anchor_index].center
-    elif is_boss:
-        door_gate_plan = GatePlan()
-        door_route = critical_route
-        door_target = rooms[anchor_index].center
-    else:
-        door_gate_plan = scheduled_gate
-        door_route = critical_route
-        door_target = exit_stand
+    door_gate_plan, door_route, door_target = gate_plan_for_floor(
+        is_boss, scheduled_gate, critical_route, anchor_index, rooms, exit_stand)
     rare_key_reservations: set[tuple[int, int]] = set()
     if rare_room_index >= 0:
         rare_room = rooms[rare_room_index]
@@ -447,14 +375,8 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
         # others the arena gates the exit by position instead, so no gold exists
         # on the floor and claiming otherwise would fail key solvency.
         if boss_locks_exit:
-            key_objectives = key_objectives + (
-                KeyObjective("gold", boss_cell, boss_index, len(key_order) + 1,
-                             0, "boss-drop"),)
-            # The gold elevator door and its key travel together: counting the
-            # lock without the drop, or the reverse, makes the recorded
-            # progression disagree with the tiles and validation rejects it.
-            locks += 1
-            key_order = key_order + ("gold",)
+            key_objectives, locks, key_order = add_boss_gate_objective(
+                key_objectives, locks, key_order, boss_cell, boss_index)
     # Resolve architecture and room identity before population. Encounters
     # consume the same role/theme/concept decision as decoration rather than
     # independently guessing what kind of room they occupy.
@@ -695,38 +617,12 @@ def generate_campaign(config: CampaignConfig, output: Path,
             levels.append(_best_candidate(candidates, clean, levels, config))
         if progress:
             progress(number, 10)
-    realized_vine_floors = {
-        level.number for level in levels
-        if any(screen.kind == "hallway-run" for screen in level.vine_screens)}
+    validate_campaign_budgets(levels, schedule)
     realized_vine_runs = sum(
         screen.kind == "hallway-run" for level in levels for screen in level.vine_screens)
-    if (realized_vine_floors - {vine_floor}
-            or len(realized_vine_floors) > 1
-            or realized_vine_runs > vine_budget):
-        raise RuntimeError("campaign hallway-vine budget was violated")
     realized_gallery_floors = {
         level.number for level in levels if level.guard_galleries}
-    if realized_gallery_floors - {gallery_floor} or len(realized_gallery_floors) > 1:
-        raise RuntimeError("campaign guard-gallery budget was violated")
-    if any(first.variant == second.variant
-           for first, second in zip(levels, levels[1:])):
-        raise RuntimeError("campaign repeated the same floor type consecutively")
-    if any(first.circulation_skeleton == second.circulation_skeleton
-           for first, second in zip(levels, levels[1:])):
-        raise RuntimeError("campaign repeated the same circulation skeleton consecutively")
-    if sum(level.circulation_skeleton in HALLWAY_FIRST_SKELETONS
-           for level in levels) != 3:
-        raise RuntimeError("campaign violated its three-floor hallway-first schedule")
-    if any(first.progression_grammar == second.progression_grammar
-           for first, second in zip(levels, levels[1:])):
-        raise RuntimeError("campaign repeated the same progression grammar consecutively")
-    if any(first.sky_vistas and second.sky_vistas
-           for first, second in zip(levels, levels[1:])):
-        raise RuntimeError("campaign repeated the exterior-vista motif consecutively")
     realized_rare = [level.number for level in levels if level.rare_motif is not None]
-    expected_rare = [rare_motif_floor] if rare_motif_floor else []
-    if realized_rare != expected_rare:
-        raise RuntimeError("campaign rare-motif schedule was violated")
     # Encode metadata-independent provenance only after every gameplay choice
     # is final. Zone-label permutations preserve all acoustic grouping.
     apply_campaign_watermark(levels, config.seed)

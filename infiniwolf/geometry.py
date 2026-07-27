@@ -37,19 +37,83 @@ feature, with its own preconditions, rollback, reservation, and validation.
 from __future__ import annotations
 
 from collections import Counter, deque
+from dataclasses import dataclass
 import heapq
 from itertools import combinations
 import math
 import random
 
 from .campaign import HALLWAY_FIRST_SKELETONS
+from .config import CampaignConfig
 from .grid import (_FLOOR_OR_DOOR, _at, _dead_ends_near, _floor_components,
                    _inside_room, _is_dead_end, _is_floor, _overlaps, _reachable, _set)
-from .model import (AuthoredSightline, FloorPlan, PlacedPlan, Room,
+from .model import (AuthoredSightline, FloorPlan, PlacedPlan, Room, RoomSpec,
                     SharedVoid)
 from .wl6 import (DOOR_EW, DOOR_GOLD_EW, DOOR_NS, DOORS, FLOOR, GRID,
                   STATIC_BLOCKING, WALL, ZONE_MAX)
 from .ledger import reserve as ledger_reserve
+
+
+SHAPE_MULTIPLIERS = (0.0, 0.65, 0.82, 1.00, 1.10, 1.20)
+SHAPE_TARGETS = (0.0, 0.15, 0.25, 0.40, 0.48, 0.55)
+
+
+@dataclass(frozen=True, slots=True)
+class ShapeBudget:
+    scale: float
+    target: float
+    budget: int
+    utility_shapes: frozenset[int]
+
+
+def shape_budget(config: CampaignConfig, specs: list[RoomSpec]) -> ShapeBudget:
+    """Choose the floor's shape-realization budget and protected room roles."""
+    shape_scale = SHAPE_MULTIPLIERS[int(config.room_shape_variation)]
+    shape_target = SHAPE_TARGETS[int(config.room_shape_variation)]
+    budget = max(1, round(len(specs) * shape_target))
+    utility_shapes = frozenset(
+        index for index, spec in enumerate(specs)
+        if spec.role in {"start", "arrival", "exit", "victory", "recovery"}
+        or spec.tier in {"closet", "corridor", "motif"}
+        or spec.role == "boss-arena")
+    return ShapeBudget(shape_scale, shape_target, budget, utility_shapes)
+
+
+def realize_room_shapes(tiles: list[int], rooms: list[Room], specs: list[RoomSpec],
+                        rng: random.Random, *, rare_motif_enabled: bool,
+                        number: int, floor_variant, shape_scale: float,
+                        shape_budget: int, utility_shapes: frozenset[int]
+                        ) -> tuple[tuple[int, str, tuple[tuple[int, int], ...]] | None,
+                                   dict[int, list[tuple[int, int]]], list[str]]:
+    """Carve the scheduled rare profile and ordinary room-shape budget."""
+    rare_profile: tuple[int, str, tuple[tuple[int, int], ...]] | None = None
+    for room_index, (room, spec) in enumerate(zip(rooms, specs)):
+        if spec.motif != "swastika":
+            continue
+        carved = _carve_swastika_profile(tiles, room, rng)
+        if carved is not None:
+            rare_profile = (room_index, carved[0], carved[1])
+        break
+    if rare_motif_enabled and rare_profile is None:
+        raise ValueError("scheduled rare motif could not be realized")
+    notch_budget = max(1, round(shape_budget * 0.30))
+    notch_anchors = _carve_notches(
+        tiles, rooms, rng,
+        chance=min(1.0, floor_variant.notch_chance * shape_scale),
+        max_rooms=notch_budget, excluded=utility_shapes)
+    authored_shape_count = (1 if rare_profile is not None else 0) + (1 if number == 9 else 0)
+    profile_anchors, profile_shapes = _carve_symmetric_profiles(
+        tiles, rooms, rng,
+        chance=min(1.0, shape_scale),
+        max_rooms=max(0, shape_budget - len(notch_anchors) - authored_shape_count),
+        excluded=frozenset(notch_anchors) | utility_shapes)
+    notch_anchors.update(profile_anchors)
+    realized_shapes = ["rectangle"] * len(rooms)
+    for room_index in notch_anchors:
+        realized_shapes[room_index] = profile_shapes.get(room_index, "mirrored-notch")
+    if rare_profile is not None:
+        realized_shapes[rare_profile[0]] = "swastika-profile"
+    return rare_profile, notch_anchors, realized_shapes
 
 
 def paint_room_floors(tiles: list[int], rooms: list[Room]) -> None:
