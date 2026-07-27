@@ -173,8 +173,28 @@ flowchart TD
 
 ## Placement responsibility
 
-| Output | Planner responsible | Required explanation |
-|---|---|---|
+Each output below has exactly one module that decides it. The module list is the
+architecture; the table is who owns which decision within it.
+
+| Module | Owns |
+| --- | --- |
+| `wl6.py` | The native WL6 code vocabulary. No imports; every other module builds on it |
+| `model.py` | Record types more than one system reads |
+| `grid.py` | Structure queries: what is at a cell, what can be walked to, how rooms connect |
+| `campaign.py` | Ten-map scheduling (attempt-invariant) and candidate ranking |
+| `planning.py` | The abstract building program, before any tile exists |
+| `geometry.py` | Tile realization, corridor routing, repair passes, space partitioning |
+| `progression.py` | Elevators, doors, locks, keys, secrets — whether the floor can be finished |
+| `semantics.py` | `RoomIdentity` and wall treatment — what each space means |
+| `encounters.py` | Room-owned combat composition and patrols |
+| `pickups.py` | Economy compositions and the ammo budget |
+| `decorations.py` | Aesthetic prop composition |
+| `special_floors.py` | Floor 9 and 10 authored contracts |
+| `quality.py` | Soft critique; cannot reach validation |
+| `generator_validation.py` | Hard validation. Non-negotiable, raises |
+| `generator_artifacts.py` | WAD/PK3 encoding and package verification |
+| `generator.py` | Orchestration only |
+
 | Building circulation | `_plan_floor` + `_place_planned_rooms` | Skeleton or hallway-first form, district mode, corridor width, occupied arms, suite/branch role |
 | Floor arrival | `_place_arrival_elevator` | Horizontal axis, complete working-door car, contextual item, player position and facing |
 | Elevator and keys | exit/gate planners | Mandatory route depth, explicit key states, meaningful physical-key detours |
