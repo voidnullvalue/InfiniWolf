@@ -14,6 +14,9 @@ Listed in the order they were made, each with the measurement that justified it.
 
 | Change | Effect |
 | --- | --- |
+| Authored views | The line ahead from a primary landmark's approach doorway is reserved so no prop fills it. 0.88 per floor, 70 of 70 unobstructed, validated on the finished map. |
+| Shared inaccessible voids | At most one per campaign: an interior pocket overlooked by two or more rooms and entered by none, sealed with a pillar screen and proved contained. Ten realized across 16 campaigns, no breaches. |
+| Clustering reduced | 33.5% of props touching another, now 22.9% against 18.6% authored. |
 | Every room is lit | Eight concepts had no lighting entry and silently resolved to unlit, among them `barracks` — the theme every ordinary room receives. Rooms containing any fixture went from 24% to 100%. |
 | Decoration density raised to the authored band | 0.063 → 0.136 decorations per floor cell, against 0.134 in 207 hand-authored community maps. |
 | Floor lamps rationed by position | Never on a cell with floor on all four sides, never abutting another, at most two per room. Open-floor placements went from 17.2% of lamps to 0.0%, against a corpus rate of 1%. |
@@ -133,7 +136,7 @@ Run against 2.0.0 on the commit that carries this file:
 
 | check | result |
 | --- | --- |
-| Full test suite | 240 tests, all passing |
+| Full test suite | 253 tests, all passing |
 | Fingerprint corpus | 32 of 32 identical |
 | Deterministic fuzzing | 90 maps across 3 seeds and all three intensity extremes, all validated |
 | End-to-end package | validates, 35 KiB, **zero critique flags across all ten floors**, no registered assets bundled |

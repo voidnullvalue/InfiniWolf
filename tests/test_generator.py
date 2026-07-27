@@ -2041,9 +2041,13 @@ class GeneratorTests(unittest.TestCase):
                 seed, mirrored, placed = found
                 self.assertGreaterEqual(len(mirrored), 2)
                 self.assertEqual(len(mirrored) % 2, 0)
+                # Solid props only. A ceiling fixture on the travel lane is
+                # correct -- the player walks under it -- and asserting on all
+                # decoration made this fail for the one thing that is allowed.
                 self.assertFalse(
-                    any(cell[1] == travel_y for cell in placed),
-                    f"seed {seed} put decor on the travel line itself")
+                    [cell for cell, item in placed.items()
+                     if cell[1] == travel_y and item in generator.STATIC_BLOCKING],
+                    f"seed {seed} put a solid prop on the travel line itself")
 
     def test_tiny_rooms_get_light_but_no_furniture(self):
         """Closet-sized rooms are lit and otherwise empty.
