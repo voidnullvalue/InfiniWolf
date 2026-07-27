@@ -82,12 +82,12 @@ _DECOR_OPEN: dict[str, tuple[int, ...]] = {
     "guardpost": (37, 27),
     "armory": (37, 46, 67),
     "checkpoint": (37,),
-    "grand": (27, 37, 25),
-    "war-room": (37, 25),
-    "trophy-hall": (27, 37, 25),
+    "grand": (27, 37),
+    "war-room": (37,),
+    "trophy-hall": (27, 37),
     "courtyard": (37, 23, 67),
-    "barracks": (46, 61, 67, 25),
-    "ready-room": (46, 67, 25),
+    "barracks": (46, 61, 67),
+    "ready-room": (46, 67),
     "training-room": (37, 67),
     "crypt": (42, 64, 65, 66, 23),
     "ossuary": (32, 42, 64, 65, 66, 23),
@@ -95,10 +95,10 @@ _DECOR_OPEN: dict[str, tuple[int, ...]] = {
     "storage": (46, 23, 67),
     "supply-cache": (46, 67, 23),
     "workshop": (37, 67, 23),
-    "lounge": (27, 25),
-    "gallery": (27, 37, 25),
-    "dining-hall": (27, 25, 67),
-    "officers-quarters": (27, 37, 25),
+    "lounge": (27,),
+    "gallery": (27, 37),
+    "dining-hall": (27, 67),
+    "officers-quarters": (27, 37),
     "mess-kitchen": (37, 67, 23),
     "corridor": (37, 23),
     "jail": (61, 61, 42, 64, 65, 66, 23),
@@ -262,8 +262,15 @@ def _place_zoned(room: Room,
                 if (cornx, corny) in free and try_place([(cornx, corny)], item):
                     break
                 continue
-            nx = cornx + (1 if cornx < cx else -1)
-            ny = corny + (1 if corny < cy else -1)
+            # Leave a gap between the two members unless they are barrels. A
+            # shoulder-to-shoulder pair of anything else reads as a heap, and the
+            # corpus agrees: barrels are in contact 51-57% of the time while brown
+            # plants manage 8% and vases 13%. Ledger attribution showed 71% of this
+            # generator's floor-prop clustering came from multi-cell composition
+            # commits, of which this was the widest-reaching.
+            step = 1 if item in (24, 58) else 2
+            nx = cornx + (step if cornx < cx else -step)
+            ny = corny + (step if corny < cy else -step)
             cluster = [cell for cell in ((cornx, corny), (nx, corny), (cornx, ny))
                        if cell in free][:2]
             if len(cluster) == 2 and try_place(cluster, item):
@@ -525,6 +532,39 @@ _TARGET_DECOR_DENSITY = 0.134
 _FILL_MIN_SPACING = 2
 # Every static decoration code, for counting what a room already carries.
 _ALL_DECOR = frozenset(STATIC_BLOCKING) | frozenset(STATIC_OPEN)
+
+# Decoration that visually occupies the floor. Ceiling fixtures are excluded: a
+# barrel standing under a light is not two props crowded together, and counting it
+# as such would make every lattice cell look clustered.
+_FLOOR_DECOR = _ALL_DECOR - LIGHTING_ITEMS
+
+# Items allowed to sit shoulder to shoulder with a floor neighbour. Barrels are the
+# genuine case -- stride 1 dominates their runs in the corpus, which clusters them
+# at 53% and 47% against our 38% and 34%, so they are if anything under-stacked.
+# Ceiling fixtures are exempt because they are overhead and already spaced by their
+# own lattice.
+_MAY_ABUT = frozenset({24, 58}) | LIGHTING_ITEMS
+
+
+def _spaced_from_neighbours(things: list[int], cell: tuple[int, int],
+                            item: int) -> bool:
+    """Whether a single prop may go here without crowding a floor neighbour.
+
+    Measured per item against the authored corpus, the passes that commit one prop
+    at a time had no spacing rule at all and clustered badly: Pots 74% against the
+    corpus's 21%, TableChairs 51% against 11%, SuitOfArmor 40% against 2%. Only the
+    density fill was checking, so everything the open-item, accent, alcove and niche
+    passes placed piled against whatever was already there.
+
+    Deliberately not applied to multi-cell commits. A matched pair, a signature or
+    a banquet row is *meant* to read as one group, and spacing those apart would
+    dismantle the compositions this generator exists to make.
+    """
+    if item in _MAY_ABUT:
+        return True
+    x, y = cell
+    return not any(_at(things, x + dx, y + dy) in _FLOOR_DECOR
+                   for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)))
 
 
 def _material_behind(tiles: list[int], cell: tuple[int, int]) -> str | None:
@@ -884,6 +924,21 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
             if any(item in (39, 62, 69) and not _wall_backed(cell)
                    for cell, item in pieces):
                 return False
+            # Spacing applies to every commit, but a composition is only exempt
+            # from *its own* members. A matched pair is meant to read as a group;
+            # it is not meant to be planted beside an unrelated barrel. Exempting
+            # multi-cell groups wholesale left that second case unchecked, and it
+            # was the diffuse remainder of this generator's excess clustering
+            # after the obvious shoulder-to-shoulder shapes were fixed.
+            own = set(cells)
+            for cell, item in pieces:
+                if item in _MAY_ABUT:
+                    continue
+                x, y = cell
+                if any((x + dx, y + dy) not in own
+                       and _at(things, x + dx, y + dy) in _FLOOR_DECOR
+                       for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1))):
+                    return False
             candidate = blocked_cells | set(cells)
             if len(_reachable(tiles, start, locked_open=True, blocked=candidate)) < baseline - len(candidate):
                 return False
@@ -911,8 +966,14 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
         def _try_place(cells: list[tuple[int, int]], item: int) -> bool:
             return _try_place_items([(cell, item) for cell in cells])
 
-        def _place_open(cell: tuple[int, int], item: int) -> bool:
-            """Commit one non-solid item; only occupancy and headroom apply."""
+        def _place_open(cell: tuple[int, int], item: int,
+                        spaced: bool = True) -> bool:
+            """Commit one non-solid item.
+
+            `spaced=False` marks a deliberate attachment -- spill beside a crate,
+            an accent under a landmark -- which is authored-looking and must be
+            allowed to touch its anchor. Everything else keeps its distance.
+            """
             nonlocal static_headroom, wall_display_budget
             if item in (39, 62):
                 if wall_display_budget <= 0:
@@ -921,6 +982,8 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
             if item in LIGHTING_ITEMS and item not in allowed_lights:
                 return False
             if static_headroom <= 0 or _at(things, *cell) != 0:
+                return False
+            if spaced and not _spaced_from_neighbours(things, cell, item):
                 return False
             _set(things, *cell, item)
             ledger_reserve(reserved, [cell], "decorations",
@@ -1431,8 +1494,12 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
             corners = list(anchors.corners)
             rng.shuffle(corners)
             for cornx, corny in corners:
-                nx = cornx + (1 if cornx < cx else -1)
-                ny = corny + (1 if corny < cy else -1)
+                # Same rule as the zoned cluster: barrels may stack, a stash of
+                # anything else leaves a gap so it reads as a pair of objects
+                # rather than a pile.
+                step = 1 if item in (24, 58) else 2
+                nx = cornx + (step if cornx < cx else -step)
+                ny = corny + (step if corny < cy else -step)
                 cluster = [(c) for c in [(cornx, corny), (nx, corny), (cornx, ny)]
                            if c in free][:2]
                 if len(cluster) == 2 and _try_place(cluster, item):
@@ -1443,14 +1510,19 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
                     if spill:
                         spill_item = 61 if theme == "jail" else (46 if theme == "storage" else
                                      61 if atmosphere >= 3 else 46)
-                        _place_open(rng.choice(spill), spill_item)
+                        # Attached on purpose -- spill belongs against its stash --
+                        # so it is exempt from spacing rather than silently refused.
+                        _place_open(rng.choice(spill), spill_item, spaced=False)
                     break
 
         # --- Pattern: pillar colonnade (grand / anchor rooms) ---
         if (motif == "colonnade" and pairs_placed < pair_budget
                 and theme == "grand" and room.w >= 8 and room.h >= 8):
             depth = max(2, min(room.w // 3, room.h // 3))
-            for offset in (0, -1, 1):
+            # Rows two apart, not one. Offsets of -1/0/+1 put three pillars in
+            # contact down each side, which is a block rather than a colonnade --
+            # a colonnade reads by the gaps between its columns.
+            for offset in (0, -2, 2):
                 if pairs_placed >= pair_budget:
                     break
                 a = (room.x + depth, cy + offset)
@@ -1591,18 +1663,45 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
             open_budget = max(1, round((3 if area >= 80 else 2 if area >= 45 else 1) * density))
             count = rng.randrange(0, open_budget + 1)
             floor_clutter = [item for item in open_items if item not in (27, 37)]
-            spots: list[tuple[tuple[int, int], int]] = []
+            # Two kinds of spot, and they get different rules. Spill deliberately
+            # attached to furniture may touch it -- that is the authored look, a
+            # crate with a basket beside it -- but it is capped at one per room,
+            # because the corpus clusters Pots at 21% and Basket at 24%, not the
+            # 74% and 53% an uncapped attachment pass produced. Wall-midcell
+            # clutter is ordinary furnishing and keeps its distance.
+            attached: list[tuple[tuple[int, int], int]] = []
+            spaced_spots: list[tuple[tuple[int, int], int]] = []
             if floor_clutter:
                 beside = [(x + dx, y + dy) for x, y in room_blocked
                           for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1))
                           if (x + dx, y + dy) in free]
                 rng.shuffle(beside)
-                spots += [(cell, rng.choice(floor_clutter)) for cell in beside[:2]]
+                # Occasional, not standard. Clustering counts both members of an
+                # adjacent pair, so one attachment in every room would put roughly
+                # 18% of a floor's decoration in contact by itself -- the whole of
+                # the corpus's clustering budget spent on spill. The corpus puts
+                # Pots in contact 21% of the time and Basket 24%, meaning most are
+                # free-standing, so a third of rooms get spill and the rest do not.
+                attached = ([(cell, rng.choice(floor_clutter))
+                             for cell in beside[:1]]
+                            if beside and rng.random() < 0.33 else [])
                 mids = [cell for cell in anchors.wall_midcells if cell in free]
                 rng.shuffle(mids)
-                spots += [(cell, rng.choice(floor_clutter)) for cell in mids]
-            for cell, item in spots[:count]:
-                _place_open(cell, item)
+                spaced_spots = [(cell, rng.choice(floor_clutter)) for cell in mids]
+            placed_open = 0
+            for cell, item in attached:
+                if placed_open >= count:
+                    break
+                if _place_open(cell, item, spaced=False):
+                    placed_open += 1
+            # Keep trying spots rather than consuming the budget on refusals: a
+            # rejected cell used to lose its slot outright, which cost vocabulary
+            # because the rarer clutter items simply stopped appearing.
+            for cell, item in spaced_spots:
+                if placed_open >= count:
+                    break
+                if _place_open(cell, item):
+                    placed_open += 1
 
         # --- Floor lamps: the sole owner, in corners, at most two ---
         # Gated by `placing_lamps` so no other pass can add item 26. Runs before
@@ -1721,6 +1820,9 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
                     neighbours = [(cell[0] + dx, cell[1] + dy)
                                   for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1))]
                     touching = [_at(things, *n) for n in neighbours]
+                    # _ALL_DECOR rather than _FLOOR_DECOR, and measured: relaxing
+                    # this to ignore ceiling fixtures took clustering from 22.8% to
+                    # 25.2% while recovering only 0.2 of a vocabulary point.
                     crowded = any(t in _ALL_DECOR for t in touching)
                     if crowded:
                         choices = [(i, w) for i, w in choices

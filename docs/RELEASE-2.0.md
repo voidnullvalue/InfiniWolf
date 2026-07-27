@@ -33,11 +33,22 @@ Listed in the order they were made, each with the measurement that justified it.
 
 Stated rather than hidden, with what is known about each.
 
-- **Clustering: 31.8% of props touch another, against 18.6% authored.** Not the
-  density fill — extending its spacing check to diagonals moved the figure from
-  32.9% to 33.5%, i.e. not at all. It is the authored compositions themselves: a
-  corner stash, a banquet row and a colonnade all place props deliberately close.
-- **Wall adjacency 81% against 88%**, and **light fixtures 62 per map against 74.**
+- **Clustering: 22.9% of props touch another, against 18.6% authored.** Down from
+  33.5%, so most of the gap is closed. What remains is diffuse rather than one
+  cause: measured per item, the excess is 2.9 clustered cells per map for ceiling
+  lights, 2.1 for brown plants, and under 1.0 each for everything else, while
+  barrels are *below* the authored rate and offset 1.7 of it. Ledger attribution
+  drove the fixes — 71% of floor-prop clustering was coming from multi-cell
+  composition commits, which had been exempted from spacing wholesale rather than
+  only from their own members.
+- **Wall adjacency 82% against 88%**, and **light fixtures 62 per map against 74.**
+- **Item 69, the spear display, is in neither static registry.** Three blocking
+  palettes place it and `validate_map` has a rule for it, but it is absent from
+  `STATIC_BLOCKING`, `STATIC_OPEN`, and from all 43,122 authored decorations. The
+  spacing and clustering logic reads `_ALL_DECOR`, so a spear rack is invisible to
+  both. Left alone deliberately: adding it to the registry shifts the metrics,
+  dropping it changes what rooms contain, and choosing needs a look in the engine.
+  `test_the_registry_gap_has_not_grown` fails if a second item drifts out.
 - **Positional boss gating is weaker than a key gate.** It forces the player to
   enter and cross the arena, not to kill its occupant. Crossing a fifteen-tile room
   under fire is a fight in practice, but the two contracts are not identical.
