@@ -296,3 +296,13 @@ def _codes_for_colors(colors: set[str] | frozenset[str]) -> frozenset[int]:
     if "silver" in colors:
         codes.update(SILVER_DOORS)
     return frozenset(codes)
+
+
+def _patrol_actor_direction(code: int) -> int | None:
+    """Decode a patrol actor's old-format code into this module's N/E/S/W index."""
+    for patrol_family in PATROLS_BY_FAMILY.values():
+        for tier in range(3):
+            candidate = code - 36 * tier
+            if candidate in patrol_family:
+                return patrol_family.index(candidate)
+    return None

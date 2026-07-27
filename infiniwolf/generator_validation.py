@@ -17,7 +17,7 @@ from .wl6 import (AMMO, BOSSES, CHAINGUN, DECOR_WALLS, DOORS, DOOR_ELEVATOR,
                   PATROL_POINT_DIRECTIONS, PICKUP_CODES, PLAYER_START_CODES,
                   PURPLE_MIN_FLOOR, PUSHWALL, SECRET_EXIT_ZONE, SILVER_DOORS,
                   SILVER_KEY, SPEAR_CONCEPTS, TREASURE,
-                  _codes_for_colors)
+                  _codes_for_colors, _patrol_actor_direction)
 
 # Still reaching back into generator.py, which is why this module cannot be
 # imported from generator.py's top. Each of these has a scheduled home: the four
@@ -945,16 +945,6 @@ def validate_objects(level: GeneratedMap) -> None:
             distance = abs(x - level.start[0]) + abs(y - level.start[1])
             if distance < 6:
                 raise ValueError(f"enemy at {(x, y)} is too close to player start")
-
-
-def _patrol_actor_direction(code: int) -> int | None:
-    """Decode a patrol actor's old-format code into this module's N/E/S/W index."""
-    for patrol_family in PATROLS_BY_FAMILY.values():
-        for tier in range(3):
-            candidate = code - 36 * tier
-            if candidate in patrol_family:
-                return patrol_family.index(candidate)
-    return None
 
 
 def validate_patrols(level: GeneratedMap, steps: int = 512) -> None:
