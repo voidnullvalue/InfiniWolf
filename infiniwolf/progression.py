@@ -10,6 +10,10 @@ cells; progression decides what each becomes -- a plain doorway, a locked gate, 
 secret entrance, an exit structure, or unusable. Geometry never decides that a
 wall is a lock.
 
+Its tile writes are category 2 feature-owned bounded geometry: elevators, doors,
+locks, and pushwall secrets exist only for progression and remain with their named
+operations rather than becoming general geometry passes.
+
 Kept a leaf with respect to the generator: progression consumes finished geometry
 and must never import the orchestrator, or the bottom-of-file import this module
 was created to remove would reappear one layer down.

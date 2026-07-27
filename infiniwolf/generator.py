@@ -41,7 +41,6 @@ from .wl6 import (  # noqa: F401
     STATIC_BLOCKING, STATIC_OPEN, LIGHTING_ITEMS, LIGHTING_FAMILY_ITEMS, SPEAR_CONCEPTS,
     VINE_SCREEN_CONCEPTS,
 )
-from .watermark import apply_campaign_watermark
 from .ledger import Ledger
 from .model import (  # noqa: F401
     AestheticPhase, ArrivalDetail, BossArenaDetail, EncounterPlacement, FloorPlan, FloorVariant,
@@ -90,7 +89,7 @@ from .geometry import (  # noqa: F401
     _assign_sound_zones, _break_long_sightlines, _heal_pinched_room_door_pairs,
     _limit_theme_merge_size, _remove_redundant_plain_doors,
     _spatial_districts, _split_oversized_zones, _harvest_sky_vistas,
-    _primary_hall_geometry, plan_authored_sightlines, carve_shared_void,
+    _primary_hall_geometry, paint_room_floors, plan_authored_sightlines, carve_shared_void,
 )
 from .campaign import (  # noqa: F401
     CIRCULATION_MODES, CIRCULATION_SKELETONS, FLOOR_VARIANT_ROTATION,
@@ -104,6 +103,7 @@ from .generator_artifacts import (  # noqa: F401
     _manifest, _wad_bytes, _mapinfo, _display_name,
     _reproducibility_text, read_manifest, validate_package,
 )
+from .watermark import apply_campaign_watermark
 from .decorations import (  # noqa: F401
     SKY_VISTA_COURTYARD_CHANCE, SKY_VISTA_INTERIOR_CHANCE, _DECOR_BLOCKING, _DECOR_OPEN,
     _DECOR_ZONES, _FRAMEABLE, _LIGHTING_OPTIONS, _decor_theme, _lighting_family,
@@ -157,10 +157,7 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
     specs = [plan.specs[index] for index in placed.spec_indices]
     roles = [spec.role for spec in specs]
     districts = _spatial_districts(rooms, len({spec.district for spec in specs}))
-    for room in rooms:
-        for y in range(room.y, room.y + room.h):
-            for x in range(room.x, room.x + room.w):
-                _set(tiles, x, y, FLOOR)
+    paint_room_floors(tiles, rooms)
     shape_scale = SHAPE_MULTIPLIERS[int(config.room_shape_variation)]
     shape_target = SHAPE_TARGETS[int(config.room_shape_variation)]
     shape_budget = max(1, round(len(rooms) * shape_target))

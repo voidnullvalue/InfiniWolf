@@ -14,6 +14,9 @@ them alone because they are already a composition.
 This module may coordinate the other subsystems through explicit requests. It must
 not grow into a second generator: if a rule applies to ordinary floors too, it
 belongs in the module that owns that rule.
+
+Its boss-arena tile writes are category 2 feature-owned bounded geometry: they
+exist only for the floor-9 arena contract and remain with that special-floor feature.
 """
 
 from __future__ import annotations

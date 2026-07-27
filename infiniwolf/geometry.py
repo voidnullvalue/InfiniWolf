@@ -27,6 +27,11 @@ than returning a degraded result.
 This module owns `_snap_offsets`, which grid.py deliberately does not: it draws
 from the RNG and encodes which room alignments are preferred, making it a
 placement decision rather than a spatial query.
+
+Its ordinary tile writes are category 1 general structural realization: rooms,
+corridors, and repair or partitioning passes. `carve_shared_void` is the
+intentional category 2 exception: bounded geometry owned by the shared-void
+feature, with its own preconditions, rollback, reservation, and validation.
 """
 
 from __future__ import annotations
@@ -45,6 +50,14 @@ from .model import (AuthoredSightline, FloorPlan, PlacedPlan, Room,
 from .wl6 import (DOOR_EW, DOOR_GOLD_EW, DOOR_NS, DOORS, FLOOR, GRID,
                   STATIC_BLOCKING, WALL, ZONE_MAX)
 from .ledger import reserve as ledger_reserve
+
+
+def paint_room_floors(tiles: list[int], rooms: list[Room]) -> None:
+    """Paint every planned room interior in room, row, then column order."""
+    for room in rooms:
+        for y in range(room.y, room.y + room.h):
+            for x in range(room.x, room.x + room.w):
+                _set(tiles, x, y, FLOOR)
 
 
 def _snap_offsets(parent: Room, rw: int, rh: int, side: tuple[int, int],

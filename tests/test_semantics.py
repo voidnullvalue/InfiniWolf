@@ -7,10 +7,14 @@ resulting ordering, because the ranking is what makes it work: duplicate repulsi
 must stay dominant, since two adjacent identical rooms read worse than a missed
 pairing.
 """
+import random
 import unittest
 
 from infiniwolf.semantics import (CONCEPT_AFFINITIES, _affinity_with,
-                                  plan_landmarks)
+                                  _apply_wall_theme, plan_landmarks)
+from infiniwolf.grid import _reachable
+from infiniwolf.model import Room
+from infiniwolf.wl6 import FLOOR, GRID, WALL
 
 
 class AffinityTableTests(unittest.TestCase):
@@ -58,6 +62,20 @@ class AffinityTableTests(unittest.TestCase):
         for entry in CONCEPT_AFFINITIES:
             values = list(entry)
             self.assertNotEqual(values[0], values[-1])
+
+
+class WallMaterialInvariantTests(unittest.TestCase):
+    def test_wall_treatment_preserves_reachable_cells(self):
+        tiles = [WALL] * (GRID * GRID)
+        room = Room(20, 20, 6, 6)
+        for y in range(room.y, room.y + room.h):
+            for x in range(room.x, room.x + room.w):
+                tiles[y * GRID + x] = FLOOR
+        before = _reachable(tiles, room.center, locked_open=True)
+        component_of = {cell: 0 for cell in before}
+        _apply_wall_theme(tiles, [0] * (GRID * GRID), [room], [0],
+                          component_of, {0: (8, (8,))}, random.Random(1))
+        self.assertEqual(_reachable(tiles, room.center, locked_open=True), before)
 
 
 if __name__ == "__main__":

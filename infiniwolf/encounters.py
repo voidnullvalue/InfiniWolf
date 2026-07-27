@@ -13,6 +13,9 @@ while who stands in it and which way they face is an encounter decision.
 
 Reads the finished `RoomIdentity` rather than re-deciding what a room is, so a
 barracks is populated as sleeping quarters and a checkpoint as a manned post.
+
+Its guard-recess tile writes are category 2 feature-owned bounded geometry: the
+recess exists solely to realize its ambush encounter, not as general room shaping.
 """
 
 from __future__ import annotations

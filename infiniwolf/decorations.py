@@ -9,6 +9,9 @@ re-runs full-map reachability with the candidate cells blocked
 Concept tables (`_DECOR_BLOCKING` / `_DECOR_OPEN`) decide which item vocabulary
 a room is eligible for; the placement geometry in `placement` decides where a
 composition may key off.
+
+Its recessed sky-vista writes are category 2 feature-owned bounded geometry: they
+exist solely for that decoration feature and are not general realization.
 """
 
 from __future__ import annotations

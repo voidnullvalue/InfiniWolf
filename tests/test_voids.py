@@ -9,7 +9,8 @@ telling the player two rooms have a relationship in space and not just on a grap
 import random
 import unittest
 
-from infiniwolf.geometry import _VOID_DRESSING, _VOID_FAMILIES, carve_shared_void
+from infiniwolf.geometry import (_VOID_DRESSING, _VOID_FAMILIES, carve_shared_void,
+                                  paint_room_floors)
 from infiniwolf.grid import _at, _is_floor, _reachable
 from infiniwolf.ledger import Ledger
 from infiniwolf.model import Room
@@ -38,6 +39,16 @@ def two_rooms_around_a_pocket():
 
 
 class SharedVoidTests(unittest.TestCase):
+    def test_paint_room_floors_makes_each_room_interior_walkable(self):
+        rooms = [Room(8, 9, 4, 3), Room(22, 27, 5, 4)]
+        tiles = [WALL] * (GRID * GRID)
+        paint_room_floors(tiles, rooms)
+        for room in rooms:
+            for y in range(room.y, room.y + room.h):
+                for x in range(room.x, room.x + room.w):
+                    with self.subTest(cell=(x, y)):
+                        self.assertTrue(_is_floor(_at(tiles, x, y)))
+
     def test_families_all_have_dressing(self):
         for family in _VOID_FAMILIES:
             with self.subTest(family=family):

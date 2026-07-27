@@ -12,6 +12,9 @@ reason this module runs before population rather than alongside it.
 
 Space *partitioning* deliberately lives in geometry.py: which cells form one
 region is a connectivity question, and only the labels assigned here are semantic.
+
+This module's tile writes are category 3 material substitution only. It
+substitutes wall materials and never changes which cells are walkable.
 """
 
 from __future__ import annotations

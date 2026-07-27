@@ -4,6 +4,25 @@ This document describes how the generator turns a seed into a Wolfenstein 3D flo
 
 The ownership rule matters more than the file boundaries, and a handful of cases show where the line falls. `model.py` holds a type when it carries a decision several subsystems consult, not merely because it is a dataclass. `grid.py` answers what is at a cell, what can be walked to, and how rooms connect, but never what should go there -- `_snap_offsets` draws from the RNG to prefer certain room alignments, so it is placement policy and lives in `geometry.py` instead. Space partitioning is a connectivity question and stays in `geometry.py` even though only `semantics.py` uses the labels, because splitting it would fragment one flood fill. Geometry offers candidate threshold cells; `progression.py` decides whether each becomes a doorway, a locked gate, a secret entrance or nothing. `RoomIdentity` is resolved once in `semantics.py` and consumed everywhere after -- no later system re-decides what a room represents. And `quality.py` cannot reach validation at all, so a soft score can order hard-valid candidates but never excuse an invalid one.
 
+### Tile-plane ownership
+
+Tile writes have three categories. **General structural realization** belongs only to `geometry.py`: reusable room painting, corridor routing, repair passes, and space partitioning. **Feature-owned bounded geometry** belongs with the owning feature in `progression.py`, `encounters.py`, `decorations.py`, or `special_floors.py` (and the `geometry.carve_shared_void` exception). It must be a named operation with explicit preconditions before mutation, atomic commit or full rollback, a `ledger.reserve(..., owner=, reason=)` claim, hard `generator_validation` coverage, and no silent degraded fallback when mandatory. **Material substitution** belongs only to `semantics.py`: it swaps wall codes but never changes which cells are walkable. Thus geometry does not exclusively own tile realization; it exclusively owns category-1 realization.
+
+`geometry.carve_shared_void` is the reference category-2 operation: it checks its complete rock pocket before writing, rolls back a failed containment probe, is reserved by its owning call site with an owner and reason, and is hard-validated.
+
+#### Feature-geometry audit
+
+| Feature geometry | Named operation? | Preconditions before mutation? | Atomic commit or rollback? | Reserved with owner + reason? | Hard-validated? | Silent degraded fallback when mandatory? |
+|---|---|---|---|---|---|---|
+| Guard recesses (`encounters._carve_guard_recesses`) | Yes | Yes | Yes — both cells are checked before commit | Yes — `encounters:guard-recess` | Yes | N/A — optional feature |
+| Recessed sky vistas (`decorations._place_decorations`) | **No — inline in a larger pass** | Yes | Yes — complete aperture is checked before commit | Yes — `decorations:sky-vista-support` | Yes | N/A — optional feature |
+| Shared inaccessible voids (`geometry.carve_shared_void`) | Yes | Yes | Yes — containment failure rolls back | Yes — caller claims `geometry:shared-void-*` | Yes | N/A — optional feature |
+| Boss arenas (`special_floors._prepare_boss_arena`) | Yes | **Partial — checks individual pairs, not the full arena** | **No — commits successful pairs without a whole-arena rollback** | Yes — `special_floors:boss-arena-geometry` | Yes | No — validation rejects an unrealized mandatory arena |
+| Secrets / pushwalls (`progression._place_secret` / `_carve_secret_pocket`) | Yes | Yes | Yes — complete footprint is checked before commit | **Partial — only when `protected` is supplied** | Yes | N/A for ordinary secrets; required secret exit raises instead of degrading |
+| Elevators (`progression._place_elevator` / `_place_arrival_elevator`) | Yes | Yes | Yes — complete car footprint is checked before commit | **No — no ledger owner/reason claim** | Yes | No — absence raises and rejects the attempt |
+
+The bold cells are current gaps, recorded here rather than fixed in this output-preserving stage.
+
 ## 1. Grid model
 
 Every level is a `GRID = 64` square. Two 4096-entry integer planes back it:
