@@ -37,15 +37,20 @@ Listed in the order they were made, each with the measurement that justified it.
 
 Stated rather than hidden, with what is known about each.
 
-- **Clustering: 22.9% of props touch another, against 18.6% authored.** Down from
-  33.5%, so most of the gap is closed. What remains is diffuse rather than one
-  cause: measured per item, the excess is 2.9 clustered cells per map for ceiling
-  lights, 2.1 for brown plants, and under 1.0 each for everything else, while
-  barrels are *below* the authored rate and offset 1.7 of it. Ledger attribution
-  drove the fixes — 71% of floor-prop clustering was coming from multi-cell
-  composition commits, which had been exempted from spacing wholesale rather than
-  only from their own members.
-- **Wall adjacency 82% against 88%**, and **light fixtures 62 per map against 74.**
+- **Clustering is no longer a deviation: 18.9% against 18.6% authored.** It was
+  33.5%, then 22.9%. Ledger attribution drove the fixes — 71% of floor-prop
+  clustering was coming from multi-cell composition commits, which had been
+  exempted from spacing wholesale rather than only from their own members. The
+  last of the gap closed with the alcove and RNG-stream changes rather than by a
+  spacing rule, so treat the match as measured, not as engineered to target.
+- **Distinct item types 15.2 against 19.3 authored, and light fixtures 57.3
+  against 74.1.** Both moved *further* from the corpus as clustering closed —
+  17.0 → 15.2 and 62 → 57.3 respectively. That is the trade the spacing and
+  positional rules make: refusing to place a prop beside another one removes the
+  marginal instances first, and those are what carry variety. Named here because
+  the next decoration pass should attack variety without reopening clustering,
+  and it is the harder of the two problems.
+- **Wall adjacency 83.2% against 88.1%.**
 - **Item 69, the spear display, is in neither static registry.** Three blocking
   palettes place it and `validate_map` has a rule for it, but it is absent from
   `STATIC_BLOCKING`, `STATIC_OPEN`, and from all 43,122 authored decorations. The
@@ -71,16 +76,26 @@ holds the Tkinter interface, so `watermark.py` can be imported eagerly without
 making headless generation require a GUI toolkit.
 
 ```
-wl6 ← model ← grid ← placement ← decorations ← semantics
-                  ↖ campaign, planning, progression, pickups,
-                    encounters, geometry, special_floors,
-                    quality, ledger, generator_artifacts
+wl6, room_policy, ledger  (import nothing from the package)
+   ↑
+model ← grid ← placement ← decorations
+   ↑                          semantics ← campaign ← planning
+   ↖ geometry, progression, encounters, pickups, special_floors,
+     quality, generator_artifacts, watermark
                                     ↖ generator_validation ← generator
 ```
+
+`semantics` does not import `decorations`. It used to, for one role/tier lookup
+that resolves a room's base theme — but that lookup is consumed *before* a
+`RoomIdentity` exists, by identity resolution itself, by the decoration
+no-identity fallback, and by the structural-pillar decision. It could not move
+up without a downstream module importing `semantics` for a pre-identity value,
+so it lives in `room_policy`, which imports nothing.
 
 | Module | Owns |
 | --- | --- |
 | `wl6` | The native WL6 code vocabulary. Imports nothing. |
+| `room_policy` | Role/tier → base theme, decided before a `RoomIdentity` exists. Imports nothing. |
 | `model` | Record types more than one system reads. |
 | `grid` | Structure queries: what is at a cell, what can be walked to, how rooms connect. |
 | `campaign` | Ten-map scheduling (attempt-invariant) and candidate ranking. |

@@ -34,7 +34,7 @@ flowchart TD
     B8 --> C
     B9 --> C
 
-    C --> D[Derive floor-attempt seed<br/>create one shared isolated floor RNG]
+    C --> D[Derive floor-attempt seed<br/>one RNG stream per subsystem]
 
     subgraph MAP[generate_map: one candidate floor]
         D --> E[_plan_floor]
@@ -164,10 +164,13 @@ then contrast with accepted floors]
 
 `LittleEntropyMachine` derives the named campaign and floor-attempt seeds with
 blake2b; those payload-name strings are a frozen compatibility contract. The
-current floor generator then creates one isolated `random.Random` from its
-floor-attempt seed and shares it across floor-local subsystems. The named seed
-streams cannot perturb one another, but extra draws in one floor subsystem can
-still move later floor-local choices.
+floor generator then builds one `random.Random` per subsystem from
+`subsystem_seed(floor, attempt, name)`, over the eight names in
+`FLOOR_STREAM_NAMES`: planning, geometry, progression, semantics, encounters,
+pickups, decorations, special_floors. Neither the named campaign streams nor the
+per-subsystem floor streams can perturb one another, so a subsystem can be
+tuned without moving anything else on the floor. Those eight names are in the
+seed payload and are frozen for the same reason.
 
 `ledger.Ledger` records every claim made for a cell rather than replacing an
 earlier claim. A cell stays reserved until its final claim is released, and
