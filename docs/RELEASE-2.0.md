@@ -66,7 +66,9 @@ Stated rather than hidden, with what is known about each.
 
 `generator.py` went from 6,073 lines owning nine systems to an orchestrator of
 about 700. Sixteen modules each own one design decision, and the dependency graph
-is acyclic with no deferred or bottom-of-file imports.
+is acyclic with no deferred or bottom-of-file relative imports. `watermark_cli.py`
+holds the Tkinter interface, so `watermark.py` can be imported eagerly without
+making headless generation require a GUI toolkit.
 
 ```
 wl6 ← model ← grid ← placement ← decorations ← semantics
@@ -83,7 +85,7 @@ wl6 ← model ← grid ← placement ← decorations ← semantics
 | `grid` | Structure queries: what is at a cell, what can be walked to, how rooms connect. |
 | `campaign` | Ten-map scheduling (attempt-invariant) and candidate ranking. |
 | `planning` | The abstract building program, before any tile exists. |
-| `geometry` | Tile realization, corridor routing, repair passes, space partitioning. |
+| `geometry` | General structural realization: reusable room painting, corridor routing, repair passes, and space partitioning. |
 | `progression` | Elevators, doors, locks, keys, secrets — whether the floor can be finished. |
 | `semantics` | `RoomIdentity`, concept affinity, wall treatment, landmark hierarchy. |
 | `encounters` | Room-owned combat composition and patrols. |
@@ -94,7 +96,7 @@ wl6 ← model ← grid ← placement ← decorations ← semantics
 | `ledger` | Cell reservation provenance. |
 | `generator_validation` | Hard validation. Non-negotiable, raises. |
 | `generator_artifacts` | WAD/PK3 encoding, manifest, package verification. |
-| `generator` | Orchestration only. |
+| `generator` | Phase order, floor-seed derivation, and the `boss_locks_exit` integration seam. |
 
 ### The rules that keep the boundaries honest
 
@@ -137,11 +139,11 @@ Run against 2.0.0 on the commit that carries this file:
 
 | check | result |
 | --- | --- |
-| Full test suite | 253 tests, all passing |
+| Full test suite | Passing at release-candidate verification; no stale count retained here |
 | Fingerprint corpus | 32 of 32 identical |
 | Deterministic fuzzing | 90 maps across 3 seeds and all three intensity extremes, all validated |
 | End-to-end package | validates, 35 KiB, **zero critique flags across all ten floors**, no registered assets bundled |
-| Campaign generation time | 231s at the `thorough` default on four cores |
+| Campaign generation time | 231s for one ten-floor `thorough` campaign on the project's four-core test machine |
 | Decoration against the corpus | density 0.136 against 0.134; distinct item types 17.0 against 19.3 |
 
 ```sh
@@ -172,7 +174,8 @@ Where new work belongs:
   that excludes `attempt`, or a rejected floor will re-roll it. That exact bug
   skewed the floor-9 boss two to one.
 - Anything that **reserves a cell** should use `ledger.reserve` with an owner and a
-  reason.
+  reason. A cell retains every claim until its final claim is released; `release`
+  removes only claims owned by its caller.
 
 Two habits worth copying. Calibrate thresholds against a measured distribution, not
 intuition: all four new critique flags first shipped with thresholds outside the

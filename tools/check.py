@@ -2,7 +2,7 @@
 """Tiered test runner: pick a gate proportional to what you changed.
 
 The suite is slow for a real reason -- most tests generate whole floors, and a
-floor costs a few seconds -- so running all 169 tests after every edit wastes
+floor costs a few seconds -- so running the full suite after every edit wastes
 most of an hour. These tiers exist so the inner loop stays in seconds and the
 expensive gate runs when it actually earns its cost.
 

@@ -19,12 +19,10 @@ from .wl6 import (AMMO, BOSSES, CHAINGUN, DECOR_WALLS, DOORS, DOOR_ELEVATOR,
                   SILVER_KEY, SPEAR_CONCEPTS, STATIC_BLOCKING, TREASURE,
                   _codes_for_colors, _patrol_actor_direction)
 
-# Still reaching back into generator.py, which is why this module cannot be
-# imported from generator.py's top. Each of these has a scheduled home: the four
-# circulation/progression vocabularies and _minimum_critical_route_rooms go to
-# campaign.py and progression.py, AUTHORED_PICKUP_TEMPLATES to pickups.py,
-# _codes_for_colors to wl6.py, and the two room-graph walks to whichever module
-# ends up owning the room adjacency graph. Closing this is Stage 2's deliverable.
+# Validation imports the shared circulation vocabulary, pickup templates, and
+# critical-route threshold directly from their owning modules. Keeping those
+# dependencies explicit lets `generator.py` import validation eagerly without a
+# cycle, while validation remains the single hard-rule boundary.
 from .campaign import (CIRCULATION_MODES, CIRCULATION_SKELETONS,
                        HALLWAY_FIRST_SKELETONS, PROGRESSION_GRAMMARS)
 from .pickups import AUTHORED_PICKUP_TEMPLATES
