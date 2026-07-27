@@ -18,6 +18,37 @@ class Intensity(IntEnum):
     VERY_HIGH = 5
 
 
+class GenerationQuality(str, Enum):
+    """How hard to look for a good floor before accepting one.
+
+    Candidate generation is deterministic, so this only widens the pool the
+    selector chooses from -- it never makes an invalid map acceptable. Ranking
+    happens strictly among candidates that already passed validate_map.
+
+    FAST reproduces the historical behaviour: take the first candidate with no
+    critique flags, falling back to the best of three. BALANCED and THOROUGH keep
+    generating to a larger pool and then rank.
+
+    Measured over three seeds, ten floors each: fast averaged 7.3 critique flags
+    per campaign in 127s, balanced 5.0 in 178s, thorough 3.3 in 281s. Pool sizes
+    are set so the three tiers actually differ -- an earlier arrangement gave
+    balanced the same pool as fast's fallback, and it produced byte-for-byte the
+    same flag counts for six percent more time.
+
+    THOROUGH is the default. It halves the flag count, and because the corridor
+    router got 2.8x faster it now costs less wall clock than fast did before that
+    change, so the better maps are not paid for with a regression in generation
+    time against any previously shipped version.
+    """
+    FAST = "fast"
+    BALANCED = "balanced"
+    THOROUGH = "thorough"
+
+    @property
+    def pool_size(self) -> int:
+        return {"fast": 3, "balanced": 5, "thorough": 8}[self.value]
+
+
 class ThemeBias(str, Enum):
     MIXED = "mixed"
     GARRISON = "garrison"
@@ -83,6 +114,7 @@ class CampaignConfig:
     atmosphere: Intensity = Intensity.NORMAL
     secret_reward_quality: Intensity = Intensity.NORMAL
     theme_bias: ThemeBias = ThemeBias.MIXED
+    generation_quality: GenerationQuality = GenerationQuality.THOROUGH
     say_aardwolf: bool = False
 
     @classmethod

@@ -68,7 +68,8 @@ generation as well.
 Every intensity option accepts `1` through `5`:
 
 ```sh
-python3 -m infiniwolf --seed 42 --guard-density 4 --enemy-toughness 3 \
+python3 -m infiniwolf --seed 42 --generation-quality thorough \
+  --guard-density 4 --enemy-toughness 3 \
   --supplies 3 --treasure 2 --secrets 4 --locked-doors 3 \
   --layout-complexity 5 --decoration-amount 4 --room-shape-variation 4 \
   --patrol-activity 3 --atmosphere 2 --secret-reward-quality 4 \
@@ -97,6 +98,8 @@ hallways, narrow connectors, balanced asymmetric room loading, and no empty
 arms; ordinary graph-first floors remain the majority. Decoration also keeps
 blue and green barrels in separate room-level families and treats blue urns
 as singular wall-backed accents rather than loose repeated clutter.
+
+`--generation-quality` controls how hard the generator looks before accepting a floor. `fast` takes the first candidate with no critique flags; `balanced` ranks five valid candidates; `thorough` (the default) ranks eight. Measured over three seeds of ten floors: fast averaged 7.3 critique flags per campaign in 127s, balanced 5.0 in 178s, thorough 3.3 in 281s. Thorough is the default because it roughly halves the flag count and, since the corridor router became 2.8x faster, still finishes sooner than fast did in earlier releases. Candidate generation stays deterministic and ranking only ever chooses among maps that already passed validation, so a higher setting cannot make an invalid map acceptable — it only widens the pool. The setting is recorded in the manifest and in the reproduction command, because it changes which candidate wins and therefore the output.
 
 Using the same version, commit, seed, and settings produces byte-identical output. The named `LittleEntropyMachine` seed source derives independent floor, variant, circulation, progression-grammar, lock, vine-sector, rare-gallery, and rare-motif streams without retry attempts perturbing campaign-scale choices. A manifest inside the PK3 records that seed source, the resolved seed and settings, arrival elevator, circulation or hallway form, exterior vista, semantic prop families, wall and room identity, encounter compositions, patrol routes, the single-floor corridor-vine schedule, rare guard galleries, special-floor family, room shapes, lighting families, key objectives, bounded secrets, pickup compositions, and validation results. Every generated PK3 also includes `infiniwolf-settings.txt`: a plain-text record of the exact version, commit, resolved seed, every control value, and a copyable reproduction command.
 

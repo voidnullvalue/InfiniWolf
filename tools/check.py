@@ -43,7 +43,7 @@ ROOT = Path(__file__).resolve().parents[1]
 # Tests that never generate a map, selected by module.
 FAST_MODULES = ("tests/test_documentation.py", "tests/test_config.py",
                 "tests/test_runtime.py", "tests/test_planning.py",
-                "tests/test_grid.py")
+                "tests/test_grid.py", "tests/test_selection.py")
 # Pure-logic tests inside the generation modules, selected by name.
 FAST_NAMES = ("cell_geometry or fill_never or apogee or decor_theme "
               "or no_concept_resolves or lighting_family_items")

@@ -17,7 +17,7 @@ import zipfile
 
 from . import __version__
 from .build_info import COMMIT as BUILD_COMMIT
-from .config import CampaignConfig
+from .config import CampaignConfig, GenerationQuality
 
 # The WL6 code vocabulary lives in the tiles leaf. Imported by name (rather
 # than star) so it is re-exported from `infiniwolf.generator` exactly as
@@ -728,6 +728,19 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
 
 
 
+def _best_candidate(candidates, clean, accepted, config):
+    """Pick among hard-valid candidates: fewest critique flags first, then score.
+
+    Flag count dominates deliberately. A candidate with a concrete defect should
+    never outrank a clean one because it contrasts more with the previous floor;
+    contrast is a tiebreaker among equally sound maps, not a currency that buys
+    off a defect.
+    """
+    pool = clean or candidates
+    return max(pool, key=lambda level: (-len(level.critique),
+                                        _candidate_score(level, accepted, config)))
+
+
 def generate_campaign(config: CampaignConfig, output: Path,
                       progress: Callable[[int, int], None] | None = None,
                       cancelled: Callable[[], bool] | None = None) -> Path:
@@ -738,6 +751,10 @@ def generate_campaign(config: CampaignConfig, output: Path,
     gallery_floor = schedule.gallery_floor
     rare_motif_floor = schedule.rare_motif_floor
     vista_parity = schedule.vista_parity
+    quality = config.generation_quality
+    if config.say_aardwolf:
+        quality = GenerationQuality.THOROUGH
+    pool_size = quality.pool_size
     for number in range(1, 11):
         if cancelled and cancelled():
             raise GenerationCancelled("campaign generation cancelled")
@@ -753,38 +770,17 @@ def generate_campaign(config: CampaignConfig, output: Path,
                 continue
             candidates.append(candidate)
             if not candidate.critique:
-                if not config.say_aardwolf:
-                    levels.append(candidate)
-                    break
                 clean.append(candidate)
-                if len(clean) == 2:
-                    levels.append(max(
-                        clean, key=lambda level: _candidate_score(
-                            level, levels, config)))
-                    break
-            if config.say_aardwolf and len(candidates) == 8:
-                pool = clean or candidates
-                levels.append(max(
-                    pool, key=lambda level: (
-                        -len(level.critique),
-                        _candidate_score(level, levels, config))))
+            if quality is GenerationQuality.FAST and clean:
+                levels.append(clean[0])
                 break
-            if not config.say_aardwolf and len(candidates) == 3:
-                levels.append(min(candidates, key=lambda level: len(level.critique)))
+            if len(clean) >= pool_size or len(candidates) >= pool_size:
+                levels.append(_best_candidate(candidates, clean, levels, config))
                 break
         else:
-            if candidates:
-                if config.say_aardwolf:
-                    pool = clean or candidates
-                    levels.append(max(
-                        pool, key=lambda level: (
-                            -len(level.critique),
-                            _candidate_score(level, levels, config))))
-                else:
-                    levels.append(min(candidates,
-                                      key=lambda level: len(level.critique)))
-            else:
+            if not candidates:
                 raise RuntimeError(f"floor {number} failed generation: {last_error}")
+            levels.append(_best_candidate(candidates, clean, levels, config))
         if progress:
             progress(number, 10)
     realized_vine_floors = {
