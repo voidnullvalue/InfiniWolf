@@ -22,8 +22,52 @@ import random
 
 from .grid import _at, _is_floor, _set
 from .model import BossArenaDetail, Room, SpritePlacement
-from .wl6 import AMMO, FIRST_AID, KEY_DROP_BOSSES, WALL
+from .wl6 import AMMO, DOORS, FIRST_AID, KEY_DROP_BOSSES, WALL
 from .ledger import reserve as ledger_reserve
+
+
+# Items validate_map requires to hang on a wall rather than stand in the open.
+_WALL_DISPLAYS = (39, 62, 69)
+
+
+def _perimeter_anchor(room: Room, x: int, y: int) -> tuple[int, int]:
+    """Snap a cell to the nearest room-perimeter cell, keeping its side.
+
+    A wall display's authored offset says which part of the arena it decorates;
+    this preserves that intent while moving it to a cell that can actually have
+    rock behind it.
+    """
+    left, right = x - room.x, room.x + room.w - 1 - x
+    top, bottom = y - room.y, room.y + room.h - 1 - y
+    nearest = min(left, right, top, bottom)
+    if nearest == left:
+        return room.x, y
+    if nearest == right:
+        return room.x + room.w - 1, y
+    if nearest == top:
+        return x, room.y
+    return x, room.y + room.h - 1
+
+
+def _wall_backed(tiles: list[int], room: Room, cell: tuple[int, int]) -> bool:
+    """True when `cell` is on the perimeter with non-floor, non-door outside.
+
+    Mirrors generator_validation's own test rather than approximating it, so a
+    display this function accepts cannot be one validation rejects.
+    """
+    x, y = cell
+    outside = []
+    if x == room.x:
+        outside.append((x - 1, y))
+    if x == room.x + room.w - 1:
+        outside.append((x + 1, y))
+    if y == room.y:
+        outside.append((x, y - 1))
+    if y == room.y + room.h - 1:
+        outside.append((x, y + 1))
+    return any(not _is_floor(_at(tiles, *neighbor))
+               and _at(tiles, *neighbor) not in DOORS
+               for neighbor in outside)
 
 
 def _prepare_boss_arena(tiles: list[int], things: list[int], room: Room,
@@ -88,6 +132,18 @@ def _prepare_boss_arena(tiles: list[int], things: list[int], room: Room,
     }.get(family, ())
     decorations: list[tuple[int, int, int]] = []
     for x, y, item in decor_specs:
+        # Flags, armour and spear racks are wall displays: validate_map requires
+        # them on the room perimeter with rock behind. The authored offsets are
+        # measured from the arena centre, and an arena is 14-17 tiles across, so
+        # every one of them landed on interior floor -- placed, then rejected.
+        # That silently killed two of the five families outright: command-bunker
+        # and columned-fortress were planned about 40% of the time between them
+        # and realized never, because their flag cells are always plain floor.
+        # Snap to the nearest wall on the same side so the composition survives.
+        if item in _WALL_DISPLAYS:
+            x, y = _perimeter_anchor(room, x, y)
+            if not _wall_backed(tiles, room, (x, y)):
+                continue
         if (_is_floor(_at(tiles, x, y)) and _at(things, x, y) == 0
                 and (x, y) not in reserved):
             _set(things, x, y, item)

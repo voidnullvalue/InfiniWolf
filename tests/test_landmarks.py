@@ -119,3 +119,49 @@ class LandmarkPlanningTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class BossArenaFamilyTests(unittest.TestCase):
+    """Every authored boss-arena family must be reachable.
+
+    Two of the five were dead: their wall displays sat at offsets measured from
+    the arena centre, an arena is 14-17 tiles across, so those cells were always
+    interior floor. validate_map requires a flag on the perimeter with rock
+    behind, so the decoration was placed and then the whole floor was rejected --
+    every time, for command-bunker and columned-fortress. Planning still chose
+    them about 40% of the time between them, and the retry loop silently re-rolled
+    until it landed on a family that worked, which also skewed the boss pick.
+    """
+
+    def test_wall_displays_snap_to_a_backed_perimeter_cell(self):
+        from infiniwolf.model import Room
+        from infiniwolf.special_floors import _perimeter_anchor, _wall_backed
+        from infiniwolf.wl6 import FLOOR, GRID, WALL
+
+        room = Room(20, 20, 15, 15)
+        tiles = [WALL] * (GRID * GRID)
+        for y in range(room.y, room.y + room.h):
+            for x in range(room.x, room.x + room.w):
+                tiles[y * GRID + x] = FLOOR
+        cx, cy = room.center
+
+        # The offsets the arena families actually use.
+        for dx, dy in ((-5, 4), (5, -4), (0, -5), (0, 5), (-5, -5), (5, -5)):
+            with self.subTest(offset=(dx, dy)):
+                anchored = _perimeter_anchor(room, cx + dx, cy + dy)
+                on_edge = (anchored[0] in (room.x, room.x + room.w - 1)
+                           or anchored[1] in (room.y, room.y + room.h - 1))
+                self.assertTrue(on_edge, f"{anchored} is not on the perimeter")
+                self.assertTrue(_wall_backed(tiles, room, anchored),
+                                f"{anchored} has no rock behind it")
+
+    def test_an_interior_cell_is_not_considered_wall_backed(self):
+        from infiniwolf.model import Room
+        from infiniwolf.special_floors import _wall_backed
+        from infiniwolf.wl6 import FLOOR, GRID, WALL
+        room = Room(20, 20, 15, 15)
+        tiles = [WALL] * (GRID * GRID)
+        for y in range(room.y, room.y + room.h):
+            for x in range(room.x, room.x + room.w):
+                tiles[y * GRID + x] = FLOOR
+        self.assertFalse(_wall_backed(tiles, room, room.center))
