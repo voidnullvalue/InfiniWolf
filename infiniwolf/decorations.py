@@ -19,13 +19,14 @@ from __future__ import annotations
 from collections import Counter, deque
 import random
 
-from .grid import _at, _inside_room, _is_floor, _reachable, _set
+from .grid import (_at, _inside_room, _is_floor, _reachable, _set,
+                   qualifying_dead_end_alcoves)
 from .ledger import reserve as ledger_reserve
 from .model import Room, RoomIdentity, VineScreen
 from .placement import _room_anchors, _room_traversal_frame, _traversal_pair_candidates
 from .room_policy import base_theme as _decor_theme
 from .wl6 import (DECOR_WALLS, DOORS, ENEMY_CODES, GRID, LIGHTING_FAMILY_ITEMS,
-                    LIGHTING_ITEMS, SPECIAL_WALL_TILES, STATIC_BLOCKING, STATIC_OPEN,
+                    LIGHTING_ITEMS, PLAYER_START_CODES, SPECIAL_WALL_TILES, STATIC_BLOCKING, STATIC_OPEN,
                     VINE_SCREEN_CONCEPTS, WALL_MATERIALS)
 
 
@@ -467,6 +468,43 @@ def _cell_openness(tiles: list[int], cell: tuple[int, int]) -> str:
     count = sum(1 for dx in range(-2, 3) for dy in range(-2, 3)
                 if _is_floor(_at(tiles, x + dx, y + dy)))
     return "tight" if count <= 9 else "medium" if count <= 17 else "open"
+
+
+def occupy_dead_end_alcoves(tiles: list[int], things: list[int], rooms: list[Room],
+                            identities: list[RoomIdentity], reserved: set[tuple[int, int]],
+                            rng: random.Random, start: tuple[int, int]
+                            ) -> tuple[tuple[int, int], ...]:
+    """Put a themed open prop in every qualifying gameplay dead-end alcove.
+
+    A one-cell dead end with nothing in it reads as a hole cut in a wall for no
+    reason, so `validate_map` refuses one. That makes occupancy mandatory
+    rather than budgeted: this pass is allowed past the 320 soft cap, because
+    the alternative is rejecting an otherwise good floor over a handful of
+    props. Only ECWolf's own 400-static limit is a genuine wall.
+    """
+    static_count = sum(23 <= thing <= 74 for thing in things)
+    occupied = []
+    for cell in qualifying_dead_end_alcoves(tiles, things, start):
+        x, y = cell
+        if static_count >= 400:
+            raise ValueError("engine static limit prevents dead-end alcove occupancy")
+        owner = next((index for index, room in enumerate(rooms)
+                      if room.x <= x < room.x + room.w and room.y <= y < room.y + room.h), None)
+        if owner is None:
+            owner = next((index for index, room in enumerate(rooms)
+                          if any(room.x <= nx < room.x + room.w and room.y <= ny < room.y + room.h
+                                 for nx, ny in ((x + 1, y), (x - 1, y), (x, y + 1), (x, y - 1)))), None)
+        concept = identities[owner].concept if owner is not None and owner < len(identities) else "corridor"
+        open_items = _DECOR_OPEN.get(concept, STATIC_OPEN)
+        nook_items = [item for item, _ in
+                      _FILL_BUCKETS.get(("nook", _cell_openness(tiles, cell)), ())
+                      if item in open_items]
+        item = rng.choice(nook_items or list(open_items))
+        _set(things, x, y, item)
+        ledger_reserve(reserved, [cell], "decorations", "dead-end-alcove")
+        static_count += 1
+        occupied.append(cell)
+    return tuple(occupied)
 
 
 # P(item | geo, space), as (item, weight) pairs per bucket. Weights are the

@@ -7,7 +7,7 @@ import math
 
 from .grid import (_at, _door_zone, _floor_distances, _inside_room, _is_floor,
                    _path_bends, _reachable, _room_graph_path, _room_predecessor,
-                   _shortest_floor_path)
+                   _shortest_floor_path, qualifying_dead_end_alcoves)
 from .model import EncounterPlacement, GeneratedMap
 from .wl6 import (AMMO, BOSSES, CHAINGUN, DECOR_WALLS, DOORS, DOOR_ELEVATOR,
                   DOOR_ELEVATOR_NS, DUMMY_ELEVATOR_TILE, ELEVATOR_TILE,
@@ -36,6 +36,8 @@ def validate_map(level: GeneratedMap) -> None:
         raise ValueError("invalid plane dimensions")
     if 63 in level.things:
         raise ValueError("Call Apogee decoration is forbidden")
+    for cell in qualifying_dead_end_alcoves(level.tiles, level.things, level.start):
+        raise ValueError(f"empty gameplay dead-end alcove at {cell}")
     if (level.number < PURPLE_MIN_FLOOR
             and any(tile in {19, 25} for tile in level.tiles)):
         raise ValueError("purple wall material appears before the late campaign")

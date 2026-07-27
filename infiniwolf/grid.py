@@ -18,8 +18,8 @@ from __future__ import annotations
 from collections import deque
 
 from .model import Room
-from .wl6 import (DOOR_ELEVATOR, DOOR_ELEVATOR_NS, DOOR_EW, DOOR_NS, DOORS,
-                  FLOOR, GRID, LOCKED_DOORS, SECRET_EXIT_ZONE, ZONE_MAX)
+from .wl6 import (DOOR_ELEVATOR, DOOR_ELEVATOR_NS, DOOR_EW, DOOR_NS, DOORS, ELEVATOR_TILE,
+                  FLOOR, GRID, LOCKED_DOORS, PUSHWALL, SECRET_EXIT_ZONE, ZONE_MAX)
 
 
 def _at(plane: list[int], x: int, y: int) -> int:
@@ -31,6 +31,55 @@ def _set(plane: list[int], x: int, y: int, value: int) -> None:
 
 def _is_floor(value: int) -> bool:
     return FLOOR <= value <= ZONE_MAX or value == SECRET_EXIT_ZONE
+
+
+def _is_walkable(value: int) -> bool:
+    """Whether a tile counts as an orthogonal route for topology queries."""
+    return _is_floor(value) or value in DOORS
+
+
+def _is_dead_end(tiles: list[int], x: int, y: int) -> bool:
+    """Whether a floor cell has exactly one floor-or-door neighbour."""
+    return (_is_floor(_at(tiles, x, y))
+            and sum(_is_walkable(_at(tiles, x + dx, y + dy))
+                    for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1))) == 1)
+
+
+def _dead_ends_near(tiles: list[int], cells: set[tuple[int, int]]) -> set[tuple[int, int]]:
+    """Return dead ends at cells touched by a mutation and their neighbours."""
+    nearby = {(x + dx, y + dy) for x, y in cells
+              for dx, dy in ((0, 0), (1, 0), (-1, 0), (0, 1), (0, -1))}
+    return {(x, y) for x, y in nearby if _is_dead_end(tiles, x, y)}
+
+
+def _dead_end_cells(tiles: list[int]) -> set[tuple[int, int]]:
+    """Return floor cells with exactly one floor-or-door neighbour."""
+    return {(x, y) for y in range(GRID) for x in range(GRID)
+            if _is_dead_end(tiles, x, y)}
+
+
+def _qualifying_dead_end_alcove(tiles: list[int], things: list[int],
+                                cell: tuple[int, int], start: tuple[int, int],
+                                reachable: set[tuple[int, int]]) -> bool:
+    """Whether an empty, reachable one-cell dead end needs visual occupancy."""
+    x, y = cell
+    if (cell == start or _at(things, x, y) != 0
+            or _at(tiles, x, y) == SECRET_EXIT_ZONE
+            or not _is_dead_end(tiles, x, y)):
+        return False
+    neighbours = ((x + dx, y + dy) for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)))
+    if any(_at(things, nx, ny) == PUSHWALL or _at(tiles, nx, ny) == ELEVATOR_TILE
+           for nx, ny in neighbours):
+        return False
+    return cell in reachable
+
+
+def qualifying_dead_end_alcoves(tiles: list[int], things: list[int],
+                                start: tuple[int, int]) -> tuple[tuple[int, int], ...]:
+    """Return every empty, reachable gameplay dead-end alcove in map order."""
+    reachable = _reachable(tiles, start, locked_open=True)
+    return tuple((x, y) for y in range(GRID) for x in range(GRID)
+                 if _qualifying_dead_end_alcove(tiles, things, (x, y), start, reachable))
 
 # Precomputed `_is_floor(code) or code in DOORS` for every tile code. The
 # corridor router evaluates that test on all four neighbours of every candidate

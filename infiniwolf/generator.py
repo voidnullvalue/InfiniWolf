@@ -107,7 +107,7 @@ from .watermark import apply_campaign_watermark
 from .decorations import (  # noqa: F401
     SKY_VISTA_COURTYARD_CHANCE, SKY_VISTA_INTERIOR_CHANCE, _DECOR_BLOCKING, _DECOR_OPEN,
     _DECOR_ZONES, _FRAMEABLE, _LIGHTING_OPTIONS, _decor_theme, _lighting_family,
-    _place_decorations, _place_zoned, _barrel_families,
+    _place_decorations, _place_zoned, _barrel_families, occupy_dead_end_alcoves,
 )
 
 
@@ -570,6 +570,10 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
         paths=paths, identities=identities, atmosphere=int(config.atmosphere),
         notch_anchors=notch_anchors, hallway_vine_budget=hallway_vine_budget,
         allow_sky_vista=sky_vista_enabled)
+    # Last, because it has to see everything already committed: an alcove the
+    # ambush pass gave a sentry, or that decoration already filled, is not a
+    # hole that needs filling. Anything still empty here is one.
+    occupy_dead_end_alcoves(tiles, things, rooms, identities, reserved, rng, start)
     primary_hall_geometry = _primary_hall_geometry(plan, rooms, specs)
     barrel_families = _barrel_families(rooms, things)
     sky_vistas, sky_vista_recesses, sky_vista_supports = _harvest_sky_vistas(

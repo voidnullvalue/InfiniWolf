@@ -43,8 +43,8 @@ import math
 import random
 
 from .campaign import HALLWAY_FIRST_SKELETONS
-from .grid import (_FLOOR_OR_DOOR, _at, _floor_components, _inside_room,
-                   _is_floor, _overlaps, _reachable, _set)
+from .grid import (_FLOOR_OR_DOOR, _at, _dead_ends_near, _floor_components,
+                   _inside_room, _is_dead_end, _is_floor, _overlaps, _reachable, _set)
 from .model import (AuthoredSightline, FloorPlan, PlacedPlan, Room,
                     SharedVoid)
 from .wl6 import (DOOR_EW, DOOR_GOLD_EW, DOOR_NS, DOORS, FLOOR, GRID,
@@ -737,8 +737,15 @@ def _carve_symmetric_profiles(
                                                 room.y + room.h - 2)})
             if walls & central:
                 continue
+            before_dead_ends = _dead_ends_near(tiles, walls)
             for cell in walls:
                 _set(tiles, *cell, WALL)
+            new_dead_ends = _dead_ends_near(tiles, walls) - before_dead_ends
+            if any(room.x <= x < room.x + room.w and room.y <= y < room.y + room.h
+                   for x, y in new_dead_ends):
+                for cell in walls:
+                    _set(tiles, *cell, FLOOR)
+                continue
             anchors[room_index] = room_anchors
             shapes[room_index] = family
             family_counts[family] += 1
@@ -1168,43 +1175,43 @@ def _adjacent_to_room(rooms: list[Room], x: int, y: int) -> bool:
 def _widen_corridors(tiles: list[int], rooms: list[Room], paths: list[list[tuple[int, int]]],
                      rng: random.Random, widen_chance: float = 0.8,
                      protected: set[tuple[int, int]] | None = None) -> None:
-    """A map built entirely from 1-tile halls reads as door-camping and rush
-    traps. Widen eligible straight runs symmetrically from one tile to three,
-    but leave doorway thresholds, bends, constrained runs, and short service
-    connectors pinched to one tile. A failed symmetric widening leaves both
-    sides untouched, so the generator never emits accidental 2-wide halls."""
+    """Symmetrically widen eligible straight corridor runs."""
     protected = set() if protected is None else protected
     for path in paths:
         if len(path) < 6 or rng.random() > widen_chance:
             continue
+        carved_pairs: list[tuple[tuple[int, int], tuple[int, int]]] = []
         for i in range(1, len(path) - 1):
             x, y = path[i]
             if _inside_room(rooms, x, y) or _adjacent_to_room(rooms, x, y):
                 continue
-            if any(_at(tiles, x + dx, y + dy) in DOORS
-                   for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1))):
+            if any(_at(tiles, x + dx, y + dy) in DOORS for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1))):
                 continue
-            px, py = path[i - 1]
-            nx, ny = path[i + 1]
-            horizontal = (px != x) or (nx != x)
-            vertical = (py != y) or (ny != y)
+            px, py = path[i - 1]; nx, ny = path[i + 1]
+            horizontal = (px != x) or (nx != x); vertical = (py != y) or (ny != y)
             if horizontal and not vertical:
                 wings = ((x, y - 1), (x, y + 1))
             elif vertical and not horizontal:
                 wings = ((x - 1, y), (x + 1, y))
             else:
                 continue
-            if any(_inside_room(rooms, wx, wy)
-                   or _adjacent_to_room(rooms, wx, wy) for wx, wy in wings):
+            if any(_inside_room(rooms, wx, wy) or _adjacent_to_room(rooms, wx, wy) for wx, wy in wings):
                 continue
-            if any(_at(tiles, wx + dx, wy + dy) in DOORS
-                   for wx, wy in wings
-                   for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1))):
+            if any(_at(tiles, wx + dx, wy + dy) in DOORS for wx, wy in wings for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1))):
                 continue
             if (not any(cell in protected for cell in wings)
                     and all(_at(tiles, wx, wy) == WALL for wx, wy in wings)):
                 for wx, wy in wings:
                     _set(tiles, wx, wy, FLOOR)
+                carved_pairs.append(wings)
+        for _ in range(len(carved_pairs)):
+            trim = [pair for pair in carved_pairs
+                    if _is_dead_end(tiles, *pair[0]) or _is_dead_end(tiles, *pair[1])]
+            if not trim:
+                break
+            for first, second in trim:
+                _set(tiles, *first, WALL); _set(tiles, *second, WALL)
+            carved_pairs = [pair for pair in carved_pairs if pair not in trim]
 
 
 def _door_axis(tiles: list[int], x: int, y: int) -> int | None:
@@ -1846,8 +1853,10 @@ def _break_long_sightlines(tiles: list[int], things: list[int], rooms: list[Room
                            for dx, dy in ((0, 0), (1, 0), (-1, 0), (0, 1), (0, -1))):
                     continue
                 original = _at(tiles, x, y)
+                dead_ends_before = _dead_ends_near(tiles, {(x, y)})
                 _set(tiles, x, y, WALL)
-                if _reachable(tiles, start, locked_open=True) != baseline - {(x, y)}:
+                if (_reachable(tiles, start, locked_open=True) != baseline - {(x, y)}
+                        or not _dead_ends_near(tiles, {(x, y)}) <= dead_ends_before):
                     _set(tiles, x, y, original)
                     continue
                 # Try to add a perpendicular companion so the break reads as
@@ -1862,8 +1871,11 @@ def _break_long_sightlines(tiles: list[int], things: list[int], rooms: list[Room
                             and _is_floor(orig2)
                             and all(_is_floor(_at(tiles, cx2 + ddx, cy2 + ddy))
                                     for ddx, ddy in ((1, 0), (-1, 0), (0, 1), (0, -1)))):
+                        dead_ends_before = _dead_ends_near(tiles, {(cx2, cy2)})
                         _set(tiles, cx2, cy2, WALL)
-                        if _reachable(tiles, start, locked_open=True) == (baseline - {(x, y)}) - {(cx2, cy2)}:
+                        if (_reachable(tiles, start, locked_open=True)
+                                == (baseline - {(x, y)}) - {(cx2, cy2)}
+                                and _dead_ends_near(tiles, {(cx2, cy2)}) <= dead_ends_before):
                             placed += 1  # companion succeeded
                         else:
                             _set(tiles, cx2, cy2, orig2)  # companion blocked reachability
@@ -1926,9 +1938,15 @@ def _break_long_sightlines(tiles: list[int], things: list[int], rooms: list[Room
                         continue
                     wall_original = _at(tiles, *wall_cell)
                     door_original = _at(tiles, x, y)
+                    crossbar = {wall_cell, (x, y)}
+                    dead_ends_before = _dead_ends_near(tiles, crossbar)
                     _set(tiles, *wall_cell, WALL)
                     _set(tiles, x, y, DOOR_NS if vertical else DOOR_EW)
                     if _reachable(tiles, start, locked_open=True) != baseline - {wall_cell}:
+                        _set(tiles, *wall_cell, wall_original)
+                        _set(tiles, x, y, door_original)
+                        continue
+                    if not _dead_ends_near(tiles, crossbar) <= dead_ends_before:
                         _set(tiles, *wall_cell, wall_original)
                         _set(tiles, x, y, door_original)
                         continue
