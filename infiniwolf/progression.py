@@ -22,7 +22,8 @@ from itertools import combinations
 import math
 import random
 
-from .grid import _at, _door_zone, _is_floor, _reachable, _set
+from .grid import (_at, _door_zone, _floor_distances, _is_floor, _reachable,
+                   _room_graph_path, _set)
 from .geometry import _door_candidate
 from .placement import _room_anchors
 from .model import ArrivalDetail, GatePlan, KeyObjective, Room
@@ -718,3 +719,49 @@ def _carve_secret_pocket(tiles: list[int], things: list[int], px: int, py: int,
         protected.update(footprint)
         protected.update(reward_cells)
     return reward_cells[0]
+
+
+def verify_exit_depth(tiles: list[int], rooms: list[Room], edges,
+                      roles: list[str], start: tuple[int, int],
+                      exit_stand: tuple[int, int], anchor_index: int,
+                      minimum_route_rooms: int,
+                      required_post_anchor: int | None,
+                      preplaced_exit_index: int, preplaced_exit_route,
+                      planned_exit_index: int) -> tuple[int, list[int]]:
+    """Confirm the exit sits deep enough, and reassign the exit role if it moved.
+
+    Depth is compared only against the post-anchor frontier an exit is actually
+    allowed to occupy, not against the farthest room on the floor. A side
+    destination hanging off a strong central hall can be physically farther from
+    the start while branching before the climax; measuring against it would make
+    every legitimate post-climax elevator look artificially shallow and reject
+    good floors.
+
+    Raises rather than degrading: a floor whose exit is reachable too early is a
+    different, worse floor, so the candidate attempt is rejected.
+    """
+    preliminary_distances = _floor_distances(tiles, start)
+    center_distances = {index: preliminary_distances.get(room.center, 0)
+                        for index, room in enumerate(rooms)}
+    room_routes = {index: _room_graph_path(len(rooms), edges, index)
+                   for index in range(1, len(rooms))}
+    post_anchor_frontier = [
+        index for index, route in room_routes.items()
+        if anchor_index in route[:-1] and len(route) >= minimum_route_rooms
+        and (required_post_anchor is None
+             or required_post_anchor in route[:-1])]
+    # Side destinations on a strong central hall may be physically farther
+    # from the start while branching before the climax. They should enrich
+    # exploration, not make every legitimate post-climax elevator look
+    # artificially shallow. Compare exit depth only with the eligible
+    # post-anchor frontier that an exit is actually allowed to occupy.
+    deepest_center = max((center_distances[index]
+                          for index in post_anchor_frontier), default=1) or 1
+    exit_index = preplaced_exit_index
+    critical_route = preplaced_exit_route
+    if preliminary_distances.get(exit_stand, 0) / deepest_center < 0.75:
+        raise ValueError("no post-climax room satisfies the deep-exit route")
+    if exit_index != planned_exit_index:
+        roles[planned_exit_index] = "relief"
+        roles[exit_index] = "exit"
+    return exit_index, critical_route

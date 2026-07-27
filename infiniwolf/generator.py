@@ -64,7 +64,7 @@ from .progression import (  # noqa: F401
     _carve_secret_pocket, _hint_secrets, _key_spot, _key_spot_in_region,
     _lock_code, _minimum_critical_route_rooms, _pick_secret_variant,
     _place_arrival_elevator, _place_doors, _place_elevator, _place_secret,
-    _secret_reward,
+    _secret_reward, verify_exit_depth,
 )
 from .planning import _plan_floor  # noqa: F401
 from .quality import _critique  # noqa: F401
@@ -284,30 +284,10 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
     # anchor/climax room and at the end of a route containing most of the
     # mandatory spine. The old behavior always tried the nominal exit first,
     # even when a much deeper wing made it a trivial early solution.
-    preliminary_distances = _floor_distances(tiles, start)
-    center_distances = {index: preliminary_distances.get(room.center, 0)
-                        for index, room in enumerate(rooms)}
-    room_routes = {index: _room_graph_path(len(rooms), edges, index)
-                   for index in range(1, len(rooms))}
-    post_anchor_frontier = [
-        index for index, route in room_routes.items()
-        if anchor_index in route[:-1] and len(route) >= minimum_route_rooms
-        and (required_post_anchor is None
-             or required_post_anchor in route[:-1])]
-    # Side destinations on a strong central hall may be physically farther
-    # from the start while branching before the climax. They should enrich
-    # exploration, not make every legitimate post-climax elevator look
-    # artificially shallow. Compare exit depth only with the eligible
-    # post-anchor frontier that an exit is actually allowed to occupy.
-    deepest_center = max((center_distances[index]
-                          for index in post_anchor_frontier), default=1) or 1
-    exit_index = preplaced_exit_index
-    critical_route = preplaced_exit_route
-    if preliminary_distances.get(exit_stand, 0) / deepest_center < 0.75:
-        raise ValueError("no post-climax room satisfies the deep-exit route")
-    if exit_index != planned_exit_index:
-        roles[planned_exit_index] = "relief"
-        roles[exit_index] = "exit"
+    exit_index, critical_route = verify_exit_depth(
+        tiles, rooms, edges, roles, start, exit_stand, anchor_index,
+        minimum_route_rooms, required_post_anchor, preplaced_exit_index,
+        preplaced_exit_route, planned_exit_index)
     notch_cells = {cell for cells in notch_anchors.values() for cell in cells}
     reserved = ({start, exit_stand, *notch_cells}
                 | (set(arrival.clearance) | set(arrival.car_cells)
