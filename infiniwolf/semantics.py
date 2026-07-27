@@ -20,10 +20,10 @@ from collections import Counter, deque
 from itertools import combinations
 import random
 
-from .decorations import _decor_theme
 from .grid import _at, _floor_components, _is_floor, _set
 from .model import (FloorVariant, KeyObjective, LandmarkPlan, Room,
                     RoomIdentity, RoomSpec)
+from .room_policy import base_theme
 from .wl6 import (DAMAGED_WALL_CONCEPTS, DECOR_WALLS, DOORS,
                   FLOOR_TEN_STONE_THEME, GRID, JAIL_CANDIDATE_PROBABILITY,
                   MATERIAL_BY_BASE, PURPLE_MIN_FLOOR, WALL,
@@ -47,7 +47,7 @@ def _room_identities(rooms: list[Room], specs: list[RoomSpec], districts: list[i
     overrides = dict(variant.decor_overrides)
     resolved: list[tuple[str, str, int]] = []
     for index, (room, spec, district) in enumerate(zip(rooms, specs, districts)):
-        theme = "jail" if index in jail_rooms else _decor_theme(spec.role, spec.tier)
+        theme = "jail" if index in jail_rooms else base_theme(spec.role, spec.tier)
         if index not in jail_rooms:
             theme = overrides.get(theme, theme)
         special = ("start" if index == 0 else "exit" if room == exit_room else

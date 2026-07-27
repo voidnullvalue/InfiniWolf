@@ -20,6 +20,7 @@ from .grid import _at, _inside_room, _is_floor, _reachable, _set
 from .ledger import reserve as ledger_reserve
 from .model import Room, RoomIdentity, VineScreen
 from .placement import _room_anchors, _room_traversal_frame, _traversal_pair_candidates
+from .room_policy import base_theme as _decor_theme
 from .wl6 import (DECOR_WALLS, DOORS, ENEMY_CODES, GRID, LIGHTING_FAMILY_ITEMS,
                     LIGHTING_ITEMS, SPECIAL_WALL_TILES, STATIC_BLOCKING, STATIC_OPEN,
                     VINE_SCREEN_CONCEPTS, WALL_MATERIALS)
@@ -117,19 +118,6 @@ _DECOR_ZONES: dict[str, tuple[tuple[tuple[int, ...], tuple[int, ...]],
     "grand":     (((26, 35), (27,)),      ((30,), (37,))),
     "lounge":    (((25,), (27,)),         ((35, 34), (46,))),
 }
-
-def _decor_theme(role: str, tier: str) -> str:
-    if tier == "closet":
-        return "storage"
-    if tier in ("hall", "corridor") or role == "circulation":
-        return "corridor"
-    if tier == "anchor" or role in ("climax",):
-        return "grand"
-    if role == "start":
-        return "guardpost"
-    if role == "relief":
-        return "lounge"
-    return "barracks"   # beat, branch, ring, hub, filler
 
 # Recessed exterior vistas retain the original wall plane as matching pillar
 # supports. Name the rates so this landmark can be deliberately tuned.
