@@ -116,6 +116,19 @@ until it runs. It caught a dropped `reserved.update` that let props into sealed
 secret pockets on four seeds. It caught a lost reservation in the first ledger
 wiring. None of those were visible in the diff.
 
+### Release-candidate verification
+
+Run against 2.0.0 on the commit that carries this file:
+
+| check | result |
+| --- | --- |
+| Full test suite | 240 tests, all passing |
+| Fingerprint corpus | 32 of 32 identical |
+| Deterministic fuzzing | 90 maps across 3 seeds and all three intensity extremes, all validated |
+| End-to-end package | validates, 35 KiB, **zero critique flags across all ten floors**, no registered assets bundled |
+| Campaign generation time | 231s at the `thorough` default on four cores |
+| Decoration against the corpus | density 0.136 against 0.134; distinct item types 17.0 against 19.3 |
+
 ```sh
 python3 tools/unresolved_names.py       # names a module uses but never imports
 python3 tools/fingerprint.py --check    # generated maps still byte-identical

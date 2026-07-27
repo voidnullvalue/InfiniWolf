@@ -297,6 +297,11 @@ def _manifest(config, levels, secret_from, vine_floor, vine_budget,
                          "purpose": plan.purpose, "score": plan.score,
                          "approach_room": plan.approach_room}
                         for plan in level.landmarks],
+                    # The one composition each room realized, "" for the rooms
+                    # deliberately left plain. This is the audit trail for motif
+                    # selection: without it there is no way to tell from a package
+                    # whether a floor's rooms were composed or merely filled.
+                    "room_motifs": level.room_motifs,
                     "room_concepts": level.room_concepts,
                     "room_shapes": level.room_shapes,
                     "lighting_families": level.lighting_families,
