@@ -32,6 +32,7 @@ import time
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
+from infiniwolf.campaign import resolve_schedule  # noqa: E402
 from infiniwolf.config import CampaignConfig, Intensity  # noqa: E402
 from infiniwolf.generator import _wad_bytes, generate_map  # noqa: E402
 
@@ -112,12 +113,15 @@ def _generate(config: CampaignConfig, floor: int):
     such combination collapse to the same "failed" marker and silently stop
     testing anything -- the exact bug the throwaway version of this tool had.
     """
+    # Use the campaign's own per-floor options rather than hand-rolled kwargs, so
+    # the corpus exercises exactly what generate_campaign does. Hand-rolling them
+    # once meant the floor-9 boss was never passed, and a change to boss selection
+    # showed up as "identical" because the corpus silently took the default path.
+    options = resolve_schedule(config).floor_options(floor)
     last = None
     for attempt in range(50):
         try:
-            return generate_map(config, floor, attempt,
-                                secret_exit=(floor == 4),
-                                secret_source=(1 if floor == 10 else None))
+            return generate_map(config, floor, attempt, **options)
         except ValueError as error:
             last = error
     raise RuntimeError(f"floor {floor} never validated in 50 attempts: {last}")

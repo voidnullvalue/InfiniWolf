@@ -165,3 +165,67 @@ class BossArenaFamilyTests(unittest.TestCase):
             for x in range(room.x, room.x + room.w):
                 tiles[y * GRID + x] = FLOOR
         self.assertFalse(_wall_backed(tiles, room, room.center))
+
+
+class BossGatingTests(unittest.TestCase):
+    """Floor 9's exit is boss-gated by one of two mechanisms, never neither.
+
+    Hans and Gretel drop a gold key natively, so their elevator stays locked and
+    the kill is mandatory. The other four native bosses drop nothing, so locking
+    the elevator would strand the player -- for them the arena is a cut vertex and
+    the gate is positional. Accepting either is what lets all six bosses appear;
+    requiring the gold objective restricted floor 9 to two actors.
+    """
+
+    def test_the_roster_is_the_curated_native_list(self):
+        from infiniwolf.campaign import BOSS_ROSTER
+        from infiniwolf.wl6 import BOSSES, FAKE_HITLER
+        self.assertEqual(tuple(BOSS_ROSTER), tuple(BOSSES))
+        self.assertEqual(len(BOSS_ROSTER), 6)
+        # FakeHitler neither drops a key nor calls A_BossDeath, so it is a
+        # novelty actor rather than a boss; Spear of Destiny bosses are absent
+        # because their sprites live in SOD's VSWAP, not wl6's.
+        self.assertNotIn(FAKE_HITLER, BOSS_ROSTER)
+
+    def test_boss_choice_is_attempt_independent(self):
+        """A rejected floor must not re-roll the boss.
+
+        It used to: the boss was drawn from the floor rng, and because two arena
+        families could never validate, the retries skewed the result 2:1 toward
+        one boss. Deriving it from a campaign-scale stream removes the coupling.
+        """
+        from infiniwolf.campaign import choose_boss, resolve_schedule
+        from infiniwolf.config import CampaignConfig
+        for seed in (1, 7, 99):
+            config = CampaignConfig(seed=seed)
+            self.assertEqual(choose_boss(config), choose_boss(config))
+            self.assertEqual(resolve_schedule(config).boss, choose_boss(config))
+
+    def test_every_boss_is_reachable_across_seeds(self):
+        from collections import Counter
+        from infiniwolf.campaign import BOSS_ROSTER, choose_boss
+        from infiniwolf.config import CampaignConfig
+        seen = Counter(choose_boss(CampaignConfig(seed=seed))
+                       for seed in range(300))
+        for boss in BOSS_ROSTER:
+            with self.subTest(boss=boss):
+                self.assertGreater(
+                    seen[boss], 0,
+                    f"boss {boss} never selected in 300 seeds")
+
+    def test_the_lock_follows_the_drop(self):
+        """Gold is scheduled only when a boss can actually provide it.
+
+        Locking the elevator for a boss that drops nothing strands the player,
+        since floor 9 has no other gold source.
+        """
+        from infiniwolf.campaign import _lock_schedule, choose_boss
+        from infiniwolf.config import CampaignConfig, Intensity
+        from infiniwolf.wl6 import KEY_DROP_BOSSES
+        for seed in range(60):
+            config = CampaignConfig(seed=seed, locked_doors=Intensity.VERY_HIGH)
+            gate = _lock_schedule(config)[8]
+            drops = choose_boss(config) in KEY_DROP_BOSSES
+            with self.subTest(seed=seed):
+                self.assertEqual("gold" in gate.colors, drops,
+                                 f"gate {gate.colors} vs drop={drops}")

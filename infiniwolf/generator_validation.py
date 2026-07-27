@@ -855,6 +855,21 @@ def validate_map(level: GeneratedMap) -> None:
                 or len(level.boss_arena.geometry) < 2
                 or len(level.boss_arena.decorations) < 3):
             raise ValueError("boss arena lacks its family-owned composition")
+        # The arena must be the only way past itself. This is what lets floor 9
+        # use bosses that drop no key: the exit is gated by position rather than
+        # by a lock, so the player cannot reach the elevator without crossing the
+        # arena. Measured at 96% before it was enforced -- the remaining 4% leaked
+        # through a motif or filler edge that reconnected the far side.
+        sealed = {(x, y)
+                  for y in range(arena.y, arena.y + arena.h)
+                  for x in range(arena.x, arena.x + arena.w)}
+        without_arena = _reachable(level.tiles, level.start, locked_open=True,
+                                   blocked=sealed)
+        if level.exit_stand in without_arena:
+            raise ValueError("floor 9 exit is reachable without crossing the arena")
+        for index, role in enumerate(level.room_roles):
+            if role == "victory" and level.rooms[index].center in without_arena:
+                raise ValueError("floor 9 victory room bypasses the arena")
         interior_cover = sum(
             not _is_floor(_at(level.tiles, x, y))
             for y in range(arena.y + 2, arena.y + arena.h - 2)
@@ -881,9 +896,28 @@ def validate_map(level: GeneratedMap) -> None:
                for y in range(victory_room.y, victory_room.y + victory_room.h)
                for x in range(victory_room.x, victory_room.x + victory_room.w)):
             raise ValueError("floor 9 victory room is not a calm transition")
-        if _at(level.things, *next(objective.cell for objective in level.key_objectives
-                                   if objective.color == "gold")) not in KEY_DROP_BOSSES:
-            raise ValueError("floor 9 completion is not boss gated")
+        # Floor 9 completion must be boss gated, by one of two mechanisms.
+        #
+        # A boss with a native gold drop keeps the locked elevator: the kill itself
+        # is mandatory, because nothing else on the floor provides gold. The other
+        # four native bosses drop nothing, so their elevator is unlocked and the
+        # gate is topological -- the arena is a cut vertex, checked above, and the
+        # player cannot reach the exit without crossing it.
+        #
+        # Accepting either is what lets all six bosses appear. Requiring the gold
+        # objective outright restricted floor 9 to Hans and Gretel.
+        gold_objectives = [objective for objective in level.key_objectives
+                           if objective.color == "gold"]
+        boss_cells = [(index % GRID, index // GRID)
+                      for index, thing in enumerate(level.things)
+                      if thing in BOSSES]
+        if not boss_cells:
+            raise ValueError("floor 9 has no boss")
+        if gold_objectives:
+            if _at(level.things, *gold_objectives[0].cell) not in KEY_DROP_BOSSES:
+                raise ValueError("floor 9 gold key is not backed by a boss drop")
+        elif "gold" in level.key_order:
+            raise ValueError("floor 9 requires gold with no boss drop to provide it")
     elif level.number == 10:
         if level.special_family not in vault_families:
             raise ValueError("floor 10 has no reward-expedition family")

@@ -211,6 +211,7 @@ architecture; the table is who owns which decision within it.
 | Density fill | `_place_decorations` Stage C | Cell geometry (corner/nook/slot/wall/free) chooses the item from the mined corpus distribution, corner-first, concept-eligible only, spaced except for barrels, reachability re-checked |
 | Floor lamps | `_place_decorations` lamp gate + corner snap | Never on a cell with floor on all four sides, never abutting another lamp, at most two per room; matched pairs allowed from any composition, singles only from the corner snap |
 | Matched compositions | `_place_decorations` group commit | Cells committed as one multi-cell group are exempt from the flush-to-wall repair, so a pair cannot be pulled apart |
+| Floor 9 boss gate | `campaign.choose_boss` + `progression` + `validate_map` | Gold-locked elevator when the boss drops a key, otherwise the arena is a cut vertex and the exit and victory room are unreachable without crossing it |
 | Hallway furnishing | `_place_decorations` area gate | Rooms are skipped by floor area (< 20 cells), not by minimum dimension, so three-wide corridors are furnished along their flanking lanes; the centre lane of any room three cells across is reserved outright, since reachability still validates a plugged corridor |
 | Symmetric room profiles | shape carvers + `_place_decorations` | Bounded mirrored structure and matching themed accents |
 

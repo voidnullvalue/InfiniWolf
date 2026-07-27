@@ -130,6 +130,7 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
                  guard_gallery_enabled: bool = False,
                  rare_motif_enabled: bool = False,
                  sky_vista_enabled: bool = True,
+                 boss: int | None = None,
                  ) -> GeneratedMap:
     seed = config.floor_seed(number, attempt)
     if config.say_aardwolf:
@@ -201,6 +202,13 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
         if structural:
             _add_pillars(tiles, room, rng, chance=floor_variant.pillar_chance)
     is_boss = number == 9
+    # Floor 9's exit is gated two ways, and which one applies depends on the boss.
+    # Hans and Gretel drop a gold key natively, so their elevator stays locked and
+    # the kill itself is mandatory. The other four bosses drop nothing, so locking
+    # the elevator would strand the player -- for them the arena gates the exit by
+    # position instead, which validate_map now enforces as a cut vertex.
+    boss_locks_exit = is_boss and (
+        (boss if boss is not None else HANS_GROSSE) in KEY_DROP_BOSSES)
     planned_exit_index = roles.index("exit")
     anchor_index = next(index for index, spec in enumerate(specs)
                         if spec.tier == "anchor")
@@ -240,7 +248,7 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
         trial_tiles = tiles.copy()
         try:
             trial_stand = _place_elevator(
-                trial_tiles, rooms[room_index], locked=is_boss)
+                trial_tiles, rooms[room_index], locked=boss_locks_exit)
         except ValueError:
             continue
         tiles[:] = trial_tiles
@@ -406,7 +414,10 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
     if is_boss:
         boss_index = anchor_index
         boss_room = rooms[boss_index]
-        boss_choice = rng.choice(tuple(sorted(KEY_DROP_BOSSES)))
+        # Chosen by the campaign schedule so a rejected attempt cannot re-roll
+        # it. Standalone calls fall back to the historic key-drop pair.
+        boss_choice = boss if boss is not None else rng.choice(
+            tuple(sorted(KEY_DROP_BOSSES)))
         boss_arena_detail = _prepare_boss_arena(
             tiles, things, boss_room, reserved, rng, plan.special_family)
         realized_shapes[boss_index] = f"boss-{boss_arena_detail.profile}"
@@ -420,11 +431,18 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
             preboss_index = None
         boss_cell = next((index % GRID, index // GRID)
                          for index, thing in enumerate(things) if thing == boss)
-        key_objectives = key_objectives + (
-            KeyObjective("gold", boss_cell, boss_index, len(key_order) + 1,
-                         0, "boss-drop"),)
-        locks += 1
-        key_order = key_order + ("gold",)
+        # Only a boss with a native gold drop contributes a key objective. For the
+        # others the arena gates the exit by position instead, so no gold exists
+        # on the floor and claiming otherwise would fail key solvency.
+        if boss_locks_exit:
+            key_objectives = key_objectives + (
+                KeyObjective("gold", boss_cell, boss_index, len(key_order) + 1,
+                             0, "boss-drop"),)
+            # The gold elevator door and its key travel together: counting the
+            # lock without the drop, or the reverse, makes the recorded
+            # progression disagree with the tiles and validation rejects it.
+            locks += 1
+            key_order = key_order + ("gold",)
     # Resolve architecture and room identity before population. Encounters
     # consume the same role/theme/concept decision as decoration rather than
     # independently guessing what kind of room they occupy.

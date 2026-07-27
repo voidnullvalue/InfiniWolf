@@ -22,6 +22,7 @@ import math
 import random
 
 from .config import CampaignConfig
+from .wl6 import BOSSES, KEY_DROP_BOSSES
 from .model import FloorVariant, GatePlan, GeneratedMap
 from .quality import weighted_distance
 
@@ -300,11 +301,43 @@ def _lock_schedule(config: CampaignConfig) -> tuple[GatePlan, ...]:
             colors = (color,)
         plans[floor - 1] = GatePlan(colors)
 
+    # Floor 9's gold gate is now conditional on the boss. The arena gates the exit
+    # by position, so a boss who drops no key needs no lock -- and locking the
+    # elevator anyway would strand the player, since nothing else on the floor
+    # provides gold. Hans and Gretel keep the lock: their drop makes the kill
+    # mandatory rather than merely the crossing.
     silver_boss_chance = (0.0, 0.0, 0.10, 0.25, 0.50, 0.70)[intensity]
-    plans[8] = GatePlan(("silver", "gold") if rng.random() < silver_boss_chance
-                        else ("gold",))
+    wants_silver = rng.random() < silver_boss_chance
+    if choose_boss(config) in KEY_DROP_BOSSES:
+        plans[8] = GatePlan(("silver", "gold") if wants_silver else ("gold",))
+    else:
+        plans[8] = GatePlan(("silver",) if wants_silver else ())
     plans[9] = GatePlan()
     return tuple(plans)
+
+# Floor 9's boss. All six native WL6 bosses are eligible because the arena gates
+# the exit topologically -- everything past it is reachable only through it -- so
+# the exit no longer depends on a boss that drops a gold key. Hans and Gretel keep
+# their key drop as an additional gate when they are chosen.
+# wl6.BOSSES is already the curated native roster: it excludes FakeHitler, which
+# neither drops a key nor calls A_BossDeath, and the Spear of Destiny bosses whose
+# sprites live in SOD's VSWAP rather than wl6's.
+BOSS_ROSTER = BOSSES
+
+
+def _boss_seed(config: CampaignConfig) -> int:
+    """Attempt-independent stream for the floor-9 boss.
+
+    Deliberately not drawn from the floor rng. When it was, every rejected floor-9
+    attempt re-rolled the boss, and because two arena families could never validate
+    the retries skewed the result 2:1 toward one boss.
+    """
+    return config.rare_motif_seed() ^ 0x424F5353393939
+
+
+def choose_boss(config: CampaignConfig) -> int:
+    return random.Random(_boss_seed(config)).choice(BOSS_ROSTER)
+
 
 @dataclass(frozen=True, slots=True)
 class CampaignSchedule:
@@ -322,6 +355,7 @@ class CampaignSchedule:
     gallery_floor: int
     rare_motif_floor: int
     vista_parity: int
+    boss: int
 
     def floor_options(self, number: int) -> dict[str, object]:
         """The per-floor slice of this schedule, as generate_map keyword args.
@@ -340,6 +374,7 @@ class CampaignSchedule:
             "guard_gallery_enabled": number == self.gallery_floor,
             "rare_motif_enabled": number == self.rare_motif_floor,
             "sky_vista_enabled": number % 2 == self.vista_parity,
+            "boss": self.boss if number == 9 else None,
         }
 
 
@@ -380,7 +415,8 @@ def resolve_schedule(config: CampaignConfig) -> CampaignSchedule:
     return CampaignSchedule(
         secret_from=secret_from, variants=variants, vine_floor=vine_floor,
         vine_budget=vine_budget, gallery_floor=gallery_floor,
-        rare_motif_floor=rare_motif_floor, vista_parity=vista_parity)
+        rare_motif_floor=rare_motif_floor, vista_parity=vista_parity,
+        boss=choose_boss(config))
 
 
 def _set_distance(first: tuple[str, ...], second: tuple[str, ...]) -> float:
