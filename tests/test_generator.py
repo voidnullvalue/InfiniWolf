@@ -49,6 +49,28 @@ def _generate_with_retries(config: CampaignConfig, floor: int, attempts: int = 5
 FAST = GenerationQuality.FAST
 
 
+class StreamIsolationTests(unittest.TestCase):
+    def test_advancing_decorations_cannot_move_non_decoration_output(self):
+        config = CampaignConfig(seed=20260727)
+        # No sky-vista request: its recesses are an explicitly visual decoration
+        # effect, while this asserts the structural tile plane remains fixed.
+        base = generate_map(config, 4, 0, sky_vista_enabled=False)
+        advanced = generate_map(
+            config, 4, 0, sky_vista_enabled=False, stream_advance={"decorations": 37})
+        self.assertEqual(base.tiles, advanced.tiles)
+        # These are the non-decoration things and their owner metadata: secrets,
+        # doors/keys, actors, authored pickups, progression, and geometry.
+        self.assertEqual(base.start, advanced.start)
+        self.assertEqual(base.exit_stand, advanced.exit_stand)
+        self.assertEqual(base.locked_doors, advanced.locked_doors)
+        self.assertEqual(base.key_order, advanced.key_order)
+        self.assertEqual(base.key_objectives, advanced.key_objectives)
+        self.assertEqual(base.secret_details, advanced.secret_details)
+        self.assertEqual(base.encounters, advanced.encounters)
+        self.assertEqual(base.pickup_placements, advanced.pickup_placements)
+        self.assertEqual(base.enemy_tiers, advanced.enemy_tiers)
+
+
 class GeneratorTests(unittest.TestCase):
     def test_enemy_roster_weights_and_normal_ss_unlock(self):
         self.assertEqual([(name, weight) for name, _, weight, _ in generator.ENEMY_FAMILIES],

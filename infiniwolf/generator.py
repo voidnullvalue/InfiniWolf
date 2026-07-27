@@ -134,11 +134,27 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
                  boss: int | None = None,
                  phase: AestheticPhase | None = None,
                  shared_void_enabled: bool = False,
+                 stream_advance: dict[str, int] | None = None,
                  ) -> GeneratedMap:
-    seed = config.floor_seed(number, attempt)
-    if config.say_aardwolf:
-        seed ^= config.aardwolf_seed(number)
-    rng = random.Random(seed)
+    streams = {name: random.Random(config.subsystem_seed(number, attempt, name))
+               for name in ("planning", "geometry", "progression", "semantics",
+                            "encounters", "pickups", "decorations", "special_floors")}
+    planning_rng = streams["planning"]
+    geometry_rng = streams["geometry"]
+    progression_rng = streams["progression"]
+    semantics_rng = streams["semantics"]
+    encounters_rng = streams["encounters"]
+    pickups_rng = streams["pickups"]
+    decorations_rng = streams["decorations"]
+    special_floors_rng = streams["special_floors"]
+    # Test hook: deliberately consume one named stream without perturbing any
+    # other subsystem. It makes the isolation contract directly testable.
+    for name, draws in (stream_advance or {}).items():
+        if name not in streams:
+            raise ValueError(f"unknown floor stream: {name}")
+        for _ in range(draws):
+            streams[name].random()
+    seed = config.subsystem_seed(number, attempt, "planning")
     tiles = [WALL] * (GRID * GRID)
     things = [0] * (GRID * GRID)
     complexity = int(config.layout_complexity)
@@ -147,11 +163,11 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
     circulation_skeleton = _circulation_sequence(config)[number - 1]
     progression_grammar = _progression_sequence(config)[number - 1]
     scheduled_gate = _lock_schedule(config)[number - 1]
-    plan = _plan_floor(rng, complexity, number, variant=floor_variant,
+    plan = _plan_floor(planning_rng, complexity, number, variant=floor_variant,
                        skeleton=circulation_skeleton,
                        progression_grammar=progression_grammar,
                        rare_motif=rare_motif_enabled)
-    placed = _place_planned_rooms(rng, plan, number)
+    placed = _place_planned_rooms(geometry_rng, plan, number)
     rooms = placed.rooms
     edges = placed.edges
     specs = [plan.specs[index] for index in placed.spec_indices]
@@ -164,7 +180,7 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
     shape_budget_limit = shape_policy.budget
     utility_shapes = shape_policy.utility_shapes
     rare_profile, notch_anchors, realized_shapes = realize_room_shapes(
-        tiles, rooms, specs, rng, rare_motif_enabled=rare_motif_enabled,
+        tiles, rooms, specs, geometry_rng, rare_motif_enabled=rare_motif_enabled,
         number=number, floor_variant=floor_variant, shape_scale=shape_scale,
         shape_budget=shape_budget_limit, utility_shapes=utility_shapes)
     overrides = dict(floor_variant.decor_overrides)
@@ -174,7 +190,7 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
         structural = (predicted == "grand"
                       or (floor_variant.name == "catacombs" and spec.tier == "anchor"))
         if structural:
-            _add_pillars(tiles, room, rng, chance=floor_variant.pillar_chance)
+            _add_pillars(tiles, room, geometry_rng, chance=floor_variant.pillar_chance)
     is_boss = number == 9
     # Bounded visual modifiers for this floor's place in the campaign. A
     # standalone call gets the neutral phase, so single-map generation is
@@ -202,7 +218,7 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
     arrival = None
     if number != 1:
         arrival = _place_arrival_elevator(
-            tiles, rooms[0], rooms[first_neighbor].center, rng,
+            tiles, rooms[0], rooms[first_neighbor].center, geometry_rng,
             floor_variant.name)
     (preplaced_exit_index, preplaced_exit_route, exit_stand,
      protected_elevators) = select_exit_host(
@@ -212,10 +228,10 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
          planned_exit_index=planned_exit_index, boss_locks_exit=boss_locks_exit,
          arrival=arrival)
     door_zones: set[tuple[int, int]] = ({arrival.portal} if arrival else set())
-    paths = [_carve_connection(tiles, rooms[a], rooms[b], rng, complexity,
+    paths = [_carve_connection(tiles, rooms[a], rooms[b], geometry_rng, complexity,
                                door_zones, protected_elevators)
              for a, b in edges]
-    _widen_corridors(tiles, rooms, paths, rng,
+    _widen_corridors(tiles, rooms, paths, geometry_rng,
                      widen_chance=floor_variant.widen_chance,
                      protected=protected_elevators)
     if arrival is not None:
@@ -258,7 +274,7 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
     canvas = FloorCanvas(tiles=tiles, things=things, rooms=rooms, specs=specs,
                          roles=roles, edges=edges, reserved=reserved, start=start)
     installation = install_secrets(
-        canvas, config, number, rng, arrival=arrival, exit_room=exit_room,
+        canvas, config, number, progression_rng, arrival=arrival, exit_room=exit_room,
         anchor_index=anchor_index, critical_route=critical_route,
         rare_profile=rare_profile, secret_exit=secret_exit)
     rewards = list(installation.rewards)
@@ -289,7 +305,7 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
         reserved.reserve(rare_key_reservations, "special_floors",
                          "rare-motif-key-exclusion", hard=False)
     locks, key_order, key_objectives = _place_doors(
-        tiles, things, rooms, edges, paths, rng, start, door_target, roles,
+        tiles, things, rooms, edges, paths, progression_rng, start, door_target, roles,
         reserved, door_gate_plan, door_route)
     reserved.release(rare_key_reservations, "special_floors",
                      "rare-motif-exclusion-expired")
@@ -307,36 +323,36 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
         if inward:
             reserved.reserve(inward[:1], "progression", "key-approach",
                              room_index=objective.host_room)
-    _break_long_sightlines(tiles, things, rooms, reserved, rng, start)
-    _split_oversized_zones(tiles, rooms, rng, reserved)
+    _break_long_sightlines(tiles, things, rooms, reserved, geometry_rng, start)
+    _split_oversized_zones(tiles, rooms, geometry_rng, reserved)
     if _remove_redundant_plain_doors(tiles):
         # A removed door can extend a floor-only sightline which the earlier
         # pass correctly treated as interrupted; repair only that new case.
-        _break_long_sightlines(tiles, things, rooms, reserved, rng, start,
+        _break_long_sightlines(tiles, things, rooms, reserved, geometry_rng, start,
                                allow_doors=False, walls_for_redundant_doors=True)
     # Collapse tight double-doorways where a corridor clips a pinched room
     # corner into a single clean threshold (rare; leaves wide double entrances).
     door_pushwalls = {(index % GRID, index // GRID)
                       for index, thing in enumerate(things) if thing == PUSHWALL}
     if _heal_pinched_room_door_pairs(tiles, rooms, start, door_pushwalls):
-        _break_long_sightlines(tiles, things, rooms, reserved, rng, start,
+        _break_long_sightlines(tiles, things, rooms, reserved, geometry_rng, start,
                                allow_doors=False, walls_for_redundant_doors=True)
     # With the gate probe below, seeds 0--19 on floors 2/5/8 placed at most
     # two doors (40 total doors at most), retried no maps, and left 41/60
     # samples with a second visible base material share of at least 10%.
-    _limit_theme_merge_size(tiles, rooms, rng, reserved)
+    _limit_theme_merge_size(tiles, rooms, geometry_rng, reserved)
     if sum(tile in DOORS for tile in tiles) > 56:
         raise ValueError("door budget exceeded")
     # Before recesses, population and pickups: the void must own its cells outright
     # so nothing places an actor or a reward the player can see and never reach.
     shared_void = None
     if shared_void_enabled:
-        shared_void = carve_shared_void(tiles, things, rooms, reserved, rng, start)
+        shared_void = carve_shared_void(tiles, things, rooms, reserved, geometry_rng, start)
         if shared_void is not None:
             reserved.reserve(shared_void.interior, "geometry", "shared-void-interior")
             reserved.reserve(shared_void.screens, "geometry", "shared-void-screen")
     guard_recesses = _carve_guard_recesses(
-        tiles, things, rooms, specs, roles, reserved, rng, start, exit_room)
+        tiles, things, rooms, specs, roles, reserved, encounters_rng, start, exit_room)
     boss_room = None
     boss_arena_detail = None
     preboss_index = None
@@ -356,12 +372,12 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
         boss_room = rooms[boss_index]
         # Chosen by the campaign schedule so a rejected attempt cannot re-roll
         # it. Standalone calls fall back to the historic key-drop pair.
-        boss_choice = boss if boss is not None else rng.choice(
+        boss_choice = boss if boss is not None else special_floors_rng.choice(
             tuple(sorted(KEY_DROP_BOSSES)))
         boss_arena_detail = _prepare_boss_arena(
-            tiles, things, boss_room, reserved, rng, plan.special_family)
+            tiles, things, boss_room, reserved, special_floors_rng, plan.special_family)
         realized_shapes[boss_index] = f"boss-{boss_arena_detail.profile}"
-        boss = _place_boss(tiles, things, boss_room, reserved, rng,
+        boss = _place_boss(tiles, things, boss_room, reserved, special_floors_rng,
                            room_index=boss_index, placements=pickup_placements,
                            boss=boss_choice, family=plan.special_family)
         preboss_index = next((index for index, role in enumerate(roles)
@@ -381,15 +397,15 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
     # consume the same role/theme/concept decision as decoration rather than
     # independently guessing what kind of room they occupy.
     _assign_sound_zones(tiles)
-    component_of, group_theme = _assign_area_themes(tiles, rooms, districts, rng, number,
+    component_of, group_theme = _assign_area_themes(tiles, rooms, districts, semantics_rng, number,
                                                     theme_pool=floor_variant.theme_pool)
-    jail_rooms = _select_jail_rooms(rooms, districts, component_of, group_theme, tiles, rng,
+    jail_rooms = _select_jail_rooms(rooms, districts, component_of, group_theme, tiles, semantics_rng,
                                     jail_probability=floor_variant.jail_probability)
     identities = _room_identities(rooms, specs, districts, edges, floor_variant, jail_rooms,
                                   component_of, group_theme, exit_room, boss_room,
                                   plan.special_family, key_objectives)
     landmarks = _apply_wall_theme(tiles, things, rooms, districts, component_of, group_theme,
-                                  rng, jail_rooms, identities=identities,
+                                  semantics_rng, jail_rooms, identities=identities,
                                   atmosphere=int(config.atmosphere),
                                   damage_scale=phase.damage)
     exit_pushwall = next((detail.pushwall for detail in secret_details
@@ -404,7 +420,7 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
                      detail.pushwall[1])
                     for detail in secret_details if detail.shape == "nested"}
     plain_walls = frozenset(nested_inner)
-    secret_hints = _hint_secrets(tiles, things, component_of, group_theme, rng,
+    secret_hints = _hint_secrets(tiles, things, component_of, group_theme, semantics_rng,
                                  special_pushwall=exit_pushwall,
                                  plain_walls=plain_walls)
     if exit_pushwall is not None and secret_hints.get(exit_pushwall) != "symmetric-landmark":
@@ -432,7 +448,7 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
         and roles[index] not in {"arrival", "victory", "recovery", "boss-arena",
                                  "staging", "premium-vault"})
     guard_galleries = (_place_guard_gallery(
-        tiles, things, rooms, identities, realized_shapes, reserved, rng, start,
+        tiles, things, rooms, identities, realized_shapes, reserved, special_floors_rng, start,
         gallery_eligible) if guard_gallery_enabled else ())
     actor_clearance: set[tuple[int, int]] = set()
     calm_rooms = frozenset(index for index, role in enumerate(roles)
@@ -442,7 +458,7 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
                                and rooms[index] != exit_room)
     encounters: list[EncounterPlacement] = []
     enemy_tiers = _place_population(
-        config, number, rooms, tiles, things, reserved, rng, start, exit_room,
+        config, number, rooms, tiles, things, reserved, encounters_rng, start, exit_room,
         patrol_chance=PATROL_TARGETS[int(config.patrol_activity)],
         placements=pickup_placements, actor_clearance=actor_clearance,
         progression_number=(secret_source if number == 10 and secret_source else number),
@@ -451,7 +467,7 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
         critical_route=tuple(critical_route), guard_recesses=guard_recesses,
         key_objectives=key_objectives, encounter_out=encounters)
     gallery_tiers = _populate_guard_galleries(
-        guard_galleries, things, number, rng, encounters)
+        guard_galleries, things, number, encounters_rng, encounters)
     enemy_tiers = tuple(ordinary + gallery
                         for ordinary, gallery in zip(enemy_tiers, gallery_tiers))
     premium_index = (next((index for index, role in enumerate(roles)
@@ -459,7 +475,7 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
                      if number == 10 else None)
     expedition_rooms: list[int] = []
     _place_authored_pickups(
-        config, number, rooms, tiles, things, reserved, rng, start, identities,
+        config, number, rooms, tiles, things, reserved, pickups_rng, start, identities,
         critical_route, edges, pickup_placements, preboss_index=preboss_index,
         premium_index=premium_index,
         expedition_candidates=tuple(optional_rooms),
@@ -484,7 +500,7 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
         reserved.reserve(line.cells, "semantics", "framed-landmark-view",
                          room_index=line.target_room)
     lighting_families, vine_screens, room_motifs = _place_decorations(
-        rooms, tiles, things, reserved, start, rng, roles=roles, specs=specs,
+        rooms, tiles, things, reserved, start, decorations_rng, roles=roles, specs=specs,
         jail_rooms=jail_rooms,
         density=(floor_variant.decor_density
                  * DECORATION_MULTIPLIERS[int(config.decoration_amount)]),
@@ -495,7 +511,7 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
     # Last, because it has to see everything already committed: an alcove the
     # ambush pass gave a sentry, or that decoration already filled, is not a
     # hole that needs filling. Anything still empty here is one.
-    occupy_dead_end_alcoves(tiles, things, rooms, identities, reserved, rng, start)
+    occupy_dead_end_alcoves(tiles, things, rooms, identities, reserved, decorations_rng, start)
     primary_hall_geometry = _primary_hall_geometry(plan, rooms, specs)
     barrel_families = _barrel_families(rooms, things)
     sky_vistas, sky_vista_recesses, sky_vista_supports = _harvest_sky_vistas(

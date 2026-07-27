@@ -29,6 +29,38 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(config.lock_seed(), source.locks())
         self.assertEqual(config.circulation_seed(2), source.circulation(2))
 
+    def test_floor_subsystem_streams_are_frozen_and_isolated(self):
+        config = CampaignConfig(seed=123)
+        self.assertEqual(config.subsystem_seed(4, 2, "geometry"),
+                         10854422598633397279)
+        self.assertEqual(config.subsystem_seed(4, 2, "geometry"),
+                         config.subsystem_seed(4, 2, "geometry"))
+        self.assertNotEqual(config.subsystem_seed(4, 2, "geometry"),
+                            config.subsystem_seed(4, 2, "decorations"))
+        self.assertNotEqual(config.subsystem_seed(4, 2, "geometry"),
+                            config.subsystem_seed(4, 3, "geometry"))
+        with self.assertRaises(ValueError):
+            config.subsystem_seed(4, 2, "renamed-stream")
+
+    def test_named_campaign_xor_derivations_preserve_the_original_arithmetic(self):
+        for seed in (0, 123, 987654321):
+            source = LittleEntropyMachine(seed)
+            config = CampaignConfig(seed=seed)
+            with self.subTest(seed=seed):
+                self.assertEqual(config.hallway_schedule_seed(), source.circulation(1) ^ 0x48414C4C57415931)
+                self.assertEqual(config.progression_schedule_seed(6), source.circulation(6) ^ 0x50524F4752455353)
+                self.assertEqual(config.aesthetic_drift_seed(), source.circulation(1) ^ 0x41455354)
+                self.assertEqual(config.boss_schedule_seed(), source.rare_motif() ^ 0x424F5353393939)
+                self.assertEqual(config.vista_schedule_seed(), source.circulation(10) ^ 0x564953544131)
+                self.assertEqual(config.void_schedule_seed(), source.guard_gallery() ^ 0x564F4944)
+                self.assertEqual(config.aardwolf_rhythm_seed(), source.aardwolf(10) ^ 0xA4D0F)
+                self.assertEqual(config.variant_aardwolf_seed(6), source.variant(6) ^ source.aardwolf(6))
+                self.assertEqual(config.circulation_aardwolf_seed(6), source.circulation(6) ^ source.aardwolf(5))
+                self.assertEqual(config.progression_aardwolf_seed(6), (source.circulation(6) ^ 0x50524F4752455353) ^ source.aardwolf(6))
+                self.assertEqual(config.secret_source_aardwolf_seed(), source.floor(10) ^ source.aardwolf(1))
+                self.assertEqual(config.vine_aardwolf_seed(), source.vines() ^ source.aardwolf(8))
+                self.assertEqual(config.guard_gallery_aardwolf_seed(), source.guard_gallery() ^ source.aardwolf(7))
+
     def test_hidden_stream_is_stable_and_separate(self):
         config = CampaignConfig(seed=123, say_aardwolf=True)
         self.assertEqual(config.aardwolf_seed(2), config.aardwolf_seed(2))

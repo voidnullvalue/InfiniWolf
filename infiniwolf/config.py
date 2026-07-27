@@ -76,6 +76,9 @@ class LittleEntropyMachine:
     def floor(self, floor: int, attempt: int = 0) -> int:
         return self._digest(f"infiniwolf:v1:{self.seed}:{floor}:{attempt}")
 
+    def floor_stream(self, floor: int, attempt: int, subsystem: str) -> int:
+        return self._digest(f"infiniwolf:stream:v1:{self.seed}:{floor}:{attempt}:{subsystem}")
+
     def variant(self, floor: int) -> int:
         return self._digest(f"infiniwolf:variant:v1:{self.seed}:{floor}")
 
@@ -96,6 +99,29 @@ class LittleEntropyMachine:
 
     def aardwolf(self, floor: int) -> int:
         return self._digest(f"infiniwolf:aardwolf:v1:{self.seed}:{floor}")
+
+    # Preserve the original campaign arithmetic exactly; names make these choices auditable.
+    def hallway_schedule(self) -> int: return self.circulation(1) ^ 0x48414C4C57415931
+    def progression_schedule(self, floor: int) -> int: return self.circulation(floor) ^ 0x50524F4752455353
+    def aesthetic_drift(self) -> int: return self.circulation(1) ^ 0x41455354
+    def boss_schedule(self) -> int: return self.rare_motif() ^ 0x424F5353393939
+    def vista_schedule(self) -> int: return self.circulation(10) ^ 0x564953544131
+    def void_schedule(self) -> int: return self.guard_gallery() ^ 0x564F4944
+    def aardwolf_rhythm(self) -> int: return self.aardwolf(10) ^ 0xA4D0F
+    def variant_with_aardwolf(self, floor: int) -> int: return self.variant(floor) ^ self.aardwolf(floor)
+    def circulation_with_aardwolf(self, floor: int) -> int: return self.circulation(floor) ^ self.aardwolf(11 - floor)
+    def progression_with_aardwolf(self, floor: int) -> int: return self.progression_schedule(floor) ^ self.aardwolf(floor)
+    def secret_source_with_aardwolf(self) -> int: return self.floor(10) ^ self.aardwolf(1)
+    def vine_with_aardwolf(self) -> int: return self.vines() ^ self.aardwolf(8)
+    def guard_gallery_with_aardwolf(self) -> int: return self.guard_gallery() ^ self.aardwolf(7)
+
+
+# Compatibility contract: these literal names are part of the frozen blake2b seed
+# payload. Renaming one changes every map for every existing seed.
+FLOOR_STREAM_NAMES = frozenset({
+    "planning", "geometry", "progression", "semantics", "encounters",
+    "pickups", "decorations", "special_floors",
+})
 
 
 @dataclass(frozen=True, slots=True)
@@ -125,6 +151,14 @@ class CampaignConfig:
         if not 1 <= floor <= 10:
             raise ValueError("floor must be between 1 and 10")
         return LittleEntropyMachine(self.seed).floor(floor, attempt)
+
+    def subsystem_seed(self, floor: int, attempt: int, subsystem: str) -> int:
+        """Seed one floor-local subsystem; names are a compatibility contract."""
+        if not 1 <= floor <= 10:
+            raise ValueError("floor must be between 1 and 10")
+        if subsystem not in FLOOR_STREAM_NAMES:
+            raise ValueError(f"unknown floor stream: {subsystem}")
+        return LittleEntropyMachine(self.seed).floor_stream(floor, attempt, subsystem)
 
     def variant_seed(self, floor: int) -> int:
         """Seed for a floor's base-variant pick, separate from floor_seed.
@@ -163,6 +197,23 @@ class CampaignConfig:
         if not 1 <= floor <= 10:
             raise ValueError("floor must be between 1 and 10")
         return LittleEntropyMachine(self.seed).aardwolf(floor)
+
+    def _entropy(self) -> LittleEntropyMachine:
+        return LittleEntropyMachine(self.seed)
+
+    def hallway_schedule_seed(self) -> int: return self._entropy().hallway_schedule()
+    def progression_schedule_seed(self, floor: int) -> int: return self._entropy().progression_schedule(floor)
+    def aesthetic_drift_seed(self) -> int: return self._entropy().aesthetic_drift()
+    def boss_schedule_seed(self) -> int: return self._entropy().boss_schedule()
+    def vista_schedule_seed(self) -> int: return self._entropy().vista_schedule()
+    def void_schedule_seed(self) -> int: return self._entropy().void_schedule()
+    def aardwolf_rhythm_seed(self) -> int: return self._entropy().aardwolf_rhythm()
+    def variant_aardwolf_seed(self, floor: int) -> int: return self._entropy().variant_with_aardwolf(floor)
+    def circulation_aardwolf_seed(self, floor: int) -> int: return self._entropy().circulation_with_aardwolf(floor)
+    def progression_aardwolf_seed(self, floor: int) -> int: return self._entropy().progression_with_aardwolf(floor)
+    def secret_source_aardwolf_seed(self) -> int: return self._entropy().secret_source_with_aardwolf()
+    def vine_aardwolf_seed(self) -> int: return self._entropy().vine_with_aardwolf()
+    def guard_gallery_aardwolf_seed(self) -> int: return self._entropy().guard_gallery_with_aardwolf()
 
     def to_json(self) -> str:
         values = asdict(self)

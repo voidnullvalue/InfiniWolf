@@ -100,9 +100,8 @@ def _variant_sequence(config: CampaignConfig) -> tuple[FloorVariant, ...]:
     forced boss/vault identities."""
     picks: list[FloorVariant] = []
     for floor in range(1, 9):
-        seed = config.variant_seed(floor)
-        if config.say_aardwolf:
-            seed ^= config.aardwolf_seed(floor)
+        seed = (config.variant_aardwolf_seed(floor) if config.say_aardwolf
+                else config.variant_seed(floor))
         rng = random.Random(seed)
         pool = [variant for variant in FLOOR_VARIANT_ROTATION
                 if not picks or variant.name != picks[-1].name]
@@ -202,17 +201,15 @@ def _circulation_sequence(config: CampaignConfig) -> tuple[str, ...]:
     # Keeping floors 9/10 outside this schedule preserves their authored boss
     # and reward-expedition identities while making the new family exactly
     # thirty percent of a ten-map campaign.
-    schedule_rng = random.Random(config.circulation_seed(1)
-                                 ^ 0x48414C4C57415931)
+    schedule_rng = random.Random(config.hallway_schedule_seed())
     rare_floor = _rare_motif_schedule(config)
     hallway_candidates = [floor for floor in range(1, 9)
                           if floor != rare_floor]
     hallway_floors = frozenset(schedule_rng.sample(hallway_candidates, 3))
     result: list[str] = []
     for floor, variant in enumerate(variants, 1):
-        seed = config.circulation_seed(floor)
-        if config.say_aardwolf:
-            seed ^= config.aardwolf_seed(11 - floor)
+        seed = (config.circulation_aardwolf_seed(floor) if config.say_aardwolf
+                else config.circulation_seed(floor))
         rng = random.Random(seed)
         family = (HALLWAY_FIRST_SKELETONS if floor in hallway_floors
                   else set(CIRCULATION_SKELETONS) - HALLWAY_FIRST_SKELETONS)
@@ -235,9 +232,8 @@ def _progression_sequence(config: CampaignConfig) -> tuple[str, ...]:
     """Choose macro progression grammars independently of floor retries."""
     result: list[str] = []
     for floor in range(1, 11):
-        seed = config.circulation_seed(floor) ^ 0x50524F4752455353
-        if config.say_aardwolf:
-            seed ^= config.aardwolf_seed(floor)
+        seed = (config.progression_aardwolf_seed(floor) if config.say_aardwolf
+                else config.progression_schedule_seed(floor))
         rng = random.Random(seed)
         pool = [grammar for grammar in PROGRESSION_GRAMMARS
                 if not result or grammar != result[-1]]
@@ -347,7 +343,7 @@ def aesthetic_phase(config: CampaignConfig, floor: int) -> AestheticPhase:
     # Position along the ordinary campaign, 0.0 at floor 1 to 1.0 at floor 8, with a
     # seeded offset so the same floor number is not always at the same point.
     span = max(1, 8 - 1)
-    drift = random.Random(config.circulation_seed(1) ^ 0x41455354).uniform(-0.12, 0.12)
+    drift = random.Random(config.aesthetic_drift_seed()).uniform(-0.12, 0.12)
     position = min(1.0, max(0.0, (floor - 1) / span + drift))
 
     def band(low: float, high: float) -> float:
@@ -369,7 +365,7 @@ def _boss_seed(config: CampaignConfig) -> int:
     attempt re-rolled the boss, and because two arena families could never validate
     the retries skewed the result 2:1 toward one boss.
     """
-    return config.rare_motif_seed() ^ 0x424F5353393939
+    return config.boss_schedule_seed()
 
 
 def choose_boss(config: CampaignConfig) -> int:
@@ -421,14 +417,12 @@ class CampaignSchedule:
 
 def resolve_schedule(config: CampaignConfig) -> CampaignSchedule:
     """Draw every campaign-scale choice from attempt-independent streams."""
-    secret_seed = config.floor_seed(10)
-    if config.say_aardwolf:
-        secret_seed ^= config.aardwolf_seed(1)
+    secret_seed = (config.secret_source_aardwolf_seed() if config.say_aardwolf
+                   else config.floor_seed(10))
     secret_from = 1 + secret_seed % 6
     variants = _variant_sequence(config)
-    vine_seed = config.vine_seed()
-    if config.say_aardwolf:
-        vine_seed ^= config.aardwolf_seed(8)
+    vine_seed = (config.vine_aardwolf_seed() if config.say_aardwolf
+                 else config.vine_seed())
     vine_rng = random.Random(vine_seed)
     vine_floors = list(range(2, 9))
     vine_weights = [4 if variants[floor - 1].name == "catacombs" else
@@ -436,9 +430,8 @@ def resolve_schedule(config: CampaignConfig) -> CampaignSchedule:
                     for floor in vine_floors]
     vine_floor = vine_rng.choices(vine_floors, weights=vine_weights, k=1)[0]
     vine_budget = 2 if vine_rng.random() < 0.28 else 1
-    gallery_seed = config.guard_gallery_seed()
-    if config.say_aardwolf:
-        gallery_seed ^= config.aardwolf_seed(7)
+    gallery_seed = (config.guard_gallery_aardwolf_seed() if config.say_aardwolf
+                    else config.guard_gallery_seed())
     gallery_rng = random.Random(gallery_seed)
     gallery_enabled = gallery_rng.random() < 0.22
     gallery_floors = list(range(3, 9))
@@ -451,13 +444,12 @@ def resolve_schedule(config: CampaignConfig) -> CampaignSchedule:
     # Only one parity of floors may request a vista in a campaign. This keeps
     # the rare motif from appearing on consecutive maps without changing
     # standalone-map generation or tying it to a specific theme.
-    vista_parity = random.Random(config.circulation_seed(10)
-                                 ^ 0x564953544131).randrange(2)
+    vista_parity = random.Random(config.vista_schedule_seed()).randrange(2)
     # One shared void per campaign at most, on an ordinary floor. Rarity is the
     # feature: a building with one inaccessible courtyard has a landmark, a
     # building with five has a layout quirk. Scheduled campaign-wide like the vine
     # sector and the guard gallery so retries cannot multiply it.
-    void_rng = random.Random(config.guard_gallery_seed() ^ 0x564F4944)
+    void_rng = random.Random(config.void_schedule_seed())
     void_floor = (void_rng.choice(range(2, 9))
                   if void_rng.random() < 0.45 else 0)
     return CampaignSchedule(
@@ -513,7 +505,7 @@ def _candidate_score(level: GeneratedMap, previous: list[GeneratedMap],
     score += 0.6 * sum(
         frozenset((level.room_concepts[first], level.room_concepts[second]))
         in CONCEPT_AFFINITIES for first, second in level.edges)
-    rhythm = random.Random(config.aardwolf_seed(10) ^ 0xA4D0F)
+    rhythm = random.Random(config.aardwolf_rhythm_seed())
     phase = rhythm.random() * math.tau
     tension = math.sin(phase + level.number * math.tau / 4.5)
     actor_density = sum(level.enemy_tiers) / max(1, len(level.rooms))
