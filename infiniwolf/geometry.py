@@ -1765,3 +1765,46 @@ def _break_long_sightlines(tiles: list[int], things: list[int], rooms: list[Room
                 break
         if not changed:
             return placed
+
+
+def _harvest_sky_vistas(tiles: list[int], things: list[int]) -> tuple[
+        tuple[tuple[tuple[int, int], ...], ...],
+        tuple[tuple[tuple[int, int], ...], ...],
+        tuple[tuple[tuple[int, int], ...], ...]]:
+    """Read back the exterior vistas the wall pass composed.
+
+    Pure analysis of a finished plane, not a placement decision: it groups sky
+    tiles into connected spans and, for each, records the floor cells that look
+    into it and which of those carry a pillar support. The wall composer already
+    decided where sky belongs; this is how the manifest and validation learn what
+    it built, which is why it lives beside the other plane analyses rather than in
+    the orchestrator.
+    """
+    sky_cells = {(index % GRID, index // GRID)
+                 for index, tile in enumerate(tiles) if tile == 16}
+    sky_vistas: list[tuple[tuple[int, int], ...]] = []
+    sky_vista_recesses: list[tuple[tuple[int, int], ...]] = []
+    sky_vista_supports: list[tuple[tuple[int, int], ...]] = []
+    while sky_cells:
+        component = {sky_cells.pop()}
+        queue = deque(component)
+        while queue:
+            x, y = queue.popleft()
+            for neighbor in ((x + 1, y), (x - 1, y),
+                             (x, y + 1), (x, y - 1)):
+                if neighbor in sky_cells:
+                    sky_cells.remove(neighbor)
+                    component.add(neighbor)
+                    queue.append(neighbor)
+        ordered_component = tuple(sorted(component))
+        recess = tuple(next(
+            (neighbor for neighbor in ((x + 1, y), (x - 1, y),
+                                       (x, y + 1), (x, y - 1))
+             if _is_floor(_at(tiles, *neighbor))))
+            for x, y in ordered_component)
+        sky_vistas.append(ordered_component)
+        sky_vista_recesses.append(recess)
+        sky_vista_supports.append(tuple(
+            cell for cell in recess if _at(things, *cell) == 30))
+    return (tuple(sky_vistas), tuple(sky_vista_recesses),
+            tuple(sky_vista_supports))

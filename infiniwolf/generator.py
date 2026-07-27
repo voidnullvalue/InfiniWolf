@@ -87,7 +87,7 @@ from .geometry import (  # noqa: F401
     _room_size, _snap_offsets, _widen_corridors,
     _assign_sound_zones, _break_long_sightlines, _heal_pinched_room_door_pairs,
     _limit_theme_merge_size, _remove_redundant_plain_doors,
-    _spatial_districts, _split_oversized_zones,
+    _spatial_districts, _split_oversized_zones, _harvest_sky_vistas,
 )
 from .campaign import (  # noqa: F401
     CIRCULATION_MODES, CIRCULATION_SKELETONS, FLOOR_VARIANT_ROTATION,
@@ -695,32 +695,8 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
         for present in ({_at(things, x, y)
                          for y in range(room.y, room.y + room.h)
                          for x in range(room.x, room.x + room.w)},))
-    sky_cells = {(index % GRID, index // GRID)
-                 for index, tile in enumerate(tiles) if tile == 16}
-    sky_vistas: list[tuple[tuple[int, int], ...]] = []
-    sky_vista_recesses: list[tuple[tuple[int, int], ...]] = []
-    sky_vista_supports: list[tuple[tuple[int, int], ...]] = []
-    while sky_cells:
-        component = {sky_cells.pop()}
-        queue = deque(component)
-        while queue:
-            x, y = queue.popleft()
-            for neighbor in ((x + 1, y), (x - 1, y),
-                             (x, y + 1), (x, y - 1)):
-                if neighbor in sky_cells:
-                    sky_cells.remove(neighbor)
-                    component.add(neighbor)
-                    queue.append(neighbor)
-        ordered_component = tuple(sorted(component))
-        recess = tuple(next(
-            (neighbor for neighbor in ((x + 1, y), (x - 1, y),
-                                       (x, y + 1), (x, y - 1))
-             if _is_floor(_at(tiles, *neighbor))))
-            for x, y in ordered_component)
-        sky_vistas.append(ordered_component)
-        sky_vista_recesses.append(recess)
-        sky_vista_supports.append(tuple(
-            cell for cell in recess if _at(things, *cell) == 30))
+    sky_vistas, sky_vista_recesses, sky_vista_supports = _harvest_sky_vistas(
+        tiles, things)
     final_distances = _floor_distances(tiles, start)
     deepest_room_distance = max((final_distances.get(room.center, 0) for room in rooms),
                                 default=1) or 1
@@ -779,9 +755,9 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
                           shape_target=shape_target,
                           primary_hall_geometry=primary_hall_geometry,
                           barrel_families=barrel_families,
-                          sky_vistas=tuple(sky_vistas),
-                          sky_vista_recesses=tuple(sky_vista_recesses),
-                          sky_vista_supports=tuple(sky_vista_supports))
+                          sky_vistas=sky_vistas,
+                          sky_vista_recesses=sky_vista_recesses,
+                          sky_vista_supports=sky_vista_supports)
     validate_map(result)
     result.critique = _critique(result)
     return result
