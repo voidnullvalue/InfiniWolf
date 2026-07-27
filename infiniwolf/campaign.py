@@ -393,6 +393,7 @@ class CampaignSchedule:
     rare_motif_floor: int
     vista_parity: int
     boss: int
+    void_floor: int
     config: CampaignConfig
 
     def floor_options(self, number: int) -> dict[str, object]:
@@ -414,6 +415,7 @@ class CampaignSchedule:
             "sky_vista_enabled": number % 2 == self.vista_parity,
             "boss": self.boss if number == 9 else None,
             "phase": aesthetic_phase(self.config, number),
+            "shared_void_enabled": number == self.void_floor,
         }
 
 
@@ -451,11 +453,19 @@ def resolve_schedule(config: CampaignConfig) -> CampaignSchedule:
     # standalone-map generation or tying it to a specific theme.
     vista_parity = random.Random(config.circulation_seed(10)
                                  ^ 0x564953544131).randrange(2)
+    # One shared void per campaign at most, on an ordinary floor. Rarity is the
+    # feature: a building with one inaccessible courtyard has a landmark, a
+    # building with five has a layout quirk. Scheduled campaign-wide like the vine
+    # sector and the guard gallery so retries cannot multiply it.
+    void_rng = random.Random(config.guard_gallery_seed() ^ 0x564F4944)
+    void_floor = (void_rng.choice(range(2, 9))
+                  if void_rng.random() < 0.45 else 0)
     return CampaignSchedule(
         secret_from=secret_from, variants=variants, vine_floor=vine_floor,
         vine_budget=vine_budget, gallery_floor=gallery_floor,
         rare_motif_floor=rare_motif_floor, vista_parity=vista_parity,
-        boss=choose_boss(config), config=config)
+        boss=choose_boss(config), void_floor=void_floor,
+        config=config)
 
 
 def _set_distance(first: tuple[str, ...], second: tuple[str, ...]) -> float:

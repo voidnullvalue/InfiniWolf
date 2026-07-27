@@ -95,6 +95,10 @@ def _metadata(level) -> str:
         "sightlines": [[line.purpose, line.origin_room, line.target_room,
                         line.length] for line in level.authored_sightlines],
         "motifs": list(level.room_motifs),
+        "void": ([level.shared_void.family,
+                  len(level.shared_void.interior),
+                  list(level.shared_void.viewing_rooms)]
+                 if level.shared_void else None),
         "critique": list(level.critique),
     }, sort_keys=True, separators=(",", ":"))
 

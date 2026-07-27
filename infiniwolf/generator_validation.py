@@ -744,6 +744,29 @@ def validate_map(level: GeneratedMap) -> None:
                 raise ValueError("authored sightline crosses a wall")
             if _at(level.things, *cell) in STATIC_BLOCKING:
                 raise ValueError("authored sightline is blocked by a solid prop")
+    # A shared void is a promise that a space is visible and unreachable, and both
+    # halves are checkable. Containment is proved with the pillar screens treated as
+    # blocked, which is the same test the guard gallery uses; the emptiness matters
+    # because a reward or an actor the player can see and never reach is a defect,
+    # not a feature.
+    void = level.shared_void
+    if void is not None:
+        if len(void.viewing_rooms) < 2:
+            raise ValueError("shared void is overlooked by fewer than two rooms")
+        for cell in void.interior:
+            if not _is_floor(_at(level.tiles, *cell)):
+                raise ValueError("shared void interior is not open floor")
+            if _at(level.things, *cell) in PICKUP_CODES:
+                raise ValueError("shared void holds an unreachable pickup")
+            if _at(level.things, *cell) in ENEMY_CODES:
+                raise ValueError("shared void holds an unreachable actor")
+        for cell in void.screens:
+            if _at(level.things, *cell) != 30:
+                raise ValueError("shared void screen is incomplete")
+        sealed = _reachable(level.tiles, level.start, locked_open=True,
+                            blocked=set(void.screens))
+        if any(cell in sealed for cell in void.interior):
+            raise ValueError("shared void is enterable")
     validate_door_axes(level.tiles)
     actual_locks = [(index % GRID, index // GRID, tile)
                     for index, tile in enumerate(level.tiles) if tile in LOCKED_DOORS]

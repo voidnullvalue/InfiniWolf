@@ -217,6 +217,8 @@ architecture; the table is who owns which decision within it.
 | Aesthetic arc | `aesthetic_phase` | Bounded per-floor multipliers; floors 9 and 10 pinned; modulates a variant, never replaces it |
 | Cell reservations | `ledger.Ledger` | Every reserved cell names its owner and reason; a hard claim cannot be released by another owner |
 | Candidate selection | `campaign._best_candidate` | Ranks only hard-valid maps, flag count dominating contrast, pool size set by `generation_quality` |
+| Shared void | `carve_shared_void` | One per campaign at most; interior rock pocket overlooked by two or more rooms, sealed by a complete pillar screen, containment proved with the screens blocked, no pickups or actors inside |
+| Authored view | `plan_authored_sightlines` | The line ahead from a primary landmark's approach doorway, reserved so no prop fills it, truncated at anything already solid |
 | Floor 9 boss gate | `campaign.choose_boss` + `progression` + `validate_map` | Gold-locked elevator when the boss drops a key, otherwise the arena is a cut vertex and the exit and victory room are unreachable without crossing it |
 | Hallway furnishing | `_place_decorations` area gate | Rooms are skipped by floor area (< 20 cells), not by minimum dimension, so three-wide corridors are furnished along their flanking lanes; the centre lane of any room three cells across is reserved outright, since reachability still validates a plugged corridor |
 | Symmetric room profiles | shape carvers + `_place_decorations` | Bounded mirrored structure and matching themed accents |

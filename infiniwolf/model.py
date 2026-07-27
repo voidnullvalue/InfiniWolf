@@ -242,6 +242,27 @@ class PlacedPlan:
 
 
 @dataclass(frozen=True, slots=True)
+class SharedVoid:
+    """A building-scale space seen from several rooms and entered from none.
+
+    A light well, a collapsed chamber, an inaccessible garden. The point is spatial
+    recognition: glimpsing the same courtyard from two different corridors is what
+    turns a set of rooms into a building, because it tells the player those rooms
+    have a relationship in space rather than just on a graph.
+
+    Built from the mechanism the guard gallery and the exterior vista already use --
+    floor cells fronted by a complete line of blocking pillars, so the space is
+    visible and impassable. Containment is proved, not assumed: with the screens
+    treated as blocked, a flood fill from the player start must not reach a single
+    interior cell.
+    """
+    family: str
+    interior: tuple[tuple[int, int], ...]
+    screens: tuple[tuple[int, int], ...]
+    viewing_rooms: tuple[int, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class AuthoredSightline:
     """A long view kept on purpose instead of being broken up.
 
@@ -351,6 +372,7 @@ class GeneratedMap:
     # The one composition each room realized, or "" for deliberately plain.
     room_motifs: tuple[str, ...] = ()
     authored_sightlines: tuple[AuthoredSightline, ...] = ()
+    shared_void: SharedVoid | None = None
 
 
 @dataclass(frozen=True, slots=True)

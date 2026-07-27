@@ -89,7 +89,7 @@ from .geometry import (  # noqa: F401
     _assign_sound_zones, _break_long_sightlines, _heal_pinched_room_door_pairs,
     _limit_theme_merge_size, _remove_redundant_plain_doors,
     _spatial_districts, _split_oversized_zones, _harvest_sky_vistas,
-    _primary_hall_geometry, plan_authored_sightlines,
+    _primary_hall_geometry, plan_authored_sightlines, carve_shared_void,
 )
 from .campaign import (  # noqa: F401
     CIRCULATION_MODES, CIRCULATION_SKELETONS, FLOOR_VARIANT_ROTATION,
@@ -132,6 +132,7 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
                  sky_vista_enabled: bool = True,
                  boss: int | None = None,
                  phase: AestheticPhase | None = None,
+                 shared_void_enabled: bool = False,
                  ) -> GeneratedMap:
     seed = config.floor_seed(number, attempt)
     if config.say_aardwolf:
@@ -400,6 +401,14 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
     _limit_theme_merge_size(tiles, rooms, rng, reserved)
     if sum(tile in DOORS for tile in tiles) > 56:
         raise ValueError("door budget exceeded")
+    # Before recesses, population and pickups: the void must own its cells outright
+    # so nothing places an actor or a reward the player can see and never reach.
+    shared_void = None
+    if shared_void_enabled:
+        shared_void = carve_shared_void(tiles, things, rooms, reserved, rng, start)
+        if shared_void is not None:
+            reserved.reserve(shared_void.interior, "geometry", "shared-void-interior")
+            reserved.reserve(shared_void.screens, "geometry", "shared-void-screen")
     guard_recesses = _carve_guard_recesses(
         tiles, things, rooms, specs, roles, reserved, rng, start, exit_room)
     boss_room = None
@@ -620,7 +629,8 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
                           sky_vista_supports=sky_vista_supports,
                           landmarks=landmark_plans,
                           room_motifs=room_motifs,
-                          authored_sightlines=authored_sightlines)
+                          authored_sightlines=authored_sightlines,
+                          shared_void=shared_void)
     validate_map(result)
     result.critique = _critique(result)
     return result

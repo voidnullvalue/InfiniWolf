@@ -301,6 +301,12 @@ def _manifest(config, levels, secret_from, vine_floor, vine_budget,
                     # deliberately left plain. This is the audit trail for motif
                     # selection: without it there is no way to tell from a package
                     # whether a floor's rooms were composed or merely filled.
+                    "shared_void": ({"family": level.shared_void.family,
+                                     "interior": len(level.shared_void.interior),
+                                     "screens": len(level.shared_void.screens),
+                                     "viewing_rooms": list(
+                                         level.shared_void.viewing_rooms)}
+                                    if level.shared_void else None),
                     "authored_sightlines": [
                         {"purpose": line.purpose, "length": line.length,
                          "origin_room": line.origin_room,

@@ -120,6 +120,14 @@ Every band is deliberately narrow, between roughly 0.75 and 1.30. The arc must m
 
 Only `damage` is currently consumed. The other four fields are recorded but unused, and that is stated rather than disguised: an attempt to tilt decoration's clutter palette by `abandonment` and `occupation` produced no measurable change at all, because concept gating already decides which gore or furniture a room may hold and a ±25% filter on top of it was swamped. That code was removed rather than kept as decoration.
 
+### 6.3 Shared inaccessible voids (`carve_shared_void`)
+
+At most one floor in a campaign opens an interior rock pocket into a space several rooms overlook and none can enter: a light well, a collapsed chamber, an inaccessible garden, a fenced machinery bay, a deep store. The mechanism is the one the exterior vista and the guard gallery already use — floor cells fronted by a complete line of matched pillars, which are things rather than tiles, so the space is visible and impassable without changing the tile shell.
+
+Two rooms overlooking it is a hard requirement, not a preference. A void one room can see is an alcove; the point of a void is spatial recognition, telling the player that two rooms have a relationship in space and not merely on the room graph. Containment is proved rather than assumed: with the pillar screens treated as blocked, a flood fill from the player start must reach none of the interior, and a pocket that fails is rolled back tile by tile rather than shipped half-carved. `validate_map` re-checks the same property on the finished floor, and additionally rejects any void holding a pickup or an actor — a reward the player can see and never reach is a defect, not a tease.
+
+The interior is reserved before population, pickups and decoration run, so the void owns its cells outright. Rarity is deliberate and scheduled campaign-wide alongside the vine sector and the guard gallery: a building with one inaccessible courtyard has a landmark, a building with five has a layout quirk. Measured over 16 campaigns, ten realized a void, every one overlooked by exactly two rooms, with no containment failures.
+
 ## 7. Population placement (`_place_population`)
 
 This pass owns enemy economy and realizes room-owned `EncounterPlacement` records after room identities, doors, progression objects, and wall themes are known. Actors are never assigned by an unexplained floor-wide scatter: each belongs to a visible sentry, staggered flank, blind-corner ambush, strongpoint, objective guard, boss-support group, novelty, or patrol composition. One primary family is selected for the room so its squad reads coherently, while the existing threat budget still controls count and difficulty tiers.

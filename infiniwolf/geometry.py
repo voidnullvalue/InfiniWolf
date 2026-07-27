@@ -40,7 +40,8 @@ import random
 from .campaign import HALLWAY_FIRST_SKELETONS
 from .grid import (_FLOOR_OR_DOOR, _at, _floor_components, _inside_room,
                    _is_floor, _overlaps, _reachable, _set)
-from .model import AuthoredSightline, FloorPlan, PlacedPlan, Room
+from .model import (AuthoredSightline, FloorPlan, PlacedPlan, Room,
+                    SharedVoid)
 from .wl6 import (DOOR_EW, DOOR_GOLD_EW, DOOR_NS, DOORS, FLOOR, GRID,
                   STATIC_BLOCKING, WALL, ZONE_MAX)
 from .ledger import reserve as ledger_reserve
@@ -1631,6 +1632,93 @@ def _room_at(rooms: list[Room], cell: tuple[int, int]) -> int:
         if room.x <= x < room.x + room.w and room.y <= y < room.y + room.h:
             return index
     return -1
+
+
+# Void families, named for what the space reads as. Each picks its own interior
+# dressing; the containment mechanism is identical.
+_VOID_FAMILIES = ("light-well", "collapsed-chamber", "inaccessible-garden",
+                  "fenced-machinery", "deep-storage")
+
+# Interior dressing per family, placed on interior cells the player can see but
+# never walk. Kept sparse: the space reads by its emptiness and its shape.
+_VOID_DRESSING = {
+    "light-well": (60,),                    # EmptyWell
+    "collapsed-chamber": (24, 42),          # GreenBarrel, Bones1
+    "inaccessible-garden": (31, 34),        # green and brown plants
+    "fenced-machinery": (58, 36),           # Barrel, BareTable
+    "deep-storage": (58, 24, 46),           # barrels and a basket
+}
+
+
+def carve_shared_void(tiles: list[int], things: list[int], rooms: list[Room],
+                      reserved: set[tuple[int, int]], rng: random.Random,
+                      start: tuple[int, int]) -> SharedVoid | None:
+    """Open one interior rock pocket into a space several rooms overlook.
+
+    Requires at least two distinct rooms to border the pocket, which is the whole
+    point -- a void one room can see is just an alcove. The pocket must be solid
+    rock throughout and set well inside the map, so nothing can expose the shell.
+
+    Every face opened toward a room is immediately filled with a matched pillar
+    line, and the result is checked the way the guard gallery checks itself: a
+    flood fill with those pillar cells blocked must reach none of the interior. If
+    it does, the whole attempt is rolled back rather than shipped.
+    """
+    families = list(_VOID_FAMILIES)
+    rng.shuffle(families)
+    sizes = [(3, 3), (4, 3), (3, 4), (4, 4), (5, 3), (3, 5)]
+    rng.shuffle(sizes)
+    for width, height in sizes:
+        origins = [(x, y)
+                   for y in range(4, GRID - height - 4)
+                   for x in range(4, GRID - width - 4)]
+        rng.shuffle(origins)
+        for ox, oy in origins:
+            pocket = [(x, y) for y in range(oy, oy + height)
+                      for x in range(ox, ox + width)]
+            # Solid rock, and one clear cell of rock margin all round so the
+            # pocket never shares a wall with two rooms at once by accident.
+            margin = [(x, y) for y in range(oy - 1, oy + height + 1)
+                      for x in range(ox - 1, ox + width + 1)]
+            if any(_at(tiles, *cell) != WALL or cell in reserved
+                   for cell in margin):
+                continue
+            # Which rooms sit one wall away from the pocket, and on which face?
+            faces: dict[int, list[tuple[int, int]]] = {}
+            for index, room in enumerate(rooms):
+                for cell in pocket:
+                    for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                        probe = (cell[0] + dx * 2, cell[1] + dy * 2)
+                        wall = (cell[0] + dx, cell[1] + dy)
+                        if (room.x <= probe[0] < room.x + room.w
+                                and room.y <= probe[1] < room.y + room.h
+                                and _is_floor(_at(tiles, *probe))
+                                and _at(tiles, *wall) == WALL):
+                            faces.setdefault(index, []).append(wall)
+            if len(faces) < 2:
+                continue
+            screens = sorted({cell for cells in faces.values() for cell in cells})
+            if len(screens) > 10:
+                continue
+            snapshot = [(cell, _at(tiles, *cell)) for cell in pocket + screens]
+            for cell in pocket + screens:
+                _set(tiles, *cell, FLOOR)
+            sealed = _reachable(tiles, start, locked_open=True,
+                                blocked=set(screens))
+            if any(cell in sealed for cell in pocket):
+                for cell, original in snapshot:
+                    _set(tiles, *cell, original)
+                continue
+            family = families[0]
+            for cell in screens:
+                _set(things, *cell, 30)          # matched white-pillar screen
+            dressing = _VOID_DRESSING[family]
+            for offset, cell in enumerate(pocket):
+                if offset % 3 == 1:
+                    _set(things, *cell, dressing[offset % len(dressing)])
+            return SharedVoid(family, tuple(pocket), tuple(screens),
+                              tuple(sorted(faces)))
+    return None
 
 
 def plan_authored_sightlines(tiles: list[int], things: list[int],
