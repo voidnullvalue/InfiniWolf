@@ -267,3 +267,42 @@ class GeneratedMap:
     sky_vistas: tuple[tuple[tuple[int, int], ...], ...] = ()
     sky_vista_recesses: tuple[tuple[tuple[int, int], ...], ...] = ()
     sky_vista_supports: tuple[tuple[tuple[int, int], ...], ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class FloorCanvas:
+    """The mutable working state of one floor under construction.
+
+    Frozen in its *bindings* while the containers it holds stay mutable, which is
+    the honest description of how generation works: the set of things a pass may
+    touch is fixed, but the planes are edited in place. Passing this instead of
+    eight loose locals is what lets a phase move out of the orchestrator at all --
+    the secret installation reads sixteen free variables, and a sixteen-parameter
+    function would be worse than the inline block it replaced.
+
+    `reserved` is the shared cell-reservation set whose lack of provenance
+    tools/reservation_sites.py inventories; it travels here so that when it becomes
+    a typed ledger only this record changes.
+    """
+    tiles: list[int]
+    things: list[int]
+    rooms: list[Room]
+    specs: list[RoomSpec]
+    roles: list[str]
+    edges: list[tuple[int, int]]
+    reserved: set[tuple[int, int]]
+    start: tuple[int, int]
+
+
+@dataclass(frozen=True, slots=True)
+class SecretInstallation:
+    """Everything the secret pass produced, for the manifest and validation."""
+    rewards: tuple[tuple[int, int], ...]
+    variants: tuple[str, ...]
+    details: tuple[SecretDetail, ...]
+    shortcut_pushwalls: tuple[tuple[int, int], ...]
+    # Every cell a pocket occupies, not just its focal reward. Downstream reads
+    # this to record secret loot as an authored composition; a pocket can overlap
+    # another room's rectangular bookkeeping, and without the full footprint its
+    # sprites would look like loose untracked room loot.
+    protected: frozenset[tuple[int, int]]

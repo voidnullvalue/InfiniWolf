@@ -26,7 +26,9 @@ from .grid import (_at, _door_zone, _floor_distances, _is_floor, _reachable,
                    _room_graph_path, _set)
 from .geometry import _door_candidate
 from .placement import _room_anchors
-from .model import ArrivalDetail, GatePlan, KeyObjective, Room
+from .config import CampaignConfig
+from .model import (ArrivalDetail, FloorCanvas, GatePlan, KeyObjective,
+                    Room, SecretDetail, SecretInstallation)
 from .wl6 import (AMMO, CHAINGUN, DECOR_WALLS, DOOR_ELEVATOR, DOOR_ELEVATOR_NS,
                   DOOR_EW, DOOR_GOLD_EW, DOOR_GOLD_NS, DOOR_SILVER_EW,
                   DOOR_SILVER_NS, DUMMY_ELEVATOR_TILE, ELEVATOR_TILE,
@@ -765,3 +767,200 @@ def verify_exit_depth(tiles: list[int], rooms: list[Room], edges,
         roles[planned_exit_index] = "relief"
         roles[exit_index] = "exit"
     return exit_index, critical_route
+
+
+def install_secrets(canvas: FloorCanvas, config: CampaignConfig, number: int,
+                    rng: random.Random, *, arrival, exit_room: Room,
+                    anchor_index: int, critical_route, rare_profile,
+                    secret_exit: bool) -> SecretInstallation:
+    """Carve the floor's sealed reward pockets and, when scheduled, its secret lift.
+
+    Optionality is the contract. Every pocket here is off the mandatory route, has
+    a complete rock shell, and is entered only through a pushwall, so a player who
+    never finds one still finishes the floor. The secret elevator is budgeted *in
+    addition* to the ordinary pockets -- discovering the route to floor 10 must not
+    silently consume one of the floor's normal rewards.
+
+    Takes a canvas rather than sixteen parameters. That count is not rhetorical: it
+    was measured on this block before extraction, and it is the reason the phase
+    could not simply become a function.
+    """
+    tiles, things = canvas.tiles, canvas.things
+    rooms, roles, reserved = canvas.rooms, canvas.roles, canvas.reserved
+    start = canvas.start
+    rewards: list[tuple[int, int]] = []
+    secret_variants: list[str] = []
+    secret_details: list[SecretDetail] = []
+    shortcut_pushwalls: list[tuple[int, int]] = []
+    secret_protected: set[tuple[int, int]] = (set(arrival.footprint)
+                                              if arrival else set())
+    floor_distances = _floor_distances(tiles, start)
+    room_distances = {room: floor_distances.get(room.center, 0) for room in rooms}
+    max_room_distance = max(room_distances.values(), default=1) or 1
+    # The secret elevator is planned in addition to the ordinary secret
+    # budget. Discovering the route to floor 10 must not silently consume one
+    # of the floor's normal reward pockets.
+    ordinary_secret_target = max(2, int(config.secrets)
+                                 + (1 if number == 10 else 0))
+    target_secrets = ordinary_secret_target + (1 if secret_exit else 0)
+    # A secret pocket must never reuse or seal the terminal room's elevator
+    # wall after the elevator has been carved.
+    rare_room_index = rare_profile[0] if rare_profile is not None else -1
+    candidates = [room for index, room in enumerate(rooms[1:], 1)
+                  if room != exit_room and index != rare_room_index]
+    room_index_by_room = {room: index for index, room in enumerate(rooms)}
+    if number == 9:
+        arena_depth = room_distances[rooms[anchor_index]]
+        candidates = [room for room in candidates
+                      if roles[room_index_by_room[room]] not in
+                      ("boss-arena", "victory", "exit")
+                      and room_distances[room] <= arena_depth]
+
+    if secret_exit:
+        # Build and rank the entire host roster before carving. Deep optional
+        # rooms, distance from the normal lift, and generous room proportions
+        # win; a small square is intentionally not a fallback for this route.
+        # Measure that depth within the eligible host roster. The terminal
+        # elevator room cannot host this pocket, and using its often-extreme
+        # distance as the denominator can incorrectly disqualify every
+        # optional room even when one is deep within the explorable floor.
+        host_depth_scale = (max((room_distances[room] for room in candidates),
+                                default=max_room_distance) or 1)
+        ranked_hosts = sorted(candidates, key=lambda room: (
+            room_distances[room] / host_depth_scale >= 0.45,
+            room_index_by_room[room] not in critical_route,
+            roles[room_index_by_room[room]] in ("branch", "ring", "relief", "closet"),
+            room_distances[room] / host_depth_scale,
+            abs(room.center[0] - exit_room.center[0])
+            + abs(room.center[1] - exit_room.center[1]),
+            room.w * room.h), reverse=True)
+        ranked_hosts = [room for room in ranked_hosts
+                        if room_distances[room] / host_depth_scale >= 0.45]
+        variant_order = list(("vault", "reliquary", "gallery", "nested"))
+        rng.shuffle(variant_order)
+        placed_exit = None
+        exit_host = None
+        exit_direction = 1
+        for variant in variant_order:
+            for room in ranked_hosts:
+                for direction in (1, -1):
+                    placed_exit = _place_secret(
+                        tiles, things, room, rng, variant,
+                        room_distances[room] / host_depth_scale, True,
+                        reward_quality=int(config.secret_reward_quality),
+                        number=number, protected=secret_protected,
+                        direction=direction)
+                    if placed_exit:
+                        exit_host = room
+                        exit_direction = direction
+                        break
+                if placed_exit:
+                    break
+            if placed_exit:
+                break
+        if placed_exit is None or exit_host is None:
+            raise ValueError("no substantial deep host fits the secret elevator")
+        reward, realized_variant, push_cell = placed_exit
+        depth_ratio = room_distances[exit_host] / host_depth_scale
+        rewards.append(reward)
+        secret_variants.append(realized_variant)
+        secret_details.append(SecretDetail(
+            realized_variant, 3, room_index_by_room[exit_host], depth_ratio,
+            push_cell, True, "symmetric-landmark", number + 1,
+            exit_direction))
+        reserved.add(reward)
+        candidates.remove(exit_host)
+
+    rng.shuffle(candidates)
+    while len(rewards) < target_secrets and candidates:
+        variant = _pick_secret_variant(rng, secret_variants)
+        placed_secret = None
+        host = None
+        for room in candidates:
+            placed_secret = _place_secret(tiles, things, room, rng, variant,
+                                          room_distances[room] / max_room_distance,
+                                          False,
+                                          reward_quality=int(config.secret_reward_quality),
+                                          number=number,
+                                          protected=secret_protected)
+            if placed_secret:
+                host = room
+                break
+        # A slot whose larger footprint fits nowhere still gets the proven
+        # baseline experience rather than silently shrinking the budget.
+        if placed_secret is None and variant != "square":
+            for room in candidates:
+                placed_secret = _place_secret(tiles, things, room, rng, "square",
+                                              room_distances[room] / max_room_distance,
+                                              False,
+                                              reward_quality=int(config.secret_reward_quality),
+                                              number=number,
+                                              protected=secret_protected)
+                if placed_secret:
+                    host = room
+                    break
+        if placed_secret:
+            reward, realized_variant, push_cell = placed_secret
+            rewards.append(reward); secret_variants.append(realized_variant)
+            secret_details.append(SecretDetail(
+                realized_variant, 7 if number == 9 else 3,
+                room_index_by_room[host],
+                room_distances[host] / max_room_distance, push_cell, False))
+            reserved.add(reward)
+            candidates.remove(host)
+        else:
+            break
+    # Dense motifs can consume every nominal east wall; a rock-backed hall
+    # threshold is a safe last host with the same push direction and margin.
+    reachable_walls = _reachable(tiles, start, locked_open=True)
+    fallback_walls = [(x, y) for y in range(3, GRID - 3) for x in range(3, GRID - 4)
+                      if _at(tiles, x, y) == WALL and (x - 1, y) in reachable_walls
+                      and (number != 9
+                           or floor_distances.get((x - 1, y), max_room_distance + 1)
+                           <= room_distances[rooms[anchor_index]])]
+    rng.shuffle(fallback_walls)
+    while len(rewards) < target_secrets:
+        variant = _pick_secret_variant(rng, secret_variants)
+        reward = None
+        fallback_push: tuple[int, int] | None = None
+        fallback_depth = 0.0
+        for px, py in fallback_walls:
+            approach_distance = floor_distances.get((px - 1, py), 0)
+            reward = _carve_secret_pocket(
+                tiles, things, px, py, rng, False, variant,
+                min(1.0, approach_distance / max_room_distance),
+                reward_quality=int(config.secret_reward_quality),
+                number=number,
+                protected=secret_protected)
+            if reward:
+                fallback_push = (px, py)
+                fallback_depth = min(1.0, approach_distance / max_room_distance)
+                break
+        if reward is None and variant != "square":
+            variant = "square"
+            for px, py in fallback_walls:
+                approach_distance = floor_distances.get((px - 1, py), 0)
+                reward = _carve_secret_pocket(
+                    tiles, things, px, py, rng, False, variant,
+                    min(1.0, approach_distance / max_room_distance),
+                    reward_quality=int(config.secret_reward_quality),
+                    number=number,
+                    protected=secret_protected)
+                if reward:
+                    fallback_push = (px, py)
+                    fallback_depth = min(1.0, approach_distance / max_room_distance)
+                    break
+        if reward:
+            rewards.append(reward); secret_variants.append(variant); reserved.add(reward)
+            if fallback_push is None:
+                raise ValueError("fallback secret lost its pushwall metadata")
+            secret_details.append(SecretDetail(
+                variant, 7 if number == 9 else 3, -1, fallback_depth,
+                fallback_push, False))
+        else:
+            break
+    return SecretInstallation(
+        rewards=tuple(rewards), variants=tuple(secret_variants),
+        details=tuple(secret_details),
+        shortcut_pushwalls=tuple(shortcut_pushwalls),
+        protected=frozenset(secret_protected))
