@@ -29,59 +29,81 @@ from .wl6 import (DECOR_WALLS, DOORS, ENEMY_CODES, GRID, LIGHTING_FAMILY_ITEMS,
 # placement patterns: guard rooms get lamps and vases, storage closets get
 # barrel clusters, grand anchor rooms get pillar pairs, barracks get tables.
 _DECOR_BLOCKING: dict[str, tuple[int, ...]] = {
-    "guardpost": (26, 35, 31, 62),       # FloorLamp, Vase, GreenPlant, Flag
-    "armory":    (39, 62, 69, 58),       # Armor, Flag, Spears, Barrel
-    "checkpoint": (26, 62, 35),          # Lamp, Flag, Vase
-    "grand":     (30, 26, 35, 39),       # WhitePillar, FloorLamp, Vase, SuitOfArmor
-    "war-room":  (39, 62, 30),           # Armor, Flag, WhitePillar
-    "trophy-hall": (39, 62, 34),         # Armor, Flag, BrownPlant
-    "courtyard": (30, 31, 34, 59),       # Pillar, Plants, Well
-    "barracks":  (25, 36, 58, 45),       # TableWithChairs, BareTable, Barrel, BunkBed
-    "ready-room": (45, 36, 58),          # BunkBed, BareTable, Barrel
-    "training-room": (69, 36, 58),       # Spears, BareTable, Barrel
-    "crypt":     (30, 40, 58),           # Pillar, HangingCage, Barrel
-    "ossuary":   (30, 40, 41),           # Pillar, Cage, SkeletonCage
-    "burial-chamber": (30, 35, 40),       # Pillar, Vase, HangingCage
-    "storage":   (58, 24, 59, 60),       # Barrel, GreenBarrel, Well, EmptyWell
-    "supply-cache": (58, 24, 60),         # Barrels, EmptyWell
-    "workshop":  (36, 58, 69),           # Worktable, Barrel, Spears
-    "lounge":    (25, 35, 34),           # TableWithChairs, Vase, BrownPlant
-    "gallery":   (39, 62, 34),           # Armor, Flag, BrownPlant
-    "dining-hall": (25, 36, 35),         # Tables and Vase
-    "officers-quarters": (45, 25, 34),   # BunkBed, Table, BrownPlant
-    "mess-kitchen": (36, 35),             # Appliances are placed explicitly
-    "corridor":  (26,),                  # FloorLamp only
-    "jail":      (58, 40, 41),           # Barrel, HangingCage, SkeletonCage
-    "holding-cell": (40, 58, 36),         # Cage, Barrel, BareTable
-    "interrogation-room": (36, 25, 26),  # Tables, FloorLamp
+    # Solid props per concept. Potted plants and pillars are generic authored
+    # decor rather than courtyard specials: GreenPlant is the corpus's second
+    # most common item at 19.5 per map and WhitePillar its third at 18.0, behind
+    # only ceiling lights. They were reachable in 2 and 6 of these 25 concepts,
+    # which capped them at roughly 8 and 7 per map however often the mined fill
+    # distribution asked for them -- fill can only offer what a concept permits.
+    #
+    # Deliberately still absent from the carceral and funerary concepts: a cell
+    # block does not keep houseplants, and those concepts have their own
+    # vocabulary of bones, chains and barrels.
+    "guardpost": (26, 35, 31, 62, 30),
+    "armory": (39, 62, 69, 58, 34),
+    "checkpoint": (26, 62, 35),
+    "grand": (30, 26, 35, 39, 31),
+    "war-room": (39, 62, 30, 31),
+    "trophy-hall": (39, 62, 34, 30, 31),
+    "courtyard": (30, 31, 34, 59),
+    "barracks": (25, 36, 58, 45, 34),
+    "ready-room": (45, 36, 58, 34),
+    "training-room": (69, 36, 58, 30),
+    "crypt": (30, 40, 58),
+    "ossuary": (30, 40, 41),
+    "burial-chamber": (30, 35, 40),
+    "storage": (58, 24, 59, 60),
+    "supply-cache": (58, 24, 60),
+    "workshop": (36, 58, 69, 30),
+    "lounge": (25, 35, 34, 31),
+    "gallery": (39, 62, 34, 30, 31),
+    "dining-hall": (25, 36, 35, 34),
+    "officers-quarters": (45, 25, 34, 31),
+    "mess-kitchen": (36, 35, 34),
+    "corridor": (26, 30),
+    "jail": (58, 40, 41),
+    "holding-cell": (40, 58, 36),
+    "interrogation-room": (36, 25, 26),
 }
 
 _DECOR_OPEN: dict[str, tuple[int, ...]] = {
-    "guardpost": (37, 27),   # CeilingLight, Chandelier
-    "armory":    (37, 46),   # CeilingLight, Basket
-    "checkpoint": (37,),     # CeilingLight
-    "grand":     (27, 37),   # Chandelier dominant
-    "war-room":  (37,),      # CeilingLight
-    "trophy-hall": (27, 37), # Chandelier, CeilingLight
-    "courtyard": (37,),      # CeilingLight; vines use complete screens only
-    "barracks":  (46, 61),   # Basket, Blood (battle-worn)
-    "ready-room": (46,),     # Basket
-    "training-room": (37, 46),
-    "crypt":     (42, 64, 65, 66),
-    "ossuary":   (32, 42, 64, 65, 66),
-    "burial-chamber": (27, 42, 64, 65, 66),
-    "storage":   (46, 23),   # Basket, rare damp patch
-    "supply-cache": (46,),   # Basket
-    "workshop":  (46, 37),   # Basket, CeilingLight
-    "lounge":    (27,),       # Chandelier
-    "gallery":   (27, 37),   # Chandelier, CeilingLight
-    "dining-hall": (27,),    # Chandelier
-    "officers-quarters": (27, 37),
-    "mess-kitchen": (37,),   # Loose kitchen props are placed explicitly
-    "corridor":  (37,),      # CeilingLight
-    "jail":      (61, 61, 42, 64, 65, 66),  # Blood, then bone variants
-    "holding-cell": (42, 64, 65, 66),
-    "interrogation-room": (37, 61),
+    # Non-solid clutter per concept, widened from measurement. The authored
+    # corpus carries 8.3 TableChairs, 5.3 Pots, 4.7 Blood, 4.4 Bones2 and 3.9
+    # Puddles per map; this generator produced 4.2, 0.1, 1.4, 1.2 and 0.2. Pots
+    # appeared in no palette at all, so the density fill -- which intersects the
+    # mined corpus distribution with what a concept permits -- could never place
+    # one however often the corpus said to. Thin palettes are also why distinct
+    # item types sat at 15.8 against the corpus's 19.3: fill had nothing to draw.
+    #
+    # Assigned per concept rather than added uniformly. Pots belong in a kitchen,
+    # a workshop and a store room; puddles where damp would collect; bones and
+    # blood stay in the carceral and funerary concepts, where the atmosphere
+    # setting can still strip them.
+    "guardpost": (37, 27),
+    "armory": (37, 46, 67),
+    "checkpoint": (37,),
+    "grand": (27, 37, 25),
+    "war-room": (37, 25),
+    "trophy-hall": (27, 37, 25),
+    "courtyard": (37, 23, 67),
+    "barracks": (46, 61, 67, 25),
+    "ready-room": (46, 67, 25),
+    "training-room": (37, 67),
+    "crypt": (42, 64, 65, 66, 23),
+    "ossuary": (32, 42, 64, 65, 66, 23),
+    "burial-chamber": (27, 42, 64, 65, 66, 23),
+    "storage": (46, 23, 67),
+    "supply-cache": (46, 67, 23),
+    "workshop": (37, 67, 38, 23),
+    "lounge": (27, 25),
+    "gallery": (27, 37, 25),
+    "dining-hall": (27, 25, 67, 38),
+    "officers-quarters": (27, 37, 25),
+    "mess-kitchen": (37, 38, 67, 23),
+    "corridor": (37, 23),
+    "jail": (61, 61, 42, 64, 65, 66, 23),
+    "holding-cell": (42, 64, 65, 66, 61, 23),
+    "interrogation-room": (37, 61, 64, 23),
 }
 
 # Purpose-built rooms split their furniture concepts across opposite halves.
@@ -154,7 +176,10 @@ _MOTIF_WEIGHTS = {
     "divider": 4.0,                # 10x10, grand/barracks/guardpost
     "landmark-frame": 3.0,         # needs a landmark wall
     # Broad eligibility: applies in most rooms, so it must ask for less.
-    "corner-stash": 2.5,
+    # Lowered from 2.5: this motif exists to heap props in a corner, so it is
+    # the one composition that raises the clustering measure by design. At 2.5
+    # it reached 14% of rooms.
+    "corner-stash": 1.5,
     "doorway-frame": 2.0,
     "travel-pair": 1.5,
 }
@@ -536,6 +561,11 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
     # already on the plane count against it; decoration consumes only what
     # headroom remains instead of racing the 400 hard limit.
     static_headroom = 320 - sum(1 for thing in things if 23 <= thing <= 74)
+    # Flags and suits of armour are punctuation, not texture. Authored maps average
+    # 4.6 flags and 3.2 suits; with no floor-level budget the concept frames, the
+    # signatures and the density fill each placed their own and the total reached
+    # 15.6 flags per map, which reads as a parade ground rather than a castle.
+    wall_display_budget = 8
     doorway_frames_placed = 0
     lighting_counts: Counter[str] = Counter()
     lighting_families = ["none"] * len(rooms)
@@ -642,10 +672,14 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
         # use blue, and neutral storage chooses once for the whole room.
         green_barrel_concepts = {
             "jail", "crypt", "ossuary", "burial-chamber", "holding-cell",
-            "courtyard",
+            "courtyard", "storage", "supply-cache", "workshop",
         }
+        # Blue reads as issued military stock, green as older or organic stores.
+        # The corpus carries more green than blue (9.5 against 6.7), and store
+        # rooms are where barrels actually pile up, so stores take green while the
+        # formal military spaces keep blue.
         blue_barrel_concepts = {
-            "guardpost", "checkpoint", "armory", "workshop", "war-room",
+            "guardpost", "checkpoint", "armory", "war-room",
             "barracks", "ready-room", "training-room", "officers-quarters",
         }
         existing_barrels = {
@@ -661,7 +695,11 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
         elif concept in blue_barrel_concepts or theme in {"grand", "barracks"}:
             barrel_item = 58
         elif any(item in (24, 58) for item in blocking):
-            barrel_item = rng.choices((58, 24), weights=(3, 2), k=1)[0]
+            # Corpus ratio rather than a guess: green barrels appear 9.5 times per
+            # authored map against blue's 6.7. The old 3:2 favoured blue and gave
+            # 16.1 blue against 2.3 green -- the right total, the wrong colour
+            # almost every time.
+            barrel_item = rng.choices((24, 58), weights=(10, 7), k=1)[0]
         else:
             # Preserve the established decoration RNG stream for concepts
             # that cannot place a barrel.  Choosing an unused material here
@@ -795,6 +833,10 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
             if any(item in LIGHTING_ITEMS and item not in allowed_lights
                    for _, item in pieces):
                 return False
+            nonlocal wall_display_budget
+            displays = sum(item in (39, 62) for _, item in pieces)
+            if displays > wall_display_budget:
+                return False
             lamp_cells = [cell for cell, item in pieces if item == 26]
             if lamp_cells:
                 # Never in open floor. The corpus puts 76% of its 1,283 floor
@@ -842,6 +884,7 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
             # symmetry the pass was placed to create.
             if len(cells) >= 2:
                 composed_cells.update(cells)
+            wall_display_budget -= displays
             static_headroom -= len(cells)
             return True
 
@@ -850,7 +893,11 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
 
         def _place_open(cell: tuple[int, int], item: int) -> bool:
             """Commit one non-solid item; only occupancy and headroom apply."""
-            nonlocal static_headroom
+            nonlocal static_headroom, wall_display_budget
+            if item in (39, 62):
+                if wall_display_budget <= 0:
+                    return False
+                wall_display_budget -= 1
             if item in LIGHTING_ITEMS and item not in allowed_lights:
                 return False
             if static_headroom <= 0 or _at(things, *cell) != 0:
@@ -1625,6 +1672,12 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
                     # Barrels are the one family the corpus stacks shoulder to
                     # shoulder (stride 1 dominates their runs); everything else
                     # keeps its distance so fill reads as furnishing, not a pile.
+                    #
+                    # Orthogonal only, and tested: extending this to diagonals
+                    # moved clustering 32.9% -> 33.5%, i.e. not at all. The excess
+                    # clustering is not fill spreading badly, it is the authored
+                    # compositions themselves -- a corner stash, a banquet row and
+                    # a colonnade all place props deliberately close together.
                     neighbours = [(cell[0] + dx, cell[1] + dy)
                                   for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1))]
                     touching = [_at(things, *n) for n in neighbours]
