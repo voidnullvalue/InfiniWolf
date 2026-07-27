@@ -807,13 +807,8 @@ def generate_campaign(config: CampaignConfig, output: Path,
         clean: list[GeneratedMap] = []
         for attempt in range(50):
             try:
-                candidate = generate_map(config, number, attempt, number == secret_from,
-                                         secret_source=secret_from if number == 10 else None,
-                                         hallway_vine_budget=(vine_budget
-                                                              if number == vine_floor else 0),
-                                         guard_gallery_enabled=(number == gallery_floor),
-                                         rare_motif_enabled=(number == rare_motif_floor),
-                                         sky_vista_enabled=(number % 2 == vista_parity))
+                candidate = generate_map(config, number, attempt,
+                                         **schedule.floor_options(number))
             except ValueError as error:
                 last_error = error
                 continue

@@ -321,6 +321,25 @@ class CampaignSchedule:
     rare_motif_floor: int
     vista_parity: int
 
+    def floor_options(self, number: int) -> dict[str, object]:
+        """The per-floor slice of this schedule, as generate_map keyword args.
+
+        Answering "does floor N get the vine sector / the gallery / the rare
+        motif / a vista" belongs to the schedule that made those choices, not to
+        the loop that calls the generator. Keeping the translation here means the
+        campaign-scale rules -- one vine floor, one gallery floor, one parity of
+        vista floors -- are stated once, beside the draws that picked them.
+        """
+        return {
+            "secret_exit": number == self.secret_from,
+            "secret_source": self.secret_from if number == 10 else None,
+            "hallway_vine_budget": (self.vine_budget
+                                    if number == self.vine_floor else 0),
+            "guard_gallery_enabled": number == self.gallery_floor,
+            "rare_motif_enabled": number == self.rare_motif_floor,
+            "sky_vista_enabled": number % 2 == self.vista_parity,
+        }
+
 
 def resolve_schedule(config: CampaignConfig) -> CampaignSchedule:
     """Draw every campaign-scale choice from attempt-independent streams."""
