@@ -95,6 +95,7 @@ from .campaign import (  # noqa: F401
     VARIANT_STRONGHOLD, VARIANT_VAULT, _aardwolf_variant, _candidate_score,
     _circulation_sequence, _lock_schedule, _progression_sequence,
     _rare_motif_schedule, _set_distance, _variant_sequence,
+    CampaignSchedule, resolve_schedule,
 )
 from .generator_artifacts import (  # noqa: F401
     _manifest, _wad_bytes, _mapinfo, _display_name,
@@ -791,39 +792,13 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
 def generate_campaign(config: CampaignConfig, output: Path,
                       progress: Callable[[int, int], None] | None = None,
                       cancelled: Callable[[], bool] | None = None) -> Path:
+    schedule = resolve_schedule(config)
     levels = []
-    secret_seed = config.floor_seed(10)
-    if config.say_aardwolf:
-        secret_seed ^= config.aardwolf_seed(1)
-    secret_from = 1 + secret_seed % 6
-    variants = _variant_sequence(config)
-    vine_seed = config.vine_seed()
-    if config.say_aardwolf:
-        vine_seed ^= config.aardwolf_seed(8)
-    vine_rng = random.Random(vine_seed)
-    vine_floors = list(range(2, 9))
-    vine_weights = [4 if variants[floor - 1].name == "catacombs" else
-                    2 if variants[floor - 1].name in ("storehouse", "grand-halls") else 1
-                    for floor in vine_floors]
-    vine_floor = vine_rng.choices(vine_floors, weights=vine_weights, k=1)[0]
-    vine_budget = 2 if vine_rng.random() < 0.28 else 1
-    gallery_seed = config.guard_gallery_seed()
-    if config.say_aardwolf:
-        gallery_seed ^= config.aardwolf_seed(7)
-    gallery_rng = random.Random(gallery_seed)
-    gallery_enabled = gallery_rng.random() < 0.22
-    gallery_floors = list(range(3, 9))
-    gallery_weights = [3 if variants[floor - 1].name in
-                       ("garrison", "grand-halls") else 1
-                       for floor in gallery_floors]
-    gallery_floor = (gallery_rng.choices(gallery_floors, weights=gallery_weights, k=1)[0]
-                     if gallery_enabled else 0)
-    rare_motif_floor = _rare_motif_schedule(config)
-    # Only one parity of floors may request a vista in a campaign. This keeps
-    # the rare motif from appearing on consecutive maps without changing
-    # standalone-map generation or tying it to a specific theme.
-    vista_parity = random.Random(config.circulation_seed(10)
-                                 ^ 0x564953544131).randrange(2)
+    secret_from = schedule.secret_from
+    vine_floor, vine_budget = schedule.vine_floor, schedule.vine_budget
+    gallery_floor = schedule.gallery_floor
+    rare_motif_floor = schedule.rare_motif_floor
+    vista_parity = schedule.vista_parity
     for number in range(1, 11):
         if cancelled and cancelled():
             raise GenerationCancelled("campaign generation cancelled")

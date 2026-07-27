@@ -111,6 +111,26 @@ class CampaignScheduleTests(unittest.TestCase):
             sum(s in campaign.HALLWAY_FIRST_SKELETONS for s in skeletons), 3,
             "campaign must schedule exactly three hallway-first floors")
 
+    def test_resolved_schedule_is_frozen_and_retry_independent(self):
+        """CampaignSchedule must be reproducible from the config alone.
+
+        generate_campaign resolves it once before building any floor, so if any
+        field were drawn from a floor's attempt stream a rejected floor would
+        silently change the campaign's identity mid-run.
+        """
+        config = CampaignConfig(seed=31337)
+        first = campaign.resolve_schedule(config)
+        self.assertEqual(first, campaign.resolve_schedule(config))
+        with self.assertRaises(Exception):
+            first.vine_floor = 4          # frozen
+        self.assertEqual(len(first.variants), 10)
+        self.assertIn(first.secret_from, range(1, 7))
+        self.assertIn(first.vine_budget, (1, 2))
+        self.assertIn(first.vine_floor, range(2, 9))
+        self.assertIn(first.gallery_floor, (0, *range(3, 9)))
+        self.assertIn(first.rare_motif_floor, (0, 6, 7, 8, 9))
+        self.assertIn(first.vista_parity, (0, 1))
+
     def test_candidate_scoring_cannot_rescue_an_invalid_map(self):
         """Ranking is separate from validation by construction.
 

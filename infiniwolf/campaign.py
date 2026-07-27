@@ -15,7 +15,7 @@ never rescue an invalid one.
 
 from __future__ import annotations
 
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from itertools import combinations
 import math
 import random
@@ -303,6 +303,64 @@ def _lock_schedule(config: CampaignConfig) -> tuple[GatePlan, ...]:
                         else ("gold",))
     plans[9] = GatePlan()
     return tuple(plans)
+
+@dataclass(frozen=True, slots=True)
+class CampaignSchedule:
+    """Every campaign-scale choice, resolved once before any floor is built.
+
+    Frozen and derived purely from the config, so a floor rejected by
+    validate_map is retried against the same schedule. That is the property the
+    whole module exists to guarantee: a retry must reroll a layout, never a
+    campaign identity.
+    """
+    secret_from: int
+    variants: tuple[FloorVariant, ...]
+    vine_floor: int
+    vine_budget: int
+    gallery_floor: int
+    rare_motif_floor: int
+    vista_parity: int
+
+
+def resolve_schedule(config: CampaignConfig) -> CampaignSchedule:
+    """Draw every campaign-scale choice from attempt-independent streams."""
+    secret_seed = config.floor_seed(10)
+    if config.say_aardwolf:
+        secret_seed ^= config.aardwolf_seed(1)
+    secret_from = 1 + secret_seed % 6
+    variants = _variant_sequence(config)
+    vine_seed = config.vine_seed()
+    if config.say_aardwolf:
+        vine_seed ^= config.aardwolf_seed(8)
+    vine_rng = random.Random(vine_seed)
+    vine_floors = list(range(2, 9))
+    vine_weights = [4 if variants[floor - 1].name == "catacombs" else
+                    2 if variants[floor - 1].name in ("storehouse", "grand-halls") else 1
+                    for floor in vine_floors]
+    vine_floor = vine_rng.choices(vine_floors, weights=vine_weights, k=1)[0]
+    vine_budget = 2 if vine_rng.random() < 0.28 else 1
+    gallery_seed = config.guard_gallery_seed()
+    if config.say_aardwolf:
+        gallery_seed ^= config.aardwolf_seed(7)
+    gallery_rng = random.Random(gallery_seed)
+    gallery_enabled = gallery_rng.random() < 0.22
+    gallery_floors = list(range(3, 9))
+    gallery_weights = [3 if variants[floor - 1].name in
+                       ("garrison", "grand-halls") else 1
+                       for floor in gallery_floors]
+    gallery_floor = (gallery_rng.choices(gallery_floors, weights=gallery_weights, k=1)[0]
+                     if gallery_enabled else 0)
+    rare_motif_floor = _rare_motif_schedule(config)
+    # Only one parity of floors may request a vista in a campaign. This keeps
+    # the rare motif from appearing on consecutive maps without changing
+    # standalone-map generation or tying it to a specific theme.
+    vista_parity = random.Random(config.circulation_seed(10)
+                                 ^ 0x564953544131).randrange(2)
+    return CampaignSchedule(
+        secret_from=secret_from, variants=variants, vine_floor=vine_floor,
+        vine_budget=vine_budget, gallery_floor=gallery_floor,
+        rare_motif_floor=rare_motif_floor, vista_parity=vista_parity)
+
 
 def _set_distance(first: tuple[str, ...], second: tuple[str, ...]) -> float:
     left, right = set(first), set(second)
