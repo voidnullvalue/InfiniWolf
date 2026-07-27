@@ -1872,7 +1872,7 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
                 continue
             _set(things, *cell, 0)
             _set(things, *target, item)
-            reserved.discard(cell)
+            reserved.release([cell], "decorations", "flush-to-wall-source")
             ledger_reserve(reserved, [target], "decorations",
                            "flush-to-wall-target")
             free.add(cell); free.discard(target); edge_free.discard(target)

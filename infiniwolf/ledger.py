@@ -44,11 +44,9 @@ class Claim:
 class Ledger(set):
     """A cell reservation set that can say who reserved what, and why.
 
-    Soft claims are advisory: a later phase may knowingly release one, and
-    `release()` refuses to drop a hard claim so a decoration pass cannot quietly
-    overwrite a progression reservation. Both are recorded either way -- the
-    ledger's first job is to describe what already happens, not to start
-    forbidding things.
+    Claims accumulate in insertion order. A reservation remains in the set
+    until its final claim is released, so one subsystem cannot accidentally free
+    a cell another subsystem still needs.
     """
 
     __slots__ = ("_claims",)
@@ -56,33 +54,41 @@ class Ledger(set):
     def __init__(self, cells=(), *, owner: str = "unattributed",
                  reason: str = "pre-existing") -> None:
         super().__init__(cells)
-        self._claims: dict[Cell, Claim] = {
-            cell: Claim(owner, reason) for cell in self}
+        self._claims: dict[Cell, list[Claim]] = {
+            cell: [Claim(owner, reason)] for cell in self}
 
     # -- attributed writes -------------------------------------------------
 
     def reserve(self, cells, owner: str, reason: str, *, hard: bool = True,
                 room_index: int = -1) -> None:
-        """Claim cells with provenance. Re-claiming keeps the first owner.
-
-        First-writer-wins matches the existing semantics of a set: whoever got
-        there first is why the cell is unavailable, and a second claim adding
-        nothing should not rewrite history.
-        """
+        """Claim cells with provenance, preserving every distinct claim."""
         claim = Claim(owner, reason, hard, room_index)
         for cell in cells:
             super().add(cell)
-            self._claims.setdefault(cell, claim)
+            claims = self._claims.setdefault(cell, [])
+            if not any((existing.owner, existing.reason)
+                       == (owner, reason) for existing in claims):
+                claims.append(claim)
 
     def release(self, cells, owner: str, reason: str) -> list[Cell]:
-        """Drop soft or own claims; refuse others. Returns what was released."""
+        """Drop this owner's claims. Returns cells from which claims were removed.
+
+        Claims belonging to other owners, including soft claims, remain intact.
+        A hard claim is therefore never removable by another owner.
+        """
         released = []
         for cell in list(cells):
-            claim = self._claims.get(cell)
-            if claim is not None and claim.hard and claim.owner != owner:
+            claims = self._claims.get(cell)
+            if not claims:
                 continue
-            self.discard(cell)
-            self._claims.pop(cell, None)
+            remaining = [claim for claim in claims if claim.owner != owner]
+            if len(remaining) == len(claims):
+                continue
+            if remaining:
+                self._claims[cell] = remaining
+            else:
+                super().discard(cell)
+                del self._claims[cell]
             released.append(cell)
         return released
 
@@ -90,7 +96,10 @@ class Ledger(set):
 
     def add(self, cell) -> None:
         super().add(cell)
-        self._claims.setdefault(cell, Claim("unattributed", "add"))
+        claims = self._claims.setdefault(cell, [])
+        if not any((claim.owner, claim.reason) == ("unattributed", "add")
+                   for claim in claims):
+            claims.append(Claim("unattributed", "add"))
 
     def update(self, *others) -> None:
         for other in others:
@@ -98,12 +107,12 @@ class Ledger(set):
                 self.add(cell)
 
     def discard(self, cell) -> None:
-        super().discard(cell)
-        self._claims.pop(cell, None)
+        self.release([cell], "unattributed", "discard")
 
     def remove(self, cell) -> None:
-        super().remove(cell)
-        self._claims.pop(cell, None)
+        if cell not in self:
+            raise KeyError(cell)
+        self.discard(cell)
 
     def difference_update(self, *others) -> None:
         for other in others:
@@ -111,21 +120,27 @@ class Ledger(set):
                 self.discard(cell)
 
     def clear(self) -> None:
-        super().clear()
-        self._claims.clear()
+        self.release(list(self), "unattributed", "clear")
 
     # -- diagnostics -------------------------------------------------------
 
-    def explain(self, cell) -> str:
-        """Why this cell is unavailable, in one line."""
-        if cell not in self:
-            return f"{cell} is not reserved"
-        claim = self._claims.get(cell)
-        return f"{cell} reserved by {claim}" if claim else f"{cell} reserved (no claim)"
+    def explain(self, cell) -> list[Claim]:
+        """Claims for a cell, in reservation order, or an empty list."""
+        return list(self._claims.get(cell, ()))
 
-    def report(self) -> Counter:
-        """Reserved-cell counts per owner, for migration progress."""
-        return Counter(claim.owner for claim in self._claims.values())
+    def report(self) -> dict[str, dict[str, int]]:
+        """Claim and uniquely reserved-cell counts per owner."""
+        claims = Counter()
+        cells = Counter()
+        for cell_claims in self._claims.values():
+            owners = set()
+            for claim in cell_claims:
+                claims[claim.owner] += 1
+                owners.add(claim.owner)
+            for owner in owners:
+                cells[owner] += 1
+        return {owner: {"claims": claims[owner], "cells": cells[owner]}
+                for owner in claims.keys() | cells.keys()}
 
 
 def reserve(target, cells, owner: str, reason: str, *, hard: bool = True,
