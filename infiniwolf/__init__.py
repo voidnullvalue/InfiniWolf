@@ -1,6 +1,6 @@
 """InfiniWolf campaign generator."""
 
-__version__ = "1.10.0"
+__version__ = "2.0.0"
 
 from .config import CampaignConfig, Intensity, ThemeBias
 from .generator import generate_campaign
