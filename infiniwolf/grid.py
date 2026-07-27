@@ -18,8 +18,15 @@ from __future__ import annotations
 from collections import deque
 
 from .model import Room
-from .wl6 import (DOOR_ELEVATOR, DOOR_ELEVATOR_NS, DOOR_EW, DOOR_NS, DOORS, ELEVATOR_TILE,
-                  FLOOR, GRID, LOCKED_DOORS, PUSHWALL, SECRET_EXIT_ZONE, ZONE_MAX)
+from .wl6 import (DOOR_ELEVATOR, DOOR_ELEVATOR_NS, DOOR_EW, DOOR_NS, DOORS,
+                  DUMMY_ELEVATOR_TILE, ELEVATOR_TILE, FLOOR, GRID, LOCKED_DOORS,
+                  PUSHWALL, SECRET_EXIT_ZONE, ZONE_MAX)
+
+# Every tile that means "this is an elevator", live or inert. The arrival car is
+# built from the dummy panels, so a rule that names only ELEVATOR_TILE does not
+# see it.
+_ELEVATOR_STRUCTURE = frozenset({ELEVATOR_TILE, DUMMY_ELEVATOR_TILE,
+                                 DOOR_ELEVATOR, DOOR_ELEVATOR_NS})
 
 
 def _at(plane: list[int], x: int, y: int) -> int:
@@ -92,8 +99,13 @@ def _qualifying_dead_end_alcove(tiles: list[int], things: list[int],
             or _at(tiles, x, y) == SECRET_EXIT_ZONE
             or not _is_dead_end(tiles, x, y)):
         return False
+    # An elevator car is structure, not a bare alcove waiting to be dressed.
+    # Checking only ELEVATOR_TILE missed the arrival car, whose surround is
+    # DUMMY_ELEVATOR_TILE, so the occupancy pass furnished it and validation
+    # rejected the floor for "an unexplained object".
     neighbours = ((x + dx, y + dy) for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)))
-    if any(_at(things, nx, ny) == PUSHWALL or _at(tiles, nx, ny) == ELEVATOR_TILE
+    if any(_at(things, nx, ny) == PUSHWALL
+           or _at(tiles, nx, ny) in _ELEVATOR_STRUCTURE
            for nx, ny in neighbours):
         return False
     return cell in reachable

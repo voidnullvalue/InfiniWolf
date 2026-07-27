@@ -157,3 +157,22 @@ def reserve(target, cells, owner: str, reason: str, *, hard: bool = True,
         target.reserve(cells, owner, reason, hard=hard, room_index=room_index)
     else:
         target.update(cells)
+
+
+def release(target, cells, owner: str, reason: str) -> list[Cell]:
+    """Drop this owner's claims if `target` is a Ledger, else just discard.
+
+    The counterpart to `reserve` above, and for the same reason: a placement
+    module must work whether it was handed a `Ledger` or a plain `set`. Calling
+    `Ledger.release` directly is what broke the decoration tests -- a plain set
+    has no such method, and the failure only surfaces on the repair path that
+    releases a cell, which production seeds hardly ever take.
+    """
+    if isinstance(target, Ledger):
+        return target.release(cells, owner, reason)
+    released = []
+    for cell in list(cells):
+        if cell in target:
+            target.discard(cell)
+            released.append(cell)
+    return released

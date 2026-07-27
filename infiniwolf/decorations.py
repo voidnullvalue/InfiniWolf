@@ -21,7 +21,7 @@ import random
 
 from .grid import (_at, _inside_room, _is_floor, _reachable, _set,
                    qualifying_dead_end_alcoves)
-from .ledger import reserve as ledger_reserve
+from .ledger import release as ledger_release, reserve as ledger_reserve
 from .model import Room, RoomIdentity, VineScreen
 from .placement import _room_anchors, _room_traversal_frame, _traversal_pair_candidates
 from .room_policy import base_theme as _decor_theme
@@ -2012,7 +2012,7 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
                 continue
             _set(things, *cell, 0)
             _set(things, *target, item)
-            reserved.release([cell], "decorations", "flush-to-wall-source")
+            ledger_release(reserved, [cell], "decorations", "flush-to-wall-source")
             ledger_reserve(reserved, [target], "decorations",
                            "flush-to-wall-target")
             free.add(cell); free.discard(target); edge_free.discard(target)
