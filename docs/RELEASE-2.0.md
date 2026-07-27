@@ -37,12 +37,21 @@ Listed in the order they were made, each with the measurement that justified it.
 
 Stated rather than hidden, with what is known about each.
 
-- **Clustering is no longer a deviation: 18.9% against 18.6% authored.** It was
-  33.5%, then 22.9%. Ledger attribution drove the fixes — 71% of floor-prop
-  clustering was coming from multi-cell composition commits, which had been
-  exempted from spacing wholesale rather than only from their own members. The
-  last of the gap closed with the alcove and RNG-stream changes rather than by a
-  spacing rule, so treat the match as measured, not as engineered to target.
+- **Clustering: 20.6% against 18.6% authored.** It was 33.5%, then 22.9%, then
+  briefly 18.9% — an exact match — before the terminus-wall work took it back to
+  20.6%. Ledger attribution drove the earlier fixes: 71% of floor-prop clustering
+  came from multi-cell composition commits, exempted from spacing wholesale
+  rather than only from their own members. The 1.7-point regression is the cost
+  of biasing display props toward terminus walls, which roughly doubled the floor
+  lamp count. Named as a regression rather than presented as the plateau, because
+  it was demonstrably reachable.
+- **Flags still ignore terminus walls: 8.5% against 28.4% authored.** The
+  terminus work moved floor lamps from 5.6% to 22.9% and green plants from 6.2%
+  to 18.9%, and lifted the overall rate from 8.3% to 12.0% against 16.3%
+  authored — but flags did not move at all. They come from the concept
+  `signatures` table rather than the density fill or the dedicated candidate
+  lists, and that path still picks its cell without consulting orientation. This
+  is the original complaint that started the work and it is not fixed.
 - **Distinct item types 15.2 against 19.3 authored, and light fixtures 57.3
   against 74.1.** Both moved *further* from the corpus as clustering closed —
   17.0 → 15.2 and 62 → 57.3 respectively. That is the trade the spacing and
