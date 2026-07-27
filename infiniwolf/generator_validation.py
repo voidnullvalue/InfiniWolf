@@ -6,8 +6,9 @@ from collections import Counter, deque
 import math
 
 from .grid import (_at, _door_zone, _floor_distances, _inside_room, _is_floor,
-                   _path_bends, _reachable, _room_graph_path, _room_predecessor,
-                   _shortest_floor_path, qualifying_dead_end_alcoves)
+                   _is_perpendicular_door_junction, _path_bends, _reachable,
+                   _room_graph_path, _room_predecessor, _shortest_floor_path,
+                   qualifying_dead_end_alcoves)
 from .model import EncounterPlacement, GeneratedMap
 from .wl6 import (AMMO, BOSSES, CHAINGUN, DECOR_WALLS, DOORS, DOOR_ELEVATOR,
                   DOOR_ELEVATOR_NS, DUMMY_ELEVATOR_TILE, ELEVATOR_TILE,
@@ -34,6 +35,10 @@ def validate_map(level: GeneratedMap) -> None:
         raise ValueError("invalid plane dimensions")
     if 63 in level.things:
         raise ValueError("Call Apogee decoration is forbidden")
+    for y in range(GRID):
+        for x in range(GRID):
+            if _is_perpendicular_door_junction(level.tiles, x, y):
+                raise ValueError(f"perpendicular door junction at {(x, y)}")
     for cell in qualifying_dead_end_alcoves(level.tiles, level.things, level.start):
         raise ValueError(f"empty gameplay dead-end alcove at {cell}")
     if (level.number < PURPLE_MIN_FLOOR

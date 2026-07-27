@@ -9,11 +9,21 @@ every possible code.
 """
 import unittest
 
-from infiniwolf.grid import _FLOOR_OR_DOOR, _is_floor, _reachable, _set
-from infiniwolf.wl6 import DOORS, FLOOR, GRID, WALL
+from infiniwolf.grid import (_FLOOR_OR_DOOR, _is_floor,
+                            _is_perpendicular_door_junction, _reachable, _set)
+from infiniwolf.wl6 import DOORS, DOOR_EW, DOOR_NS, FLOOR, GRID, WALL
 
 
 class GridPrimitiveTests(unittest.TestCase):
+    def test_perpendicular_door_junction_requires_two_right_angle_doors(self):
+        tiles = [WALL] * (GRID * GRID)
+        _set(tiles, 20, 20, FLOOR)
+        _set(tiles, 19, 20, DOOR_EW)
+        _set(tiles, 20, 19, DOOR_NS)
+        self.assertTrue(_is_perpendicular_door_junction(tiles, 20, 20))
+        _set(tiles, 21, 20, FLOOR)
+        self.assertFalse(_is_perpendicular_door_junction(tiles, 20, 20))
+
     def test_router_lookup_table_matches_the_predicates_it_replaces(self):
         """_FLOOR_OR_DOOR must agree with _is_floor/DOORS for every code.
 

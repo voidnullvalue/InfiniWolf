@@ -462,6 +462,38 @@ def _cell_geometry(tiles: list[int], cell: tuple[int, int]) -> str:
     return "wall" if solid else "free"
 
 
+def _wall_orientation(tiles: list[int], cell: tuple[int, int]) -> str | None:
+    """Classify a one-wall cell by the sightline away from its backing wall.
+
+    The normal run starts beyond the prop cell; the along run is the longer of
+    the two directions parallel to the wall.  This distinguishes a corridor
+    terminus from its plentiful long-side wall cells without changing the
+    original count-based geometry classes.
+    """
+    x, y = cell
+    solid = [(dx, dy) for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1))
+             if (value := _at(tiles, x + dx, y + dy)) == -1
+             or (not _is_floor(value) and value not in DOORS)]
+    if len(solid) != 1:
+        return None
+    wx, wy = solid[0]
+    nx, ny = -wx, -wy
+
+    def run(dx: int, dy: int) -> int:
+        length = 0
+        while _is_floor(_at(tiles, x + dx * (length + 1), y + dy * (length + 1))):
+            length += 1
+        return length
+
+    normal = run(nx, ny)
+    along = max(run(-ny, nx), run(ny, -nx))
+    if normal >= 4 and normal >= 2 * along:
+        return "terminus"
+    if along >= 2 * normal:
+        return "flank"
+    return "neutral"
+
+
 def _cell_openness(tiles: list[int], cell: tuple[int, int]) -> str:
     """How open the surroundings are: floor cells in the 5x5 box around it."""
     x, y = cell
@@ -1860,7 +1892,12 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
                             continue
                     material = _material_behind(tiles, cell)
                     affinity = _MATERIAL_AFFINITY.get(material or "", frozenset())
+                    orientation = _wall_orientation(tiles, cell)
                     weights = [w * (_MATERIAL_MULTIPLIER if i in affinity else 1.0)
+                               * (1.35 if i in (39, 62, 69) and geo == "corner"
+                                  else 1.20 if i in (39, 62, 69) and orientation == "terminus"
+                                  else 0.72 if i in (39, 62, 69) and orientation == "flank"
+                                  else 1.0)
                                for i, w in choices]
                     item = rng.choices([i for i, _ in choices], weights=weights, k=1)[0]
                     if item in STATIC_BLOCKING:
