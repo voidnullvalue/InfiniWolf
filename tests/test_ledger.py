@@ -31,39 +31,37 @@ class SetCompatibilityTests(unittest.TestCase):
     def test_constructed_from_existing_cells(self):
         led = Ledger({(5, 5), (6, 6)}, owner="geometry", reason="seed")
         self.assertEqual(len(led), 2)
-        self.assertIn("geometry:seed", led.explain((5, 5)))
+        self.assertEqual(led.explain((5, 5)), [Claim("geometry", "seed")])
 
     def test_claims_never_outlive_their_cells(self):
         """A stale claim would make explain() lie about a freed cell."""
         led = Ledger()
         led.reserve([(1, 1)], "progression", "gate")
-        led.discard((1, 1))
-        self.assertEqual(led.report()["progression"], 0)
-        self.assertIn("not reserved", led.explain((1, 1)))
+        led.release([(1, 1)], "progression", "done")
+        self.assertEqual(led.report().get("progression", {}).get("claims", 0), 0)
+        self.assertEqual(led.explain((1, 1)), [])
 
 
 class ProvenanceTests(unittest.TestCase):
     def test_reserve_records_owner_and_reason(self):
         led = Ledger()
         led.reserve([(2, 3)], "progression", "pushwall-travel", room_index=4)
-        self.assertIn("progression:pushwall-travel room 4", led.explain((2, 3)))
+        self.assertEqual(led.explain((2, 3)), [
+            Claim("progression", "pushwall-travel", room_index=4)])
 
-    def test_first_writer_wins(self):
-        """Whoever got there first is why the cell is unavailable.
-
-        A second claim adds nothing to the set, so it must not rewrite history --
-        otherwise the diagnostic names the pass that merely tried, not the one
-        actually holding the cell.
-        """
+    def test_explain_lists_claims_in_insertion_order(self):
         led = Ledger()
         led.reserve([(1, 1)], "progression", "exit-stand")
         led.reserve([(1, 1)], "decorations", "density-fill")
-        self.assertIn("progression:exit-stand", led.explain((1, 1)))
+        self.assertEqual(led.explain((1, 1)), [
+            Claim("progression", "exit-stand"),
+            Claim("decorations", "density-fill"),
+        ])
 
     def test_unattributed_writes_are_visible_rather_than_silent(self):
         led = Ledger()
         led.add((9, 9))
-        self.assertEqual(led.report()["unattributed"], 1)
+        self.assertEqual(led.report()["unattributed"]["claims"], 1)
 
     def test_hard_claims_resist_release_by_another_owner(self):
         """The invariant that makes the ledger more than bookkeeping.
@@ -80,10 +78,44 @@ class ProvenanceTests(unittest.TestCase):
         self.assertEqual(led.release([(4, 4)], "progression", "done"), [(4, 4)])
         self.assertNotIn((4, 4), led)
 
-    def test_soft_claims_are_releasable_by_anyone(self):
+    def test_release_removes_only_its_owners_claims(self):
         led = Ledger()
         led.reserve([(7, 7)], "geometry", "shape-anchor", hard=False)
-        self.assertEqual(led.release([(7, 7)], "decorations", "reclaim"), [(7, 7)])
+        self.assertEqual(led.release([(7, 7)], "decorations", "reclaim"), [])
+        self.assertIn((7, 7), led)
+
+    def test_one_owner_release_keeps_another_owners_claim(self):
+        led = Ledger()
+        led.reserve([(8, 8)], "geometry", "anchor")
+        led.reserve([(8, 8)], "decorations", "blocking-prop")
+        self.assertEqual(led.release([(8, 8)], "geometry", "done"), [(8, 8)])
+        self.assertIn((8, 8), led)
+        self.assertEqual(led.explain((8, 8)), [
+            Claim("decorations", "blocking-prop")])
+
+    def test_cell_leaves_only_after_its_last_claim_is_released(self):
+        led = Ledger()
+        led.reserve([(8, 8)], "geometry", "anchor")
+        led.reserve([(8, 8)], "decorations", "blocking-prop")
+        led.release([(8, 8)], "geometry", "done")
+        self.assertIn((8, 8), led)
+        led.release([(8, 8)], "decorations", "done")
+        self.assertNotIn((8, 8), led)
+
+    def test_report_counts_claims_and_unique_cells_per_owner(self):
+        led = Ledger()
+        led.reserve([(1, 1), (2, 2)], "geometry", "anchor")
+        led.reserve([(1, 1)], "geometry", "screen")
+        report = led.report()
+        self.assertEqual(report["geometry"]["claims"], 3)
+        self.assertEqual(report["geometry"]["cells"], 2)
+
+    def test_duplicate_owner_reason_claims_do_not_accumulate(self):
+        led = Ledger()
+        led.reserve([(3, 3)], "geometry", "anchor", hard=False)
+        led.reserve([(3, 3)], "geometry", "anchor", hard=True, room_index=4)
+        self.assertEqual(led.explain((3, 3)), [
+            Claim("geometry", "anchor", hard=False)])
 
 
 class HelperTests(unittest.TestCase):
@@ -95,7 +127,8 @@ class HelperTests(unittest.TestCase):
         """
         led = Ledger()
         reserve(led, [(1, 2)], "decorations", "density-fill")
-        self.assertIn("decorations:density-fill", led.explain((1, 2)))
+        self.assertEqual(led.explain((1, 2)), [
+            Claim("decorations", "density-fill")])
 
         plain = set()
         reserve(plain, [(3, 4)], "decorations", "density-fill")
