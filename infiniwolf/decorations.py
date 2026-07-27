@@ -1835,11 +1835,19 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
         # gaining a third lamp in a corner.
         if lighting == "floor-lamp":
             placing_lamps = True
-            lamp_cells = [cell for cell in edge_free | free
-                          if (_cell_geometry(tiles, cell) in ("corner", "nook")
-                              or _wall_orientation(tiles, cell) == "terminus")]
-            lamp_cells = _prefer_terminus(lamp_cells, tiles, rng,
-                                          _TERMINUS_PREFERENCE[26])
+            # Corners first, always. The corpus puts 76% of floor lamps in a
+            # corner and only 17% along a plain wall, and a terminus cell is a
+            # plain wall cell. Offering termini alongside corners diluted that
+            # share below the corpus rate. A terminus is a fallback for a room
+            # whose corners are all taken, not a peer of them.
+            corner_cells = [cell for cell in edge_free | free
+                            if _cell_geometry(tiles, cell) in ("corner", "nook")]
+            rng.shuffle(corner_cells)
+            terminus_cells = [cell for cell in edge_free | free
+                              if _cell_geometry(tiles, cell) not in ("corner", "nook")
+                              and _wall_orientation(tiles, cell) == "terminus"]
+            rng.shuffle(terminus_cells)
+            lamp_cells = corner_cells + terminus_cells
             for cell in lamp_cells:
                 if len(room_lamps) >= lamp_cap or static_headroom <= 0:
                     break
@@ -1848,6 +1856,38 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
                     continue
                 _try_place([cell], 26)
             placing_lamps = False
+
+        # --- Wall displays get the wall the space points at ---
+        # Flags, armour and spear racks are the items a corridor frames for its
+        # whole length, and authored maps hang them on the terminus 28% of the
+        # time against our 8.5%. They never got there by themselves: the
+        # signature table needs a room at least 6x6, and a square room has no
+        # terminus at all -- the run along the wall always beats the run away
+        # from it -- so the only rooms with a terminus were the corridors the
+        # signatures skip. Give them a dedicated candidate list, exactly as
+        # floor lamps have, which is what took lamps from 5.6% to 22.9%.
+        for display in (62, 39, 69):
+            if display not in blocking or static_headroom <= 0:
+                continue
+            if any(_at(things, x, y) == display
+                   for y in range(room.y, room.y + room.h)
+                   for x in range(room.x, room.x + room.w)):
+                continue
+            display_cells = [cell for cell in edge_free | free
+                             if cell not in keep_clear and _wall_backed(cell)
+                             and _wall_orientation(tiles, cell) == "terminus"]
+            if not display_cells:
+                continue
+            # No probability gate here. A terminus is already scarce -- most
+            # rooms are squarish and have none at all -- so gating on top of
+            # that scarcity compounded down to 12.6% against 28.4% authored.
+            # Taking the terminus whenever one exists lands on the authored
+            # rate; the randomness that matters is which rooms have one.
+            rng.shuffle(display_cells)
+            for cell in display_cells:
+                if _try_place([cell], display):
+                    break
+            break
 
         # --- Stage B guarantee: nothing leaves this loop dark ---
         # Runs here, before fill, rather than at the end of the room: fill

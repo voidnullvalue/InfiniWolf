@@ -491,7 +491,14 @@ class GeneratorTests(unittest.TestCase):
         # Exercise several RNG streams: the contract is that a sink is an
         # optional signature, not that two particular seeds consume random
         # draws in a permanently fixed order.
-        for seed in range(4):
+        #
+        # Sixteen rather than four. The sink lands on a 0.4 draw, so four
+        # samples had a 15.5% chance of coming out all-present or all-absent by
+        # luck and failing an assertion the code satisfies -- which is exactly
+        # what happened when an unrelated decoration pass shifted the draws.
+        # Sixteen puts that below 0.03%, so this asserts the contract instead of
+        # a draw alignment.
+        for seed in range(16):
             tiles = [WALL] * (GRID * GRID)
             for y in range(room.y, room.y + room.h):
                 for x in range(room.x, room.x + room.w):
