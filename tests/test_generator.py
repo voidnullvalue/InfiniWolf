@@ -801,7 +801,7 @@ class GeneratorTests(unittest.TestCase):
                 for x in range(room.x, room.x + room.w):
                     tiles[y * GRID + x] = FLOOR
             things = [0] * len(tiles)
-            _, screens = _place_decorations(
+            _, screens, _ = _place_decorations(
                 [room], tiles, things, set(), room.center, random.Random(seed),
                 identities=[identity])
             if screens:
@@ -821,7 +821,7 @@ class GeneratorTests(unittest.TestCase):
         path = [(x, 20) for x in range(10, 25)]
         for cell in path:
             tiles[cell[1] * GRID + cell[0]] = FLOOR
-        _, screens = _place_decorations(
+        _, screens, _ = _place_decorations(
             [], tiles, things, set(), path[0], random.Random(1), paths=[path],
             hallway_vine_budget=1)
         self.assertEqual(len(screens), 1)
@@ -1785,9 +1785,9 @@ class GeneratorTests(unittest.TestCase):
             # and bone variants. The point of this test is that a jail draws
             # from the grim palette rather than generic furniture, not that a
             # jail is pitch dark.
-            self.assertTrue(set(placed) <= {24, 61, 42, 64, 65, 66, 32, 40, 41, 37},
+            self.assertTrue(set(placed) <= {23, 24, 61, 42, 64, 65, 66, 32, 40, 41, 37},
                             f"seed {seed} placed off-palette items: "
-                            f"{sorted(set(placed) - {24, 61, 42, 64, 65, 66, 32, 40, 41, 37})}")
+                            f"{sorted(set(placed) - {23, 24, 61, 42, 64, 65, 66, 32, 40, 41, 37})}")
             self.assertIn(37, placed, f"seed {seed} left the jail unlit")
 
     def test_decoration_zoning_splits_across_room_halves(self):

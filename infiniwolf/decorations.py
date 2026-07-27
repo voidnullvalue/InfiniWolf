@@ -190,19 +190,38 @@ _MOTIF_WEIGHTS = {
 # left plain.
 _MOTIF_ABSTENTION = 0.18
 
+# A weight at or above this means "choose this if it is eligible", bypassing
+# both the weighted draw and the abstention.
+_MOTIF_FORCED = 100.0
 
-def _choose_motif(eligible: dict[str, bool], rng: random.Random) -> str:
+
+def _choose_motif(eligible: dict[str, bool], rng: random.Random,
+                  overrides: dict[str, float] | None = None) -> str:
     """Pick one motif for a room from those structurally possible.
 
     Returns "" when the room is left plain, either because nothing was eligible or
     because it drew the abstention. Deciding once, up front, is the whole point:
     it replaces a race in which the winner was determined by line number.
+
+    `overrides` replaces a motif's weight. It exists because the caller's
+    `traversal_pair_chance` and `landmark_frame_chance` parameters used to be the
+    probabilities of those two gates directly, and callers -- tests especially --
+    still need to force or suppress one composition to examine it. A weight of zero
+    removes the motif from consideration entirely; a large weight makes it certain
+    when it is eligible.
     """
-    names = [name for name, ok in eligible.items() if ok]
-    if not names or rng.random() < _MOTIF_ABSTENTION:
+    weights_by_name = dict(_MOTIF_WEIGHTS)
+    weights_by_name.update(overrides or {})
+    names = [name for name, ok in eligible.items()
+             if ok and weights_by_name.get(name, 0.0) > 0.0]
+    if not names:
         return ""
-    weights = [_MOTIF_WEIGHTS[name] for name in names]
-    return rng.choices(names, weights=weights, k=1)[0]
+    forced = [name for name in names if weights_by_name[name] >= _MOTIF_FORCED]
+    if forced:
+        return rng.choice(forced)
+    if rng.random() < _MOTIF_ABSTENTION:
+        return ""
+    return rng.choices(names, weights=[weights_by_name[n] for n in names], k=1)[0]
 
 
 def _place_zoned(room: Room,
@@ -1136,7 +1155,21 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
             "courtyard-centerpiece": (concept in ("courtyard", "storage")
                                       and room.w >= 9 and room.h >= 9),
         }
-        motif = _choose_motif(eligible_motifs, rng)
+        # The two chance parameters predate motif selection: they used to be the
+        # probabilities of those specific gates. Preserved as weight overrides so a
+        # caller can still force or suppress one composition -- 1.0 forces, 0.0
+        # suppresses, anything else leaves the normal weighting alone.
+        motif_overrides: dict[str, float] = {}
+        if traversal_pair_chance is not None:
+            if traversal_pair_chance >= 1.0:
+                motif_overrides["travel-pair"] = _MOTIF_FORCED
+            elif traversal_pair_chance <= 0.0:
+                motif_overrides["travel-pair"] = 0.0
+        if landmark_frame_chance >= 1.0:
+            motif_overrides["landmark-frame"] = _MOTIF_FORCED
+        elif landmark_frame_chance <= 0.0:
+            motif_overrides["landmark-frame"] = 0.0
+        motif = _choose_motif(eligible_motifs, rng, motif_overrides)
         room_motifs[ridx] = motif
         concept_frames = {
             # Guardpost keeps a green-plant companion so its matched pair can
