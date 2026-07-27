@@ -494,6 +494,37 @@ def _wall_orientation(tiles: list[int], cell: tuple[int, int]) -> str | None:
     return "neutral"
 
 
+# These probabilities select a terminus candidate instead of the ordinary
+# shuffled candidate.  They close the measured generated-to-authored gap for
+# upright display families without forcing every such item into a dead end.
+_TERMINUS_PREFERENCE = {
+    26: 0.41,  # FloorLamp
+    31: 0.34,  # GreenPlant
+    34: 0.37,  # BrownPlant
+    35: 0.23,  # Vase
+    36: 0.19,  # BareTable
+    39: 0.22,  # SuitOfArmor
+    62: 0.22,  # Flag
+    69: 0.22,  # SpearRack
+}
+
+
+def _prefer_terminus(cells: list[tuple[int, int]], tiles: list[int],
+                      rng: random.Random, chance: float) -> list[tuple[int, int]]:
+    """Shuffle candidates, then occasionally put terminus cells first.
+
+    Partitioning after the shuffle keeps positions random within each
+    orientation while making the orientation decision a cell-selection rule.
+    """
+    rng.shuffle(cells)
+    if rng.random() < chance:
+        return ([cell for cell in cells
+                 if _wall_orientation(tiles, cell) == "terminus"]
+                + [cell for cell in cells
+                   if _wall_orientation(tiles, cell) != "terminus"])
+    return cells
+
+
 def _cell_openness(tiles: list[int], cell: tuple[int, int]) -> str:
     """How open the surroundings are: floor cells in the 5x5 box around it."""
     x, y = cell
@@ -1074,7 +1105,8 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
         if wants_vase and static_headroom > 0:
             vase_cells = [cell for cell in edge_free
                           if cell not in keep_clear and _wall_backed(cell)]
-            rng.shuffle(vase_cells)
+            vase_cells = _prefer_terminus(vase_cells, tiles, rng,
+                                          _TERMINUS_PREFERENCE[35])
             for cell in vase_cells:
                 if _try_place([cell], 35):
                     break
@@ -1492,6 +1524,23 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
                            for _, item in signature):
                         signature = None
                 if signature:
+                    # Signatures are a major source of flags and armour.  Keep
+                    # their composition identity, but when a terminus is drawn
+                    # from the per-item stream, choose that wall-backed cell
+                    # before committing the signature.
+                    candidates = [cell for cell in free | edge_free
+                                  if cell not in keep_clear and _wall_backed(cell)]
+                    for index, (_, item) in enumerate(signature):
+                        if (item not in _TERMINUS_PREFERENCE
+                                or rng.random() >= _TERMINUS_PREFERENCE[item]):
+                            continue
+                        terminus = [cell for cell in candidates
+                                    if _wall_orientation(tiles, cell) == "terminus"]
+                        rng.shuffle(terminus)
+                        if terminus:
+                            chosen = terminus.pop()
+                            signature[index] = (chosen, item)
+                            candidates.remove(chosen)
                     matched_item = (signature[0][1] if len(signature) == 2
                                     and signature[0][1] == signature[1][1]
                                     else None)
@@ -1786,13 +1835,17 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
         # gaining a third lamp in a corner.
         if lighting == "floor-lamp":
             placing_lamps = True
-            for cell in sorted(edge_free | free,
-                               key=lambda c: (_cell_geometry(tiles, c) not in ("corner", "nook"),
-                                              rng.random())):
+            lamp_cells = [cell for cell in edge_free | free
+                          if (_cell_geometry(tiles, cell) in ("corner", "nook")
+                              or _wall_orientation(tiles, cell) == "terminus")]
+            lamp_cells = _prefer_terminus(lamp_cells, tiles, rng,
+                                          _TERMINUS_PREFERENCE[26])
+            for cell in lamp_cells:
                 if len(room_lamps) >= lamp_cap or static_headroom <= 0:
                     break
-                if _cell_geometry(tiles, cell) not in ("corner", "nook"):
-                    break          # candidates are sorted; no corners remain
+                if (_cell_geometry(tiles, cell) not in ("corner", "nook")
+                        and _wall_orientation(tiles, cell) != "terminus"):
+                    continue
                 _try_place([cell], 26)
             placing_lamps = False
 
@@ -1900,11 +1953,23 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
                                   else 1.0)
                                for i, w in choices]
                     item = rng.choices([i for i, _ in choices], weights=weights, k=1)[0]
+                    target = cell
+                    chance = _TERMINUS_PREFERENCE.get(item, 0.0)
+                    if (chance and _wall_orientation(tiles, cell) != "terminus"
+                            and rng.random() < chance):
+                        terminus = [candidate for candidate in classified.get("wall", ())
+                                    if (_at(things, *candidate) == 0
+                                        and _wall_orientation(tiles, candidate) == "terminus"
+                                        and any(existing == item for existing, _ in
+                                                _FILL_BUCKETS.get(("wall", _cell_openness(tiles, candidate)), ())))]
+                        rng.shuffle(terminus)
+                        if terminus:
+                            target = terminus.pop()
                     if item in STATIC_BLOCKING:
-                        _try_place([cell], item)
-                    elif not _place_open(cell, item):
+                        _try_place([target], item)
+                    elif not _place_open(target, item):
                         continue
-                    if _at(things, *cell) == item:
+                    if _at(things, *target) == item:
                         placed_fill += 1
 
         # --- Pull isolated furniture flush to the wall ---
