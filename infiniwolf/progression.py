@@ -26,8 +26,8 @@ from itertools import combinations
 import math
 import random
 
-from .grid import (_at, _door_zone, _floor_distances, _is_floor, _reachable,
-                   _room_graph_path, _set)
+from .grid import (_at, _door_would_create_perpendicular_junction, _door_zone,
+                   _floor_distances, _is_floor, _reachable, _room_graph_path, _set)
 from .geometry import _door_candidate
 from .placement import _room_anchors
 from .config import CampaignConfig
@@ -253,8 +253,15 @@ def _place_doors(tiles: list[int], things: list[int], rooms: list[Room],
     # _split_oversized_zones, which catches what's left. Locked-door
     # schedule independently controls whether zero, one, or two of these
     # thresholds become mandatory progression gates.
-    placed = candidates
-    for x, y, code in placed:
+    # Declining a threshold leaves its existing floor tile open, so this cannot
+    # strand either side. It merely keeps that incidental junction in the same
+    # sound zone; reachability therefore remains the stronger invariant.
+    placed = []
+    for candidate in candidates:
+        x, y, code = candidate
+        if _door_would_create_perpendicular_junction(tiles, x, y, code):
+            continue
+        placed.append(candidate)
         _set(tiles, x, y, code)
     if not gate_plan.colors:
         return 0, (), ()
@@ -266,10 +273,11 @@ def _place_doors(tiles: list[int], things: list[int], rooms: list[Room],
     rests = {(x + 2, y) for x, y in pushwalls}
     route_edges = [{critical_route[index], critical_route[index + 1]}
                    for index in range(len(critical_route) - 1)]
+    placed_cells = {(x, y) for x, y, _ in placed}
     route_records: list[tuple[int, tuple[int, int, int]]] = []
     for edge, candidate in records:
         endpoints = set(edge)
-        if endpoints in route_edges:
+        if candidate[:2] in placed_cells and endpoints in route_edges:
             route_records.append((route_edges.index(endpoints) + 1, candidate))
     if not route_records:
         return 0, (), ()

@@ -45,7 +45,8 @@ import random
 
 from .campaign import HALLWAY_FIRST_SKELETONS
 from .config import CampaignConfig
-from .grid import (_FLOOR_OR_DOOR, _at, _dead_ends_near, _floor_components,
+from .grid import (_FLOOR_OR_DOOR, _at, _dead_ends_near,
+                   _door_would_create_perpendicular_junction, _floor_components,
                    _inside_room, _is_dead_end, _is_floor, _overlaps, _reachable, _set)
 from .model import (AuthoredSightline, FloorPlan, PlacedPlan, Room, RoomSpec,
                     SharedVoid)
@@ -1513,7 +1514,10 @@ def _limit_theme_merge_size(tiles: list[int], rooms: list[Room], rng: random.Ran
                     cell = candidate
         if cell is None:
             break
-        _set(tiles, *cell, _door_axis(tiles, *cell))
+        axis = _door_axis(tiles, *cell)
+        if axis is None or _door_would_create_perpendicular_junction(tiles, *cell, axis):
+            break
+        _set(tiles, *cell, axis)
         ledger_reserve(reserved, [cell], "geometry",
                        "sightline-repair-pillar")
         door_zones.add(cell)
@@ -1573,7 +1577,10 @@ def _split_oversized_zones(tiles: list[int], rooms: list[Room], rng: random.Rand
                         seen.add(nxt); queue.append(nxt)
             other = len(remaining) - len(seen)
             if len(seen) >= min_piece and other >= min_piece:
-                _set(tiles, x, y, _door_axis(tiles, x, y))
+                axis = _door_axis(tiles, x, y)
+                if axis is None or _door_would_create_perpendicular_junction(tiles, x, y, axis):
+                    continue
+                _set(tiles, x, y, axis)
                 door_zones.add((x, y))
                 placed += 1
                 split = True
@@ -2029,7 +2036,11 @@ def _break_long_sightlines(tiles: list[int], things: list[int], rooms: list[Room
                     crossbar = {wall_cell, (x, y)}
                     dead_ends_before = _dead_ends_near(tiles, crossbar)
                     _set(tiles, *wall_cell, WALL)
-                    _set(tiles, x, y, DOOR_NS if vertical else DOOR_EW)
+                    axis = DOOR_NS if vertical else DOOR_EW
+                    if _door_would_create_perpendicular_junction(tiles, x, y, axis):
+                        _set(tiles, *wall_cell, wall_original)
+                        continue
+                    _set(tiles, x, y, axis)
                     if _reachable(tiles, start, locked_open=True) != baseline - {wall_cell}:
                         _set(tiles, *wall_cell, wall_original)
                         _set(tiles, x, y, door_original)

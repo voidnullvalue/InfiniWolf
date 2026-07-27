@@ -45,6 +45,31 @@ def _is_dead_end(tiles: list[int], x: int, y: int) -> bool:
                     for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1))) == 1)
 
 
+def _is_perpendicular_door_junction(tiles: list[int], x: int, y: int) -> bool:
+    """Whether a floor cell is joined only to perpendicular door slabs."""
+    if not _is_floor(_at(tiles, x, y)):
+        return False
+    neighbours = [(dx, dy) for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1))
+                  if _is_walkable(_at(tiles, x + dx, y + dy))]
+    return (len(neighbours) == 2
+            and all(_at(tiles, x + dx, y + dy) in DOORS for dx, dy in neighbours)
+            and neighbours[0][0] * neighbours[1][0]
+            + neighbours[0][1] * neighbours[1][1] == 0)
+
+
+def _door_would_create_perpendicular_junction(tiles: list[int], x: int, y: int,
+                                               code: int) -> bool:
+    """Whether changing this cell to a door creates a nearby bad junction."""
+    original = _at(tiles, x, y)
+    if original == code:
+        return False
+    _set(tiles, x, y, code)
+    created = any(_is_perpendicular_door_junction(tiles, x + dx, y + dy)
+                  for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)))
+    _set(tiles, x, y, original)
+    return created
+
+
 def _dead_ends_near(tiles: list[int], cells: set[tuple[int, int]]) -> set[tuple[int, int]]:
     """Return dead ends at cells touched by a mutation and their neighbours."""
     nearby = {(x + dx, y + dy) for x, y in cells
