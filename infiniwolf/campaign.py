@@ -23,6 +23,7 @@ import random
 
 from .config import CampaignConfig
 from .model import FloorVariant, GatePlan, GeneratedMap
+from .quality import weighted_distance
 
 
 # A floor's "base variant": one named bundle of the parameters that used to
@@ -398,27 +399,29 @@ def _candidate_score(level: GeneratedMap, previous: list[GeneratedMap],
             + 2.5 * (level.circulation_skeleton != other.circulation_skeleton)
             + 1.5 * _set_distance(level.layout_signature,
                                   other.layout_signature)
-            + 1.4 * _set_distance(level.room_concepts,
-                                  other.room_concepts)
+            # Concepts, shapes and lighting are multisets: how *many* armories a
+            # floor has is part of how it reads, and set distance cannot see it.
+            + 1.4 * weighted_distance(level.room_concepts,
+                                      other.room_concepts)
             + 1.2 * _set_distance(level.motifs, other.motifs)
-            + 1.1 * _set_distance(level.room_shapes, other.room_shapes)
+            + 1.1 * weighted_distance(level.room_shapes, other.room_shapes)
             + 0.9 * _set_distance(level.district_circulation,
                                   other.district_circulation)
             + 0.8 * _set_distance(level.secret_variants,
                                   other.secret_variants)
-            + 0.7 * _set_distance(
+            + 0.7 * weighted_distance(
                 tuple(encounter.family for encounter in level.encounters),
                 tuple(encounter.family for encounter in other.encounters))
-            + 0.6 * _set_distance(level.lighting_families,
-                                  other.lighting_families)
+            + 0.6 * weighted_distance(level.lighting_families,
+                                      other.lighting_families)
             + 0.5 * ((level.arrival.kind if level.arrival else "")
                      != (other.arrival.kind if other.arrival else ""))
             + min(1.0, abs(len(level.rooms) - len(other.rooms)) / 5.0)
             + min(1.0, abs(sum(bool(thing) for thing in level.things)
                                - sum(bool(thing) for thing in other.things)) / 24.0)
         )
-    score += _set_distance(level.room_concepts[:-1],
-                           level.room_concepts[1:])
+    score += weighted_distance(level.room_concepts[:-1],
+                               level.room_concepts[1:])
     score += 0.35 * len(set(level.room_concepts))
     pairs = {
         frozenset(("storage", "ready-room")),
