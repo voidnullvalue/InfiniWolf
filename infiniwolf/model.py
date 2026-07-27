@@ -86,6 +86,39 @@ class FloorVariant:
 
 
 @dataclass(frozen=True, slots=True)
+class AestheticPhase:
+    """Bounded visual modifiers for one floor's position in the campaign.
+
+    A campaign should feel like it goes somewhere: orderly and occupied early,
+    older and damper in the middle, ceremonial and ruined late. Theme rotation
+    already stops two adjacent floors looking alike, but it gives no direction --
+    floor 2 and floor 8 were equally likely to be pristine.
+
+    Every field is a multiplier or a probability in a deliberately narrow band, so
+    the arc modulates a floor rather than defining it. Variant identity must stay
+    the stronger signal: a catacomb on floor 2 is still a catacomb, just a
+    better-kept one. Values are derived from the floor number and the campaign
+    seed, so they are reproducible and recorded.
+    """
+    # `damage` is the field currently wired through, into the damaged-wall
+    # treatment rate, and it demonstrably works: within every variant, a floor
+    # appearing late is markedly more battered than the same variant appearing
+    # early (catacombs 18.9 -> 54.9 damaged wall tiles, garrison 1.1 -> 5.7).
+    #
+    # The other four are declared and recorded but not yet consumed. A first
+    # attempt tilted decoration's clutter palette by `abandonment` and
+    # `occupation` and produced no measurable effect at all -- concept gating
+    # dominates which gore or furniture a room can hold, so a +/-25% filter on the
+    # palette was swamped. That code is not kept; a field that does nothing is
+    # better declared honestly than faked.
+    orderliness: float      # reserved: symmetry and intactness of composition
+    damage: float           # scales the damaged-wall treatment rate
+    occupation: float       # reserved: furniture implying people are still here
+    monumentality: float    # reserved: landmark and colonnade emphasis
+    abandonment: float      # reserved: gore, dust and disuse clutter
+
+
+@dataclass(frozen=True, slots=True)
 class GatePlan:
     """Ordered key colors required by one floor's mandatory route."""
     colors: tuple[str, ...] = ()

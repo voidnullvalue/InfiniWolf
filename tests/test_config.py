@@ -189,3 +189,69 @@ class CandidateScoreCalibrationTests(unittest.TestCase):
                 # or the rhythm cannot express a busier or calmer floor.
                 self.assertLess(base - 1.05, measured)
                 self.assertGreater(base + 1.05, measured)
+
+
+class AestheticArcTests(unittest.TestCase):
+    """The campaign's visual journey: bounded, seeded, and floor 9/10 pinned.
+
+    The arc must modulate a floor without overriding it, so every band is narrow.
+    That also means its effect is only visible *within* a variant -- comparing
+    floor 1 to floor 8 across a campaign mostly compares a garrison to a catacomb.
+    """
+
+    def test_bands_stay_narrow_enough_to_modulate_not_override(self):
+        from infiniwolf.campaign import aesthetic_phase
+        config = CampaignConfig(seed=5150)
+        for floor in range(1, 11):
+            phase = aesthetic_phase(config, floor)
+            for name in ("orderliness", "damage", "occupation",
+                         "monumentality", "abandonment"):
+                with self.subTest(floor=floor, field=name):
+                    value = getattr(phase, name)
+                    self.assertGreaterEqual(value, 0.70)
+                    self.assertLessEqual(value, 1.35)
+
+    def test_damage_rises_across_the_ordinary_campaign(self):
+        from infiniwolf.campaign import aesthetic_phase
+        config = CampaignConfig(seed=5150)
+        damage = [aesthetic_phase(config, floor).damage for floor in range(1, 9)]
+        self.assertEqual(damage, sorted(damage), f"not monotonic: {damage}")
+        self.assertLess(damage[0], damage[-1])
+
+    def test_special_floors_are_pinned_not_interpolated(self):
+        """Floor 9 is the campaign's monument; floor 10 its ruin.
+
+        Letting the curve decide would occasionally hand the stronghold a damp
+        ruin and the reward expedition a pristine hall.
+        """
+        from infiniwolf.campaign import aesthetic_phase
+        for seed in (1, 2, 3, 40, 41):
+            config = CampaignConfig(seed=seed)
+            nine = aesthetic_phase(config, 9)
+            ten = aesthetic_phase(config, 10)
+            with self.subTest(seed=seed):
+                self.assertEqual(nine.monumentality, 1.30)
+                self.assertEqual(nine.occupation, 1.30)
+                self.assertEqual(ten.abandonment, 1.30)
+                self.assertLess(ten.occupation, nine.occupation)
+
+    def test_the_arc_is_seeded_so_runs_differ(self):
+        """Two campaigns must escalate differently while both escalating."""
+        from infiniwolf.campaign import aesthetic_phase
+        curves = {
+            seed: tuple(aesthetic_phase(CampaignConfig(seed=seed), floor).damage
+                        for floor in range(1, 9))
+            for seed in range(12)
+        }
+        self.assertGreater(len(set(curves.values())), 1,
+                           "every seed produced the same curve")
+        for seed, curve in curves.items():
+            with self.subTest(seed=seed):
+                self.assertEqual(list(curve), sorted(curve))
+
+    def test_the_phase_is_reproducible(self):
+        from infiniwolf.campaign import aesthetic_phase
+        config = CampaignConfig(seed=777)
+        for floor in range(1, 11):
+            self.assertEqual(aesthetic_phase(config, floor),
+                             aesthetic_phase(config, floor))

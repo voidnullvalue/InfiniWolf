@@ -112,6 +112,14 @@ The positional gate is deliberately weaker in one respect and it is worth statin
 
 The boss is drawn from a campaign-scale stream rather than the floor RNG, so a rejected floor-9 attempt keeps its boss. When it was drawn per attempt, two arena families that could never validate caused retries that re-rolled the boss and skewed the result two to one.
 
+### 6.2 Campaign aesthetic arc (`aesthetic_phase`)
+
+Theme rotation stops two adjacent floors looking alike, but on its own it gives the campaign no direction: floor 2 and floor 8 were equally likely to be pristine. Each floor now carries an `AestheticPhase` — bounded multipliers derived from its position in the run and the campaign seed — so a campaign reads as going somewhere. Floors 1–8 interpolate from orderly and occupied toward battered and derelict, with a seeded offset so two runs escalate along different parts of the curve. Floors 9 and 10 are pinned rather than interpolated: the stronghold is the campaign's most monumental and most occupied space by authorial intent, and the reward expedition its most abandoned, and letting the curve decide would occasionally hand floor 9 a damp ruin.
+
+Every band is deliberately narrow, between roughly 0.75 and 1.30. The arc must modulate a floor's variant, never replace it — a catacomb on floor 2 is still a catacomb, just a better-kept one. A consequence worth understanding when reading generated output: the arc is *not* visible by comparing floor 1 to floor 8 of one campaign, because that mostly compares a garrison to a catacomb. It is visible when the same variant is compared across positions. Measured over 22 campaigns, damaged wall tiles per floor for the same variant early versus late: catacombs 18.9 → 54.9, quarters 3.5 → 15.6, storehouse 6.1 → 17.2, garrison 1.1 → 5.7.
+
+Only `damage` is currently consumed. The other four fields are recorded but unused, and that is stated rather than disguised: an attempt to tilt decoration's clutter palette by `abandonment` and `occupation` produced no measurable change at all, because concept gating already decides which gore or furniture a room may hold and a ±25% filter on top of it was swamped. That code was removed rather than kept as decoration.
+
 ## 7. Population placement (`_place_population`)
 
 This pass owns enemy economy and realizes room-owned `EncounterPlacement` records after room identities, doors, progression objects, and wall themes are known. Actors are never assigned by an unexplained floor-wide scatter: each belongs to a visible sentry, staggered flank, blind-corner ambush, strongpoint, objective guard, boss-support group, novelty, or patrol composition. One primary family is selected for the room so its squad reads coherently, while the existing threat budget still controls count and difficulty tiers.

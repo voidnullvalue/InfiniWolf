@@ -43,7 +43,7 @@ from .wl6 import (  # noqa: F401
 )
 from .ledger import Ledger
 from .model import (  # noqa: F401
-    ArrivalDetail, BossArenaDetail, EncounterPlacement, FloorPlan, FloorVariant,
+    AestheticPhase, ArrivalDetail, BossArenaDetail, EncounterPlacement, FloorPlan, FloorVariant,
     GatePlan, GeneratedMap, GuardGallery, GuardRecess, KeyObjective, PatrolRoute,
     PlacedPlan, RareMotifDetail, Room, RoomIdentity, RoomSpec, SecretDetail,
     SpritePlacement, VineScreen, FloorCanvas,
@@ -131,6 +131,7 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
                  rare_motif_enabled: bool = False,
                  sky_vista_enabled: bool = True,
                  boss: int | None = None,
+                 phase: AestheticPhase | None = None,
                  ) -> GeneratedMap:
     seed = config.floor_seed(number, attempt)
     if config.say_aardwolf:
@@ -202,6 +203,10 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
         if structural:
             _add_pillars(tiles, room, rng, chance=floor_variant.pillar_chance)
     is_boss = number == 9
+    # Bounded visual modifiers for this floor's place in the campaign. A
+    # standalone call gets the neutral phase, so single-map generation is
+    # unaffected by an arc it has no position in.
+    phase = phase or AestheticPhase(1.0, 1.0, 1.0, 1.0, 1.0)
     # Floor 9's exit is gated two ways, and which one applies depends on the boss.
     # Hans and Gretel drop a gold key natively, so their elevator stays locked and
     # the kill itself is mandatory. The other four bosses drop nothing, so locking
@@ -456,7 +461,8 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
                                   plan.special_family, key_objectives)
     landmarks = _apply_wall_theme(tiles, things, rooms, districts, component_of, group_theme,
                                   rng, jail_rooms, identities=identities,
-                                  atmosphere=int(config.atmosphere))
+                                  atmosphere=int(config.atmosphere),
+                                  damage_scale=phase.damage)
     exit_pushwall = next((detail.pushwall for detail in secret_details
                           if detail.secret_exit), None)
     # Only the inner wall of a nested double secret is deliberately forced

@@ -317,6 +317,7 @@ def _apply_wall_theme(tiles: list[int], things: list[int], rooms: list[Room],
                       jail_rooms: frozenset[int] = frozenset(),
                       identities: list[RoomIdentity] | None = None,
                       atmosphere: int = 3,
+                      damage_scale: float = 1.0,
                       ) -> dict[int, list[tuple[int, int]]]:
     """Apply native WL6 materials without changing traversable geometry.
 
@@ -385,7 +386,12 @@ def _apply_wall_theme(tiles: list[int], things: list[int], rooms: list[Room],
         surface = base
         if (damage_variants and atmosphere >= 3
                 and (identity is None or concept in DAMAGED_WALL_CONCEPTS)
-                and rng.random() < min(0.65, 0.20 + atmosphere * 0.09)):
+                # damage_scale carries the campaign's aesthetic arc: early floors
+                # come out intact and late ones battered, within a band narrow
+                # enough that the atmosphere setting and room identity still
+                # dominate. Clamped so the arc can never force every wall.
+                and rng.random() < min(0.72, (0.20 + atmosphere * 0.09)
+                                       * damage_scale)):
             surface = rng.choice(damage_variants)
         elif plain_variants and (identity is None or rng.random() < 0.58):
             surface = plain_variants[(ridx + district) % len(plain_variants)]

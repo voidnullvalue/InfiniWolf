@@ -23,7 +23,7 @@ import random
 
 from .config import CampaignConfig
 from .wl6 import BOSSES, KEY_DROP_BOSSES
-from .model import FloorVariant, GatePlan, GeneratedMap
+from .model import AestheticPhase, FloorVariant, GatePlan, GeneratedMap
 from .quality import weighted_distance
 from .semantics import CONCEPT_AFFINITIES
 
@@ -326,6 +326,42 @@ def _lock_schedule(config: CampaignConfig) -> tuple[GatePlan, ...]:
 BOSS_ROSTER = BOSSES
 
 
+# The campaign's visual journey, as multipliers per floor. Not a fixed sequence: the
+# seed shifts where the campaign sits in the curve, so two runs escalate differently
+# while both escalating. Bands are narrow on purpose -- 0.75 to 1.30 -- because the
+# arc must modulate a floor's variant, never override it.
+def aesthetic_phase(config: CampaignConfig, floor: int) -> AestheticPhase:
+    """Derive one floor's bounded visual modifiers.
+
+    Floors 9 and 10 are pinned rather than interpolated: the stronghold is the
+    campaign's most monumental and most occupied space by authorial intent, and the
+    reward expedition is its most abandoned. Letting the curve decide would
+    occasionally hand floor 9 a damp ruin.
+    """
+    if floor == 9:
+        return AestheticPhase(orderliness=1.10, damage=0.85, occupation=1.30,
+                              monumentality=1.30, abandonment=0.80)
+    if floor == 10:
+        return AestheticPhase(orderliness=0.85, damage=1.20, occupation=0.75,
+                              monumentality=1.15, abandonment=1.30)
+    # Position along the ordinary campaign, 0.0 at floor 1 to 1.0 at floor 8, with a
+    # seeded offset so the same floor number is not always at the same point.
+    span = max(1, 8 - 1)
+    drift = random.Random(config.circulation_seed(1) ^ 0x41455354).uniform(-0.12, 0.12)
+    position = min(1.0, max(0.0, (floor - 1) / span + drift))
+
+    def band(low: float, high: float) -> float:
+        return round(low + (high - low) * position, 3)
+
+    return AestheticPhase(
+        orderliness=band(1.20, 0.80),     # tidy garrison -> disordered depths
+        damage=band(0.80, 1.30),          # intact -> battered
+        occupation=band(1.20, 0.85),      # staffed -> emptying
+        monumentality=band(0.85, 1.25),   # utilitarian -> ceremonial
+        abandonment=band(0.75, 1.30),     # kept -> derelict
+    )
+
+
 def _boss_seed(config: CampaignConfig) -> int:
     """Attempt-independent stream for the floor-9 boss.
 
@@ -357,6 +393,7 @@ class CampaignSchedule:
     rare_motif_floor: int
     vista_parity: int
     boss: int
+    config: CampaignConfig
 
     def floor_options(self, number: int) -> dict[str, object]:
         """The per-floor slice of this schedule, as generate_map keyword args.
@@ -376,6 +413,7 @@ class CampaignSchedule:
             "rare_motif_enabled": number == self.rare_motif_floor,
             "sky_vista_enabled": number % 2 == self.vista_parity,
             "boss": self.boss if number == 9 else None,
+            "phase": aesthetic_phase(self.config, number),
         }
 
 
@@ -417,7 +455,7 @@ def resolve_schedule(config: CampaignConfig) -> CampaignSchedule:
         secret_from=secret_from, variants=variants, vine_floor=vine_floor,
         vine_budget=vine_budget, gallery_floor=gallery_floor,
         rare_motif_floor=rare_motif_floor, vista_parity=vista_parity,
-        boss=choose_boss(config))
+        boss=choose_boss(config), config=config)
 
 
 def _set_distance(first: tuple[str, ...], second: tuple[str, ...]) -> float:
