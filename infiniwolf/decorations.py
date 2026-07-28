@@ -137,7 +137,7 @@ _FRAMEABLE = frozenset({26, 30, 31, 34, 39, 62})
 
 class _PillarPolicy:
     """The single owner of WhitePillar placement limits and provenance."""
-    _ORDINARY_CONCEPTS = frozenset({"grand", "courtyard", "gallery", "trophy-hall", "war-room", "crypt", "ossuary", "burial-chamber"})
+    _ORDINARY_CONCEPTS = frozenset({"grand", "courtyard", "gallery", "trophy-hall", "war-room", "crypt", "ossuary", "burial-chamber", "corridor"})
     _ARCHITECTURAL = frozenset({"sky-vista", "colonnade", "courtyard-centerpiece", "divider", "pillar-signature", "architectural-frame"})
 
     def __init__(self, tiles: list[int], things: list[int], rooms: list[Room]) -> None:
@@ -1165,6 +1165,13 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
                 return False
             if static_headroom <= 0 or _at(things, *cell) != 0:
                 return False
+            if item not in LIGHTING_ITEMS:
+                x, y = cell
+                anchored = (_near_wall(x, y) or x == cx or y == cy or any(
+                    _at(things, x + dx, y + dy) in STATIC_BLOCKING
+                    for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1))))
+                if not anchored:
+                    return False
             if spaced and not _spaced_from_neighbours(things, cell, item):
                 return False
             _set(things, *cell, item)
@@ -2152,7 +2159,7 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
                           for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1))]
             if any(_solid(n) for n in neighbours):
                 continue                       # already flush to a wall
-            if any(_at(things, *n) in STATIC_BLOCKING for n in neighbours):
+            if any(_at(things, *n) in _ALL_DECOR for n in neighbours):
                 continue                       # reads as a deliberate cluster
             target = None
             for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):

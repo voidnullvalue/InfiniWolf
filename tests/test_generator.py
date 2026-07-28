@@ -629,7 +629,7 @@ class GeneratorTests(unittest.TestCase):
                 for x in range(room.x, room.x + room.w):
                     tiles[y * GRID + x] = FLOOR
             things = [0] * len(tiles)
-            families, _, _ = _place_decorations(
+            families, _, _, _ = _place_decorations(
                 [room], tiles, things, set(), room.center, random.Random(seed),
                 identities=[identity])
             family = families[0]
@@ -854,7 +854,7 @@ class GeneratorTests(unittest.TestCase):
                 for x in range(room.x, room.x + room.w):
                     tiles[y * GRID + x] = FLOOR
             things = [0] * len(tiles)
-            _, screens, _ = _place_decorations(
+            _, screens, _, _ = _place_decorations(
                 [room], tiles, things, set(), room.center, random.Random(seed),
                 identities=[identity])
             if screens:
@@ -874,7 +874,7 @@ class GeneratorTests(unittest.TestCase):
         path = [(x, 20) for x in range(10, 25)]
         for cell in path:
             tiles[cell[1] * GRID + cell[0]] = FLOOR
-        _, screens, _ = _place_decorations(
+        _, screens, _, _ = _place_decorations(
             [], tiles, things, set(), path[0], random.Random(1), paths=[path],
             hallway_vine_budget=1)
         self.assertEqual(len(screens), 1)
