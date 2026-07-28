@@ -21,7 +21,7 @@ flowchart TD
     B --> B5[Nominate one possible overgrown floor<br/>1–2 longitudinal hallway runs]
     B --> B6[Rarely nominate one possible guard-gallery floor]
     B --> B7[_progression_sequence<br/>non-repeating macro layout grammars]
-    B --> B8[3% chance: nominate one late optional<br/>hooked-cross room motif]
+    B --> B8[6% chance: nominate one late optional<br/>hooked-cross room motif]
     B --> B9[Schedule roughly three hallway-first floors<br/>central axis, plus, T, or offset boulevard]
 
     B1 --> C{{For floors 1 through 10}}

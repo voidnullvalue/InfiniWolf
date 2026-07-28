@@ -106,13 +106,13 @@ class LayoutVariationTests(unittest.TestCase):
 
         self.assertGreaterEqual(len(signatures), 4)
 
-    def test_rare_motif_schedule_is_three_percent_and_late_only(self):
+    def test_rare_motif_schedule_is_six_percent_and_late_only(self):
         schedules = [generator._rare_motif_schedule(CampaignConfig(seed=seed))
                      for seed in range(5000)]
         selected = [floor for floor in schedules if floor]
         self.assertTrue(all(floor in (6, 7, 8, 9) for floor in selected))
-        self.assertGreater(len(selected) / len(schedules), 0.02)
-        self.assertLess(len(selected) / len(schedules), 0.04)
+        self.assertGreater(len(selected) / len(schedules), 0.05)
+        self.assertLess(len(selected) / len(schedules), 0.07)
 
     def test_swastika_profile_is_connected_bounded_and_four_armed(self):
         room = generator.Room(20, 20, 15, 15)
