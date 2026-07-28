@@ -67,6 +67,13 @@ class VineScreen:
 
 
 @dataclass(frozen=True, slots=True)
+class PillarPlacement:
+    """Auditable WhitePillar composition committed by decoration."""
+    source: str
+    room_index: int
+    cells: tuple[tuple[int, int], ...]
+
+@dataclass(frozen=True, slots=True)
 class FloorVariant:
     name: str
     notch_chance: float = 0.22        # restrained _carve_notches
@@ -207,6 +214,29 @@ class EncounterPlacement:
     patrol_kind: str = ""
     patrol_path: tuple[tuple[int, int], ...] = ()
     family: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class VignettePlan:
+    """Attempt-independent cross-system room-story intent."""
+    family: str
+    rooms: tuple[int, ...]
+    required_concepts: tuple[str, ...]
+    encounter_treatment: str
+    pickup_treatment: str
+    decoration_treatment: str
+    focal_cells: tuple[tuple[int, int], ...] = ()
+    approach_room: int = -1
+
+
+@dataclass(frozen=True, slots=True)
+class RealizedVignette:
+    """Audit record proving all cross-system components landed."""
+    family: str
+    rooms: tuple[int, ...]
+    encounter_rooms: tuple[int, ...]
+    pickup_rooms: tuple[int, ...]
+    decoration_rooms: tuple[int, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -373,6 +403,9 @@ class GeneratedMap:
     room_motifs: tuple[str, ...] = ()
     authored_sightlines: tuple[AuthoredSightline, ...] = ()
     shared_void: SharedVoid | None = None
+    vignette_plans: tuple[VignettePlan, ...] = ()
+    realized_vignettes: tuple[RealizedVignette, ...] = ()
+    pillar_placements: tuple[PillarPlacement, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

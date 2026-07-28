@@ -22,7 +22,7 @@ import random
 from .grid import (_at, _inside_room, _is_floor, _reachable, _set,
                    qualifying_dead_end_alcoves)
 from .ledger import release as ledger_release, reserve as ledger_reserve
-from .model import AestheticPhase, Room, RoomIdentity, VineScreen
+from .model import AestheticPhase, PillarPlacement, Room, RoomIdentity, VineScreen
 from .placement import _room_anchors, _room_traversal_frame, _traversal_pair_candidates
 from .room_policy import base_theme as _decor_theme
 from .wl6 import (DECOR_WALLS, DOORS, ENEMY_CODES, GRID, LIGHTING_FAMILY_ITEMS,
@@ -769,8 +769,8 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
                        hallway_vine_budget: int = 0,
                        allow_sky_vista: bool = True,
                        phase: AestheticPhase | None = None,
-                       force_motif: str = "",
                        vignette_motifs: dict[int, str] | None = None,
+                       force_motif: str = "",
                        ) -> tuple[tuple[str, ...], tuple[VineScreen, ...],
                                   tuple[str, ...], tuple[PillarPlacement, ...]]:
     """Place purposeful, themed furniture in rooms following community-map patterns.
@@ -812,8 +812,6 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
     room_motifs = [""] * len(rooms)
     vine_screens: list[VineScreen] = []
     sky_composition_placed = False
-    pillar_policy = _PillarPolicy(tiles, things, rooms)
-    pillar_policy = _PillarPolicy(tiles, things, rooms)
     vignette_motifs = vignette_motifs or {}
     pillar_policy = _PillarPolicy(tiles, things, rooms)
 
@@ -1302,7 +1300,11 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
                                            for cell in flanks)):
                                 valid = False
                         supports = tuple(range(span))
-                        if not valid or static_headroom < len(supports):
+                        if (not valid or static_headroom < len(supports)
+                                or not pillar_policy.permits(
+                                    ridx, concept,
+                                    [(geometry[index][1], 30) for index in supports],
+                                    "sky-vista")):
                             continue
                         for interior_cell, wall_cell, sky_cell in geometry:
                             _set(tiles, *wall_cell, _at(tiles, *interior_cell))
@@ -1320,6 +1322,9 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
                             blocked_cells.add(cell)
                             room_blocked.append(cell)
                         static_headroom -= len(supports)
+                        pillar_policy.record(
+                            ridx, [(geometry[index][1], 30) for index in supports],
+                            "sky-vista")
                         sky_composition_placed = True
                         break
                     if sky_composition_placed:
@@ -1370,7 +1375,7 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
             compact = tuple(item for item in blocking
                             if item in (24, 26, 31, 34, 58, 62, 69))
             notch_item = rng.choice(compact or (31,))
-            if not _try_place(room_notches, notch_item):
+            if not _try_place(room_notches, notch_item, "notch-accent"):
                 # A non-blocking ground accent preserves the mirrored intent
                 # when traffic or reachability makes solid props unsuitable.
                 ground = tuple(item for item in open_items
@@ -1424,6 +1429,8 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
         # which passes for the wrong reason the moment the weights change.
         if force_motif:
             motif_overrides[force_motif] = _MOTIF_FORCED
+        if ridx in vignette_motifs:
+            motif_overrides[vignette_motifs[ridx]] = _MOTIF_FORCED
         if ridx in vignette_motifs:
             motif_overrides[vignette_motifs[ridx]] = _MOTIF_FORCED
         motif = _choose_motif(eligible_motifs, rng, motif_overrides)
@@ -1480,7 +1487,7 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
                     if item in (39, 62, 69) and not all(
                             _wall_backed(cell) for cell in pair):
                         continue
-                    if _try_place(list(pair), item):
+                    if _try_place(list(pair), item, "travel-pair"):
                         pairs_placed += 1
                         placed_travel_pair = True
                         break
@@ -1525,7 +1532,7 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
                 flanks.extend(((front[0] + iy, front[1] + ix),
                                (front[0] - iy, front[1] - ix)))
             keep_clear.update(fronts)
-            if flanks and _try_place(flanks, rng.choice(frame_pool)):
+            if flanks and _try_place(flanks, rng.choice(frame_pool), "architectural-frame"):
                 pairs_placed += len(selected)
 
         # Room signatures come from the same grammar/variant/material
@@ -1644,11 +1651,11 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
                         # back to two pieces stranded on one side of the aisle.
                         placed_signature = False
                         for pair in travel_pairs:
-                            if _try_place(list(pair), matched_item):
+                            if _try_place(list(pair), matched_item, "pillar-signature" if matched_item == 30 else "signature"):
                                 pairs_placed += 1
                                 placed_signature = True
                                 break
-                        if not placed_signature and _try_place_items(signature):
+                        if not placed_signature and _try_place_items(signature, "pillar-signature" if any(item == 30 for _, item in signature) else "signature"):
                             pairs_placed += 1
                     elif _try_place_items(signature):
                         pairs_placed += 1
@@ -1660,7 +1667,7 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
             rng.shuffle(entries)
             for (ex, ey), (ix, iy) in entries:
                 flanks = [(ex + iy, ey + ix), (ex - iy, ey - ix)]
-                if _try_place(flanks, rng.choice(frame_pool)):
+                if _try_place(flanks, rng.choice(frame_pool), "architectural-frame"):
                     pairs_placed += 1
                     doorway_frames_placed += 1
                     break
@@ -1678,7 +1685,7 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
                     gap = rng.randrange(1, len(span) - 2)
                     cells = [(cx, span[i]) for i in range(len(span))
                              if not (gap <= i <= gap + 1) and (cx, span[i]) in free]
-                    if len(cells) >= 2 and _try_place(cells, div_item):
+                    if len(cells) >= 2 and _try_place(cells, div_item, "divider"):
                         pairs_placed = pair_budget
             else:
                 span = list(range(room.x + 2, room.x + room.w - 2))
@@ -1686,7 +1693,7 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
                     gap = rng.randrange(1, len(span) - 2)
                     cells = [(span[i], cy) for i in range(len(span))
                              if not (gap <= i <= gap + 1) and (span[i], cy) in free]
-                    if len(cells) >= 2 and _try_place(cells, div_item):
+                    if len(cells) >= 2 and _try_place(cells, div_item, "divider"):
                         pairs_placed = pair_budget
 
         # --- Pattern: corner stash cluster (storage always; battle-worn
@@ -1731,7 +1738,7 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
                     break
                 a = (room.x + depth, cy + offset)
                 b = (room.x + room.w - 1 - depth, cy + offset)
-                if _try_place([a, b], 30):   # WhitePillar
+                if _try_place([a, b], 30, "colonnade"):   # WhitePillar
                     pairs_placed += 1
 
         # --- Vignette: banquet row along the center axis ---
@@ -1754,7 +1761,7 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
         if (motif == "courtyard-centerpiece" and pairs_placed < pair_budget
                 and concept in ("courtyard", "storage")
                 and room.w >= 9 and room.h >= 9):
-            if _try_place([(cx, cy)], 59 if concept == "storage" else 30):
+            if _try_place([(cx, cy)], 59 if concept == "storage" else 30, "courtyard-centerpiece"):
                 pairs_placed += 1
 
         zones = _DECOR_ZONES.get(concept) if concept == theme else None
@@ -1787,7 +1794,7 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
             # must not lose its open decoration just because no blocking
             # budget is left for a themed cluster.
             _place_zoned(room, zones, free, blocked_cells, reserved, things, rng,
-                         _try_place, max(0, pair_budget - pairs_placed), _place_open)
+                         lambda cells, item: _try_place(cells, item, "zoned"), max(0, pair_budget - pairs_placed), _place_open)
             pairs_placed = pair_budget
         else:
             # --- Pattern: symmetric wall pairs (general fallback) ---
@@ -1834,7 +1841,7 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
                 for (ax, ay), (bx, by) in all_pairs:
                     if pairs_placed >= pair_budget:
                         break
-                    if _try_place([(ax, ay), (bx, by)], pair_item):
+                    if _try_place([(ax, ay), (bx, by)], pair_item, "generic-fallback"):
                         pairs_placed += 1
 
             # --- Vignette: prisoner remains in a jail corner ---
@@ -2118,7 +2125,7 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
                         if terminus:
                             target = terminus.pop()
                     if item in STATIC_BLOCKING:
-                        _try_place([target], item)
+                        _try_place([target], item, "density-fill")
                     elif not _place_open(target, item):
                         continue
                     if _at(things, *target) == item:

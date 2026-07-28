@@ -196,7 +196,8 @@ def _place_authored_pickups(config: CampaignConfig, number: int, rooms: list[Roo
                             preboss_index: int | None = None,
                             premium_index: int | None = None,
                             expedition_candidates: tuple[int, ...] = (),
-                            expedition_rooms_out: list[int] | None = None) -> None:
+                            expedition_rooms_out: list[int] | None = None,
+                            vignettes: tuple = ()) -> None:
     """Allocate gameplay needs, then realize each as an authored vignette."""
     grammar = _PlacementGrammar(rooms, tiles, things, reserved, identities, rng,
                                 placements)
@@ -237,6 +238,22 @@ def _place_authored_pickups(config: CampaignConfig, number: int, rooms: list[Roo
                 vignette_counts[room_index] += 1
                 return True
         return False
+
+    # Cross-system plans claim their economy beat before generic needs.  This
+    # still uses the pickup grammar, so it can reject an unplaceable candidate.
+    vignette_items = {"supply-cache": (AMMO, AMMO), "recovery": (FOOD, FIRST_AID),
+                      "medical": (FIRST_AID,), "treasure": (TREASURE[1],)}
+    vignette_templates = {"supply-cache": ("wall-cache", "corner-cache"),
+                          "recovery": ("recovery-station", "wall-cache"),
+                          "medical": ("recovery-station",),
+                          "treasure": ("treasure-display", "center-dais")}
+    for vignette in vignettes:
+        target = vignette.rooms[-1]
+        treatment = vignette.pickup_treatment
+        if treatment in vignette_items and not place_group(
+                vignette_items[treatment], f"vignette-{vignette.family}", [target],
+                vignette_templates[treatment]):
+            raise ValueError(f"vignette {vignette.family} cannot realize its reward")
 
     # The pre-boss room is a visible staging area, not loose supplies left on
     # arbitrary remaining population cells.

@@ -235,6 +235,21 @@ def validate_map(level: GeneratedMap) -> None:
             if crossed is None:
                 raise ValueError("guard gallery actor cannot fire through its screen")
 
+    for vignette in level.vignette_plans:
+        if (not vignette.rooms or len(set(vignette.rooms)) != len(vignette.rooms)
+                or any(not 0 <= room < len(level.rooms) for room in vignette.rooms)
+                or len(vignette.required_concepts) != len(vignette.rooms)):
+            raise ValueError("vignette plan has invalid room ownership")
+        if tuple(level.room_concepts[room] for room in vignette.rooms) != vignette.required_concepts:
+            raise ValueError("vignette no longer matches room identity")
+    for vignette in level.realized_vignettes:
+        if (not vignette.encounter_rooms or not vignette.pickup_rooms
+                or not vignette.decoration_rooms
+                or not set(vignette.rooms) >= set(vignette.encounter_rooms)
+                or not set(vignette.rooms) >= set(vignette.pickup_rooms)
+                or not set(vignette.rooms) >= set(vignette.decoration_rooms)):
+            raise ValueError("realized vignette lacks a cross-system component")
+
     allowed_encounters = {"visible-sentry", "blind-corner-ambush",
                           "staggered-flank", "strongpoint", "objective-guard",
                           "patrol", "boss-support", "novelty", "guard-gallery"}

@@ -46,7 +46,7 @@ from .model import (  # noqa: F401
     AestheticPhase, ArrivalDetail, BossArenaDetail, EncounterPlacement, FloorPlan, FloorVariant,
     GatePlan, GeneratedMap, GuardGallery, GuardRecess, KeyObjective, PatrolRoute,
     PlacedPlan, RareMotifDetail, Room, RoomIdentity, RoomSpec, SecretDetail,
-    SpritePlacement, VineScreen, FloorCanvas,
+    SpritePlacement, VineScreen, PillarPlacement, RealizedVignette, FloorCanvas,
 )
 from .grid import (  # noqa: F401
     _at, _set, _is_floor, _inside_room, _door_zone, _reachable,
@@ -69,6 +69,7 @@ from .progression import (  # noqa: F401
     gate_plan_for_floor, add_boss_gate_objective,
 )
 from .planning import _plan_floor  # noqa: F401
+from .vignettes import plan_vignettes
 from .quality import _critique  # noqa: F401
 from .special_floors import _place_boss, _prepare_boss_arena  # noqa: F401
 from .pickups import (  # noqa: F401
@@ -404,6 +405,14 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
     identities = _room_identities(rooms, specs, districts, edges, floor_variant, jail_rooms,
                                   component_of, group_theme, exit_room, boss_room,
                                   plan.special_family, key_objectives)
+    # Intent is selected from semantic identities and graph adjacency once.  It
+    # derives from campaign seed/floor, not attempt RNG, so retries cannot reroll it.
+    vignette_plans = plan_vignettes(config.seed, number, rooms, identities, edges,
+                                    tuple(critical_route), special_family=plan.special_family)
+    vignette_encounters = {room: item.encounter_treatment
+                           for item in vignette_plans for room in item.rooms[:1]}
+    vignette_motifs = {room: item.decoration_treatment
+                       for item in vignette_plans for room in item.rooms}
     landmarks = _apply_wall_theme(tiles, things, rooms, districts, component_of, group_theme,
                                   semantics_rng, jail_rooms, identities=identities,
                                   atmosphere=int(config.atmosphere),
@@ -465,7 +474,8 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
         calm_rooms=calm_rooms, boss_room=boss_room,
         optional_rooms=optional_rooms, identities=identities,
         critical_route=tuple(critical_route), guard_recesses=guard_recesses,
-        key_objectives=key_objectives, encounter_out=encounters)
+        key_objectives=key_objectives, encounter_out=encounters,
+        vignette_treatments=vignette_encounters)
     gallery_tiers = _populate_guard_galleries(
         guard_galleries, things, number, encounters_rng, encounters)
     enemy_tiers = tuple(ordinary + gallery
@@ -479,7 +489,7 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
         critical_route, edges, pickup_placements, preboss_index=preboss_index,
         premium_index=premium_index,
         expedition_candidates=tuple(optional_rooms),
-        expedition_rooms_out=expedition_rooms)
+        expedition_rooms_out=expedition_rooms, vignettes=vignette_plans)
     # Shape anchors were reserved soft precisely so decoration can have them
     # back once population and pickups have finished with the room.
     reserved.release(notch_cells, "geometry", "shape-anchor-released")
@@ -499,7 +509,7 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
     for line in authored_sightlines:
         reserved.reserve(line.cells, "semantics", "framed-landmark-view",
                          room_index=line.target_room)
-    lighting_families, vine_screens, room_motifs = _place_decorations(
+    lighting_families, vine_screens, room_motifs, pillar_placements = _place_decorations(
         rooms, tiles, things, reserved, start, decorations_rng, roles=roles, specs=specs,
         jail_rooms=jail_rooms,
         density=(floor_variant.decor_density
@@ -507,7 +517,8 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
         theme_overrides=floor_variant.decor_overrides, landmarks=landmarks,
         paths=paths, identities=identities, atmosphere=int(config.atmosphere),
         notch_anchors=notch_anchors, hallway_vine_budget=hallway_vine_budget,
-        allow_sky_vista=sky_vista_enabled)
+        allow_sky_vista=sky_vista_enabled, phase=phase,
+        vignette_motifs=vignette_motifs)
     # Last, because it has to see everything already committed: an alcove the
     # ambush pass gave a sentry, or that decoration already filled, is not a
     # hole that needs filling. Anything still empty here is one.
@@ -522,6 +533,15 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
     exit_depth_ratio = final_distances.get(exit_stand, 0) / deepest_room_distance
     layout_signature = _layout_signature(
         plan, specs, realized_shapes, guard_recesses, encounters, edges)
+    realized_vignettes = tuple(
+        RealizedVignette(item.family, item.rooms,
+                         tuple(sorted({entry.room_index for entry in encounters
+                                       if entry.room_index in item.rooms})),
+                         tuple(sorted({entry.room_index for entry in pickup_placements
+                                       if entry.reason == f"vignette-{item.family}"})),
+                         tuple(room for room in item.rooms
+                               if room_motifs[room] == item.decoration_treatment))
+        for item in vignette_plans)
     result = GeneratedMap(number=number, tiles=tiles, things=things, start=start,
                           exit_stand=exit_stand, secret_rewards=rewards, seed=seed,
                           has_secret_exit=secret_exit, locked_doors=locks, boss=is_boss,
@@ -570,7 +590,10 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
                           landmarks=landmark_plans,
                           room_motifs=room_motifs,
                           authored_sightlines=authored_sightlines,
-                          shared_void=shared_void)
+                          shared_void=shared_void,
+                          pillar_placements=pillar_placements,
+                          vignette_plans=vignette_plans,
+                          realized_vignettes=realized_vignettes)
     validate_map(result)
     result.critique = _critique(result)
     return result

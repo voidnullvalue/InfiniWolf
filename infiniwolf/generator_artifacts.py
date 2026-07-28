@@ -261,6 +261,21 @@ def _manifest(config, levels, secret_from, vine_floor, vine_budget,
                          "patrol_kind": encounter.patrol_kind,
                          "patrol_path": encounter.patrol_path}
                         for encounter in level.encounters],
+                    "vignettes": [
+                        {"family": vignette.family, "rooms": vignette.rooms,
+                         "required_concepts": vignette.required_concepts,
+                         "encounter_treatment": vignette.encounter_treatment,
+                         "pickup_treatment": vignette.pickup_treatment,
+                         "decoration_treatment": vignette.decoration_treatment,
+                         "focal_cells": vignette.focal_cells,
+                         "approach_room": vignette.approach_room}
+                        for vignette in level.vignette_plans],
+                    "realized_vignettes": [
+                        {"family": vignette.family, "rooms": vignette.rooms,
+                         "encounter_rooms": vignette.encounter_rooms,
+                         "pickup_rooms": vignette.pickup_rooms,
+                         "decoration_rooms": vignette.decoration_rooms}
+                        for vignette in level.realized_vignettes],
                     "patrol_target": level.patrol_target,
                     "enemy_tiers": level.enemy_tiers,
                     "variant": level.variant,

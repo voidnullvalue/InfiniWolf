@@ -277,7 +277,8 @@ def _place_population(config: CampaignConfig, number: int, rooms: list[Room],
                       critical_route: tuple[int, ...] = (),
                       guard_recesses: tuple[GuardRecess, ...] = (),
                       key_objectives: tuple[KeyObjective, ...] = (),
-                      encounter_out: list[EncounterPlacement] | None = None
+                      encounter_out: list[EncounterPlacement] | None = None,
+                      vignette_treatments: dict[int, str] | None = None
                       ) -> tuple[int, int, int]:
     """Plan coherent room encounters, then realize their actor slots.
 
@@ -548,6 +549,7 @@ def _place_population(config: CampaignConfig, number: int, rooms: list[Room],
     key_hosts = {objective.host_room for objective in key_objectives
                  if objective.treatment != "boss-drop"}
     recess_by_room = {recess.room_index: recess for recess in guard_recesses}
+    vignette_treatments = vignette_treatments or {}
 
     budgets: dict[int, int] = {}
     for ridx, room in enumerate(rooms[1:], 1):
@@ -626,6 +628,8 @@ def _place_population(config: CampaignConfig, number: int, rooms: list[Room],
                                   for other in ambush_positions)))
         if ridx in recess_by_room:
             template = "blind-corner-ambush"
+        elif ridx in vignette_treatments:
+            template = vignette_treatments[ridx]
         elif ridx in planned_patrols:
             template = "patrol"
         elif ridx in key_hosts:
