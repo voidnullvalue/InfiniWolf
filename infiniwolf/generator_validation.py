@@ -5,21 +5,29 @@ from __future__ import annotations
 from collections import Counter, deque
 import math
 
-from .generator import (
-    AMMO, AUTHORED_PICKUP_TEMPLATES, BOSSES, CHAINGUN,
-    CIRCULATION_MODES, CIRCULATION_SKELETONS, DECOR_WALLS, DOORS,
-    DOOR_ELEVATOR, DOOR_ELEVATOR_NS, DUMMY_ELEVATOR_TILE, ELEVATOR_TILE,
-    ENEMY_CODES, EncounterPlacement, GHOSTS, GOLD_DOORS, GOLD_KEY, GRID,
-    GeneratedMap, HALLWAY_FIRST_SKELETONS, KEY_DROP_BOSSES,
-    LIGHTING_FAMILY_ITEMS, LIGHTING_ITEMS, LOCKED_DOORS, MACHINE_GUN,
-    ONE_UP, PATROLS_BY_FAMILY, PATROL_POINT_DIRECTIONS, PICKUP_CODES,
-    PLAYER_START_CODES, PROGRESSION_GRAMMARS, PURPLE_MIN_FLOOR, PUSHWALL,
-    SECRET_EXIT_ZONE, SILVER_DOORS, SILVER_KEY,
-    SPEAR_CONCEPTS, TREASURE, _at, _codes_for_colors, _door_zone,
-    _floor_distances, _inside_room, _is_floor, _minimum_critical_route_rooms,
-    _path_bends, _reachable, _room_graph_path, _room_predecessor,
-    _shortest_floor_path,
-)
+from .grid import (_at, _door_zone, _floor_distances, _inside_room, _is_floor,
+                   _is_perpendicular_door_junction, _path_bends, _reachable,
+                   _room_graph_path, _room_predecessor, _shortest_floor_path,
+                   qualifying_dead_end_alcoves)
+from .model import EncounterPlacement, GeneratedMap
+from .wl6 import (AMMO, BOSSES, CHAINGUN, DECOR_WALLS, DOORS, DOOR_ELEVATOR,
+                  DOOR_ELEVATOR_NS, DUMMY_ELEVATOR_TILE, ELEVATOR_TILE,
+                  ENEMY_CODES, GHOSTS, GOLD_DOORS, GOLD_KEY, GRID,
+                  KEY_DROP_BOSSES, LIGHTING_FAMILY_ITEMS, LIGHTING_ITEMS,
+                  LOCKED_DOORS, MACHINE_GUN, ONE_UP, PATROLS_BY_FAMILY,
+                  PATROL_POINT_DIRECTIONS, PICKUP_CODES, PLAYER_START_CODES,
+                  PURPLE_MIN_FLOOR, PUSHWALL, SECRET_EXIT_ZONE, SILVER_DOORS,
+                  SILVER_KEY, SPEAR_CONCEPTS, STATIC_BLOCKING, TREASURE,
+                  _codes_for_colors, _patrol_actor_direction)
+
+# Validation imports the shared circulation vocabulary, pickup templates, and
+# critical-route threshold directly from their owning modules. Keeping those
+# dependencies explicit lets `generator.py` import validation eagerly without a
+# cycle, while validation remains the single hard-rule boundary.
+from .campaign import (CIRCULATION_MODES, CIRCULATION_SKELETONS,
+                       HALLWAY_FIRST_SKELETONS, PROGRESSION_GRAMMARS)
+from .pickups import AUTHORED_PICKUP_TEMPLATES
+from .progression import _minimum_critical_route_rooms
 
 def validate_map(level: GeneratedMap) -> None:
     facings = ((0, -1), (1, 0), (0, 1), (-1, 0))
@@ -27,6 +35,12 @@ def validate_map(level: GeneratedMap) -> None:
         raise ValueError("invalid plane dimensions")
     if 63 in level.things:
         raise ValueError("Call Apogee decoration is forbidden")
+    for y in range(GRID):
+        for x in range(GRID):
+            if _is_perpendicular_door_junction(level.tiles, x, y):
+                raise ValueError(f"perpendicular door junction at {(x, y)}")
+    for cell in qualifying_dead_end_alcoves(level.tiles, level.things, level.start):
+        raise ValueError(f"empty gameplay dead-end alcove at {cell}")
     if (level.number < PURPLE_MIN_FLOOR
             and any(tile in {19, 25} for tile in level.tiles)):
         raise ValueError("purple wall material appears before the late campaign")
@@ -723,6 +737,41 @@ def validate_map(level: GeneratedMap) -> None:
             raise ValueError("secret elevator is unusable after opening its pushwall")
     elif zone_count:
         raise ValueError("secret exit zone on a floor with no secret route")
+    # An authored view is a promise about the finished map, so check the finished
+    # map. Decoration reserves these cells, but a reservation is a convention and
+    # this is the guarantee: if a later pass ever fills one in, the floor is
+    # rejected rather than shipping a framed view of a barrel.
+    for line in level.authored_sightlines:
+        if len(line.cells) < 3:
+            raise ValueError("authored sightline is too short to read as a view")
+        for cell in line.cells:
+            if not _is_floor(_at(level.tiles, *cell)):
+                raise ValueError("authored sightline crosses a wall")
+            if _at(level.things, *cell) in STATIC_BLOCKING:
+                raise ValueError("authored sightline is blocked by a solid prop")
+    # A shared void is a promise that a space is visible and unreachable, and both
+    # halves are checkable. Containment is proved with the pillar screens treated as
+    # blocked, which is the same test the guard gallery uses; the emptiness matters
+    # because a reward or an actor the player can see and never reach is a defect,
+    # not a feature.
+    void = level.shared_void
+    if void is not None:
+        if len(void.viewing_rooms) < 2:
+            raise ValueError("shared void is overlooked by fewer than two rooms")
+        for cell in void.interior:
+            if not _is_floor(_at(level.tiles, *cell)):
+                raise ValueError("shared void interior is not open floor")
+            if _at(level.things, *cell) in PICKUP_CODES:
+                raise ValueError("shared void holds an unreachable pickup")
+            if _at(level.things, *cell) in ENEMY_CODES:
+                raise ValueError("shared void holds an unreachable actor")
+        for cell in void.screens:
+            if _at(level.things, *cell) != 30:
+                raise ValueError("shared void screen is incomplete")
+        sealed = _reachable(level.tiles, level.start, locked_open=True,
+                            blocked=set(void.screens))
+        if any(cell in sealed for cell in void.interior):
+            raise ValueError("shared void is enterable")
     validate_door_axes(level.tiles)
     actual_locks = [(index % GRID, index // GRID, tile)
                     for index, tile in enumerate(level.tiles) if tile in LOCKED_DOORS]
@@ -846,6 +895,21 @@ def validate_map(level: GeneratedMap) -> None:
                 or len(level.boss_arena.geometry) < 2
                 or len(level.boss_arena.decorations) < 3):
             raise ValueError("boss arena lacks its family-owned composition")
+        # The arena must be the only way past itself. This is what lets floor 9
+        # use bosses that drop no key: the exit is gated by position rather than
+        # by a lock, so the player cannot reach the elevator without crossing the
+        # arena. Measured at 96% before it was enforced -- the remaining 4% leaked
+        # through a motif or filler edge that reconnected the far side.
+        sealed = {(x, y)
+                  for y in range(arena.y, arena.y + arena.h)
+                  for x in range(arena.x, arena.x + arena.w)}
+        without_arena = _reachable(level.tiles, level.start, locked_open=True,
+                                   blocked=sealed)
+        if level.exit_stand in without_arena:
+            raise ValueError("floor 9 exit is reachable without crossing the arena")
+        for index, role in enumerate(level.room_roles):
+            if role == "victory" and level.rooms[index].center in without_arena:
+                raise ValueError("floor 9 victory room bypasses the arena")
         interior_cover = sum(
             not _is_floor(_at(level.tiles, x, y))
             for y in range(arena.y + 2, arena.y + arena.h - 2)
@@ -872,9 +936,28 @@ def validate_map(level: GeneratedMap) -> None:
                for y in range(victory_room.y, victory_room.y + victory_room.h)
                for x in range(victory_room.x, victory_room.x + victory_room.w)):
             raise ValueError("floor 9 victory room is not a calm transition")
-        if _at(level.things, *next(objective.cell for objective in level.key_objectives
-                                   if objective.color == "gold")) not in KEY_DROP_BOSSES:
-            raise ValueError("floor 9 completion is not boss gated")
+        # Floor 9 completion must be boss gated, by one of two mechanisms.
+        #
+        # A boss with a native gold drop keeps the locked elevator: the kill itself
+        # is mandatory, because nothing else on the floor provides gold. The other
+        # four native bosses drop nothing, so their elevator is unlocked and the
+        # gate is topological -- the arena is a cut vertex, checked above, and the
+        # player cannot reach the exit without crossing it.
+        #
+        # Accepting either is what lets all six bosses appear. Requiring the gold
+        # objective outright restricted floor 9 to Hans and Gretel.
+        gold_objectives = [objective for objective in level.key_objectives
+                           if objective.color == "gold"]
+        boss_cells = [(index % GRID, index // GRID)
+                      for index, thing in enumerate(level.things)
+                      if thing in BOSSES]
+        if not boss_cells:
+            raise ValueError("floor 9 has no boss")
+        if gold_objectives:
+            if _at(level.things, *gold_objectives[0].cell) not in KEY_DROP_BOSSES:
+                raise ValueError("floor 9 gold key is not backed by a boss drop")
+        elif "gold" in level.key_order:
+            raise ValueError("floor 9 requires gold with no boss drop to provide it")
     elif level.number == 10:
         if level.special_family not in vault_families:
             raise ValueError("floor 10 has no reward-expedition family")
@@ -936,16 +1019,6 @@ def validate_objects(level: GeneratedMap) -> None:
             distance = abs(x - level.start[0]) + abs(y - level.start[1])
             if distance < 6:
                 raise ValueError(f"enemy at {(x, y)} is too close to player start")
-
-
-def _patrol_actor_direction(code: int) -> int | None:
-    """Decode a patrol actor's old-format code into this module's N/E/S/W index."""
-    for patrol_family in PATROLS_BY_FAMILY.values():
-        for tier in range(3):
-            candidate = code - 36 * tier
-            if candidate in patrol_family:
-                return patrol_family.index(candidate)
-    return None
 
 
 def validate_patrols(level: GeneratedMap, steps: int = 512) -> None:

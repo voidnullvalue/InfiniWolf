@@ -13,7 +13,19 @@
 </p>
 
 </div>
-InfiniWolf generates deterministic ten-map Wolfenstein 3D campaigns for ECWolf, with varied building layouts, coherent room themes, staged progression, and context-aware encounters and rewards. Independent progression grammars, circulation skeletons, scheduled hallway-first forms, district patterns, reconvergence motifs, and asymmetric room profiles prevent one repeated generator silhouette from owning the campaign. Every floor begins at one of three believable, complete, rock-bounded horizontal elevator-car arrivals, each with a real working door. District-aware stone, brick, wood, metal, marble, plaster, and damaged wall families give rooms a stronger sense of place, with purple reserved for floors 6–10 as a late-campaign escalation. Recessed exterior vistas and room-semantic prop families add visual character without exposing the map shell or scattering arbitrary clutter. Room-owned sentries, flanks, ambushes, strongpoints, moving patrols, and rare firing galleries make combat spaces feel purposeful. The goal is simple: make each seed fun to explore and enjoyable to replay, building toward one of five geometry-rich boss strongholds on floor 9 and a secret reward expedition on floor 10. It uses the player's registered WL6 data at runtime and never copies Wolfenstein graphics, sounds, music, or data files into generated packages.
+InfiniWolf generates deterministic ten-map Wolfenstein 3D campaigns for ECWolf, with varied building layouts, coherent room themes, staged progression, and context-aware encounters and rewards. Independent progression grammars, circulation skeletons, scheduled hallway-first forms, district patterns, reconvergence motifs, and asymmetric room profiles prevent one repeated generator silhouette from owning the campaign. Every floor begins at one of three believable, complete, rock-bounded horizontal elevator-car arrivals, each with a real working door. District-aware stone, brick, wood, metal, marble, plaster, and damaged wall families give rooms a stronger sense of place, with purple reserved for floors 6–10 as a late-campaign escalation. Recessed exterior vistas and room-semantic prop families add visual character without exposing the map shell or scattering arbitrary clutter. Room-owned sentries, flanks, ambushes, strongpoints, moving patrols, and rare firing galleries make combat spaces feel purposeful. Each room is composed around one deliberate motif rather than several competing ones, and its decoration mix is tuned against 43,122 prop placements mined from 207 hand-authored community maps. Functionally related rooms are planned adjacent — a mess beside the barracks, an ossuary beside the crypt — because a building that had a purpose before it had rooms is what reads as designed. Every floor names one primary landmark space and two or three supporting ones, and a campaign-wide aesthetic arc leaves early floors orderly and occupied while late ones are battered and derelict. The goal is simple: make each seed fun to explore and enjoyable to replay, building toward one of six bosses in one of five geometry-rich strongholds on floor 9 and a secret reward expedition on floor 10. It uses the player's registered WL6 data at runtime and never copies Wolfenstein graphics, sounds, music, or data files into generated packages.
+
+## What changed in 2.0
+
+2.0 is a rewrite of how the generator is organised and a broad pass over map quality. Generated output differs from 1.9.x for every seed; the settings and reproduction commands from an older release will not reproduce an older campaign under this version.
+
+**Architecture.** `generator.py` went from 6,073 lines owning nine systems to a coordinator of about 700 lines, alongside sixteen modules that each own one design decision — `planning`, `geometry`, `progression`, `semantics`, `encounters`, `pickups`, `decorations`, `special_floors`, `campaign`, `quality`, `ledger` and the `wl6`/`model`/`grid` leaves. The import cycle that forced validation and artifact encoding to be imported from the generator's last lines is gone; the package is an acyclic graph with no deferred or bottom-of-file relative imports. `watermark_cli.py` holds the Tkinter interface so `watermark.py` can be imported eagerly without making headless generation require a GUI toolkit. Every extraction step was proven byte-identical against a 32-combination fingerprint corpus before any behaviour was changed.
+
+**Map quality.** One deliberate motif per room instead of nine racing probability gates, which took the concept-specific composition — bunks in a barracks, a spear rack in an armory — from 1% of rooms to 28%, and cut rooms with no composition from 70% to 18%. Functional room adjacency doubled from 8.2% to 16.0% of connections. Decoration density and per-item mix now track the authored corpus closely. Every room is lit. Hallways are furnished. All five boss-arena families and all six native bosses can appear, where previously two families and four bosses were unreachable.
+
+**Performance.** Generation is 2.8× faster, so the new `--generation-quality thorough` default — which halves critique flags by ranking eight candidates per floor instead of taking the first clean one — still finishes sooner than 1.9.x did taking the first.
+
+The full list of intentional output changes, the architecture, and a note on where new work belongs are in [`docs/RELEASE-2.0.md`](docs/RELEASE-2.0.md).
 
 Curious how the generator actually works? Start with the human-readable
 [`GENERATION_FLOW.md`](GENERATION_FLOW.md) flowchart, then use
@@ -68,7 +80,8 @@ generation as well.
 Every intensity option accepts `1` through `5`:
 
 ```sh
-python3 -m infiniwolf --seed 42 --guard-density 4 --enemy-toughness 3 \
+python3 -m infiniwolf --seed 42 --generation-quality thorough \
+  --guard-density 4 --enemy-toughness 3 \
   --supplies 3 --treasure 2 --secrets 4 --locked-doors 3 \
   --layout-complexity 5 --decoration-amount 4 --room-shape-variation 4 \
   --patrol-activity 3 --atmosphere 2 --secret-reward-quality 4 \
@@ -98,7 +111,9 @@ arms; ordinary graph-first floors remain the majority. Decoration also keeps
 blue and green barrels in separate room-level families and treats blue urns
 as singular wall-backed accents rather than loose repeated clutter.
 
-Using the same version, commit, seed, and settings produces byte-identical output. The named `LittleEntropyMachine` seed source derives independent floor, variant, circulation, progression-grammar, lock, vine-sector, rare-gallery, and rare-motif streams without retry attempts perturbing campaign-scale choices. A manifest inside the PK3 records that seed source, the resolved seed and settings, arrival elevator, circulation or hallway form, exterior vista, semantic prop families, wall and room identity, encounter compositions, patrol routes, the single-floor corridor-vine schedule, rare guard galleries, special-floor family, room shapes, lighting families, key objectives, bounded secrets, pickup compositions, and validation results. Every generated PK3 also includes `infiniwolf-settings.txt`: a plain-text record of the exact version, commit, resolved seed, every control value, and a copyable reproduction command.
+`--generation-quality` controls how hard the generator looks before accepting a floor. `fast` takes the first candidate with no critique flags; `balanced` ranks five valid candidates; `thorough` (the default) ranks eight. On the project's four-core test machine, averaged three ten-floor campaigns: fast averaged 7.3 critique flags per campaign in 127s, balanced 5.0 in 178s, thorough 3.3 in 281s. Thorough is the default because it roughly halves the flag count and, since the corridor router became 2.8x faster, still finishes sooner than fast did in earlier releases. Candidate generation stays deterministic and ranking only ever chooses among maps that already passed validation, so a higher setting cannot make an invalid map acceptable — it only widens the pool. The setting is recorded in the manifest and in the reproduction command, because it changes which candidate wins and therefore the output.
+
+Using the same version, commit, seed, and settings produces byte-identical output. The named `LittleEntropyMachine` seed source derives blake2b-based floor, variant, circulation, progression-grammar, lock, vine-sector, rare-gallery, and rare-motif streams without retry attempts perturbing campaign-scale choices; its payload-name strings are compatibility-sensitive. Within a floor, each of the eight subsystems — planning, geometry, progression, semantics, encounters, pickups, decorations, special_floors — draws from its own `infiniwolf:stream:v1` derivation keyed by seed, floor, attempt and subsystem name, so an extra draw in one cannot move another's choices. Those eight names are part of the seed payload and therefore compatibility-sensitive: renaming one changes every map for every existing seed. A manifest inside the PK3 records that seed source, the resolved seed and settings, arrival elevator, circulation or hallway form, exterior vista, semantic prop families, wall and room identity, encounter compositions, patrol routes, the single-floor corridor-vine schedule, rare guard galleries, special-floor family, room shapes, lighting families, key objectives, bounded secrets, pickup compositions, and validation results. Every generated PK3 also includes `infiniwolf-settings.txt`: a plain-text record of the exact version, commit, resolved seed, every control value, and a copyable reproduction command.
 
 Generated maps also carry a gameplay-neutral provenance signature in their
 sound-zone numbering. Each standalone `IWNN.wad` has two independently
@@ -124,11 +139,59 @@ someone deliberately re-encoding a copied map can forge it.
 python3 -m unittest discover -s tests -v
 ```
 
+Most tests generate whole floors, and a floor costs a few seconds, so the full
+suite runs for roughly 50 minutes on four cores. The current `--fast` gate runs
+109 tests; `tools/check.py` offers three gates sized to what you changed — pick
+the smallest one that can actually catch your mistake:
+
+```sh
+python3 tools/check.py --fast    # ~2s   tables, docs, config, CLI; no generation
+python3 tools/check.py --decor   # ~15m  decoration, lighting and placement invariants
+python3 tools/check.py --full    # ~50m  the whole suite, sharded across cores
+```
+
+`--fast` skips map generation entirely, so it cannot see reachability, actor-facing
+or placement regressions; run `--full` before committing.
+
+Two cheaper checks matter more when moving code between modules:
+
+```sh
+python3 tools/unresolved_names.py    # names a module uses but never imports
+python3 tools/fingerprint.py --check # generated maps still byte-identical
+python3 tools/reservation_sites.py   # who writes to the shared cell reservations
+```
+
+A name a moved function needs but did not bring along raises `NameError` only
+when that function runs, so the package imports fine and the pure-logic tier
+passes. The scanner catches it in milliseconds; the fingerprint gate catches it
+in minutes; the test suite may not catch it at all.
+
+Sharding is hand-rolled rather than delegated to `pytest-xdist` so a bare checkout
+needs no extra packages — but do not expect it to scale with core count. Measured
+on a 4-core machine, `--full -j 4` took *longer* than running the suite serially
+(55 min against 49): map generation churns 4096-element planes and repeated
+flood fills, so parallel shards saturate memory bandwidth and starve each other.
+The default leaves one core free, which helps a little. If you need a fast gate,
+use a narrower tier rather than more shards.
+
 Broader deterministic fuzzing and a real-engine smoke check are also included:
 
 ```sh
 python3 tools/fuzz.py --seeds 1000
 python3 tools/smoke_ecwolf.py --ecwolf /path/to/ecwolf --data /path/to/wl6-data
+```
+
+Decoration quality is measured rather than eyeballed. With a collection of
+hand-authored community maps installed alongside this repo, `tools/decor_stats.py`
+reports decoration density, wall-adjacency, clustering, and per-item frequency for
+that reference corpus and for freshly generated floors side by side, and
+`tools/mine_decor_patterns.py` regenerates
+[`docs/decor-corpus-patterns.md`](docs/decor-corpus-patterns.md), the per-item
+placement model mined from the same corpus:
+
+```sh
+python3 tools/decor_stats.py
+python3 tools/mine_decor_patterns.py
 ```
 
 Generated packages contain only WAD map data, MAPINFO, and reproducibility metadata. Registered WL6 assets remain in the user's data directory.
@@ -145,7 +208,7 @@ package by hand:
 pip install pyinstaller .
 pyinstaller --onefile --windowed --name InfiniWolf run.py
 pyinstaller --onefile --name infiniwolf-cli infiniwolf_cli.py
-python3 packaging/make_release.py --platform linux --version 1.9.7   # or windows / macos
+python3 packaging/make_release.py --platform linux --version 2.0.0   # or windows / macos
 ```
 
 The script downloads ECWolf's official prebuilt binary for the target platform from `maniacsvault.net`, checks it against a pinned SHA-256, and packages it alongside the two executables. It never touches Wolfenstein 3D game data.

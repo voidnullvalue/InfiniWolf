@@ -9,7 +9,7 @@ from tkinter import filedialog, messagebox, ttk
 import zipfile
 
 from .build_info import build_label
-from .config import CampaignConfig, Intensity, ThemeBias
+from .config import CampaignConfig, GenerationQuality, Intensity, ThemeBias
 from .generator import GenerationCancelled, generate_campaign, read_manifest
 from .preview import MapPreview, load_previews, overlay_cells, tile_color
 from .runtime import AppSettings, launch_ecwolf, load_settings, save_settings, validate_settings
@@ -42,6 +42,14 @@ THEME_NAMES = {
     ThemeBias.QUARTERS.value: "Quarters",
 }
 
+# How hard to search for a good floor. Named for what the user gets rather than
+# for the candidate count, since the count is an implementation detail.
+QUALITY_NAMES = {
+    GenerationQuality.FAST.value: "Fast (first clean floor)",
+    GenerationQuality.BALANCED.value: "Balanced (best of 5)",
+    GenerationQuality.THOROUGH.value: "Thorough (best of 8) \u2014 default",
+}
+
 
 class App(ttk.Frame):
     def __init__(self, master: tk.Tk) -> None:
@@ -59,6 +67,8 @@ class App(ttk.Frame):
         self.values = {name: tk.IntVar(value=3) for name, _ in CONTROL_LABELS}
         self.value_labels = {name: tk.StringVar(value=INTENSITY_NAMES[3]) for name, _ in CONTROL_LABELS}
         self.theme_bias = tk.StringVar(value=ThemeBias.MIXED.value)
+        self.generation_quality = tk.StringVar(
+            value=GenerationQuality.THOROUGH.value)
         self.say_aardwolf = tk.BooleanVar(value=False)
         self.cancel_event = threading.Event()
         self._build()
@@ -83,9 +93,21 @@ class App(ttk.Frame):
         theme.bind("<<ComboboxSelected>>",
                    lambda _event: self.theme_bias.set(next(key for key, label in THEME_NAMES.items()
                                                           if label == theme.get())))
+        quality_row = theme_row + 1
+        ttk.Label(style, text="Generation quality").grid(
+            row=quality_row, column=0, sticky="w", pady=4)
+        quality = ttk.Combobox(style, state="readonly", width=26,
+                               values=tuple(QUALITY_NAMES.values()))
+        quality.set(QUALITY_NAMES[self.generation_quality.get()])
+        quality.grid(row=quality_row, column=1, columnspan=2, sticky="ew",
+                     padx=(12, 0))
+        quality.bind("<<ComboboxSelected>>",
+                     lambda _event: self.generation_quality.set(
+                         next(key for key, label in QUALITY_NAMES.items()
+                              if label == quality.get())))
         ttk.Checkbutton(style, text="Say Aardwolf",
                         variable=self.say_aardwolf).grid(
-                            row=theme_row + 1, column=0, columnspan=3,
+                            row=quality_row + 1, column=0, columnspan=3,
                             sticky="w", pady=(8, 0))
         self._path_row(2, "ECWolf executable", self.ecwolf, self._choose_ecwolf, False)
         self._path_row(3, "Registered WL6 data", self.wl6_data, self._choose_data, True)
@@ -156,6 +178,8 @@ class App(ttk.Frame):
         try:
             settings = {name: Intensity(value.get()) for name, value in self.values.items()}
             settings["theme_bias"] = ThemeBias(self.theme_bias.get())
+            settings["generation_quality"] = GenerationQuality(
+                self.generation_quality.get())
             settings["say_aardwolf"] = self.say_aardwolf.get()
             config = CampaignConfig.with_seed(self.seed.get(), **settings)
         except ValueError as error:

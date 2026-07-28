@@ -1,0 +1,103 @@
+name: CI
+
+# Branch and pull-request checks. Deliberately a separate workflow from
+# release.yml: that one owns main and tags, cuts releases, and should not grow
+# branch responsibilities. Nothing here has permission to publish anything.
+on:
+  push:
+    branches-ignore:
+      - main          # release.yml already runs the suite there
+  pull_request:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+# A newer push to the same branch supersedes an in-flight run.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Cheap and fails fast, so an obvious mistake does not wait behind generation.
+  quick:
+    name: Static checks and pure logic
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # `tools/check.py` shells out to pytest for every tier. The generator
+      # itself is pure stdlib, and the `tests` job below runs on `unittest`, so
+      # this is the only place a third-party package is needed.
+      - name: Install the test runner
+        run: python3 -m pip install --quiet pytest
+
+      # Names a module uses but never imports. A NameError in a moved function
+      # body does not fire until it runs, so the test tiers can pass while
+      # generation is broken -- this has caught that exact bug more than once.
+      - name: Unresolved names
+        run: python3 tools/unresolved_names.py
+
+      - name: Pure-logic tier
+        run: python3 tools/check.py --fast
+
+  tests:
+    name: Full suite
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: python -m unittest discover -s tests -v
+
+  # The load-bearing gate. Byte-identity over 32 generated maps is what proves
+  # a refactor preserved behaviour; the unit suite passes clean through changes
+  # that silently alter every floor. Expected to fail on a commit that changes
+  # output on purpose -- when that happens, re-record deliberately rather than
+  # loosening this.
+  fingerprints:
+    name: Byte-identity gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Fingerprint corpus
+        run: python3 tools/fingerprint.py --check
+
+  # Determinism and validity across the settings space, then a real package.
+  # `decor_stats.py` is absent on purpose: it measures against 207 hand-authored
+  # maps that live outside this repository, so it cannot run here and stays a
+  # local check.
+  generation:
+    name: Fuzz and package
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Deterministic fuzzing
+        run: python3 tools/fuzz.py --seeds 2
+
+      - name: End-to-end package
+        run: |
+          python3 -m infiniwolf --seed ci-package \
+            --generation-quality thorough --output /tmp/ci.pk3
+          python3 -c "
+          from pathlib import Path
+          from infiniwolf.generator_artifacts import validate_package
+          result = validate_package(Path('/tmp/ci.pk3'))
+          flags = sum(len(f.get('critique') or []) for f in result['floors'])
+          print(f\"{len(result['floors'])} floors, {flags} critique flags\")
+          assert len(result['floors']) == 10, result['floors']
+          "

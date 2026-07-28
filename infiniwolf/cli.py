@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Sequence
 
 from .build_info import build_label
-from .config import CampaignConfig, Intensity, ThemeBias
+from .config import CampaignConfig, GenerationQuality, Intensity, ThemeBias
 from .generator import generate_campaign
 
 
@@ -28,6 +28,12 @@ def parser() -> argparse.ArgumentParser:
                             metavar="1..5")
     result.add_argument("--theme-bias", choices=[bias.value for bias in ThemeBias],
                         default=ThemeBias.MIXED.value)
+    result.add_argument("--generation-quality",
+                        choices=[quality.value for quality in GenerationQuality],
+                        default=GenerationQuality.THOROUGH.value,
+                        help="how many valid candidates to choose between per "
+                             "floor: fast takes the first clean one, balanced "
+                             "ranks 5, thorough ranks 8 (default: %(default)s)")
     result.add_argument("--say-aardwolf", action="store_true",
                         help=argparse.SUPPRESS)
     return result
@@ -51,6 +57,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         atmosphere=Intensity(args.atmosphere),
         secret_reward_quality=Intensity(args.secret_reward_quality),
         theme_bias=ThemeBias(args.theme_bias),
+        generation_quality=GenerationQuality(args.generation_quality),
         say_aardwolf=args.say_aardwolf,
     )
     output = generate_campaign(config, args.output)

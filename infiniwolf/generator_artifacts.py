@@ -7,10 +7,32 @@ from pathlib import Path
 import struct
 import zipfile
 
-from .generator import (
-    BUILD_COMMIT, CEILINGS, CampaignConfig, GRID, MUSIC, _VARIANT_TITLES,
-    __version__,
-)
+from . import __version__
+
+from .build_info import COMMIT as BUILD_COMMIT
+from .config import CampaignConfig
+from .wl6 import GRID
+from .watermark import (_parse_wad, floor_target, plane_residue,
+                        plane_residue_secondary, secondary_target)
+
+# MAPINFO presentation tables. These live here rather than in the generator
+# because nothing in generation reads them -- they are consumed only by the
+# encoders below, and keeping them here is what lets this module stop importing
+# `generator` and closes half of the import cycle that previously forced
+# generator.py to import validation and artifacts from its own last lines.
+CEILINGS = ("#383838", "#202840", "#402828", "#303820", "#382840")
+MUSIC = ("GETTHEM", "SEARCHN", "POW", "SUSPENSE", "WARMARCH", "NAZI_OMI")
+
+# In-game display flavor for mapinfo level names.
+_VARIANT_TITLES = {
+    "garrison": "The Garrison",
+    "catacombs": "The Catacombs",
+    "grand-halls": "Grand Halls",
+    "storehouse": "The Storehouse",
+    "quarters": "Officers' Quarters",
+    "stronghold": "The Stronghold",
+    "vault": "Treasure Vault",
+}
 
 def _wad_bytes(name: str, tiles: list[int], things: list[int]) -> bytes:
     planes = (tiles, things, [0] * (GRID * GRID))
@@ -153,9 +175,6 @@ def validate_package(package_path: Path) -> dict[str, object]:
         # Provenance is part of the installed artifact contract, not merely
         # descriptive manifest data. Recompute it from the map planes before
         # the temporary package is allowed to replace the previous campaign.
-        from .watermark import (floor_target, plane_residue,
-                                plane_residue_secondary, secondary_target,
-                                _parse_wad)
         primary = []
         for number in range(1, 11):
             record = _parse_wad(package.read(f"maps/iw{number:02d}.wad"))
@@ -167,3 +186,179 @@ def validate_package(package_path: Path) -> dict[str, object]:
         if sum(primary) % 43 != 42:
             raise ValueError("campaign provenance residue is not 42")
         return manifest
+
+
+def _manifest(config, levels, secret_from, vine_floor, vine_budget,
+              realized_vine_runs, gallery_floor, realized_gallery_floors,
+              rare_motif_floor, realized_rare, vista_parity, lock_schedule):
+    """Build the manifest recorded inside the package.
+
+    Lives with encoding rather than orchestration: it is a serialization of
+    decisions already made, and every value it reads is final by the time it
+    runs. Keeping it here means adding a manifest field cannot accidentally
+    change generation, and generate_campaign stays a control-flow function
+    rather than a 140-line dict literal.
+    """
+    manifest = {
+        "generator": "infiniwolf", "version": __version__,
+        "commit": BUILD_COMMIT or "unknown", "seed": config.seed,
+        "seed_source": "LittleEntropyMachine",
+        "watermark": {"scheme": "zone-item-geometry-v2",
+                      "primary_modulus": 43, "secondary_modulus": 17,
+                      "per_map": True, "campaign_residue": 42},
+        "settings": json.loads(config.to_json()), "secret_from": secret_from,
+        "vine_schedule": {"floor": vine_floor, "requested_runs": vine_budget,
+                          "realized_runs": realized_vine_runs},
+        "guard_gallery_schedule": {"floor": gallery_floor,
+                                   "realized": bool(realized_gallery_floors)},
+        "rare_motif_schedule": {"floor": rare_motif_floor,
+                                "realized_floor": (realized_rare[0]
+                                                   if realized_rare else 0)},
+        "sky_vista_schedule": {
+            "eligible_parity": vista_parity,
+            "realized_floors": [level.number for level in levels
+                                if level.sky_vistas]},
+        "lock_schedule": [plan.colors for plan in lock_schedule],
+        "floors": [{"number": level.number,
+                    "name": _display_name(level.number, level.variant),
+                    "seed": level.seed,
+                    "secrets": len(level.secret_rewards),
+                    "locked_doors": level.locked_doors,
+                    "key_order": level.key_order,
+                    "critical_route_rooms": len(level.critical_route),
+                    "exit_depth_ratio": round(level.exit_depth_ratio, 4),
+                    "exit_stand": level.exit_stand,
+                    "boss": level.boss,
+                    "special_family": level.special_family,
+                    "secret_source": level.secret_source,
+                    "boss_arena_room": level.boss_arena_room,
+                    "preboss_room": level.preboss_room,
+                    "premium_room": level.premium_room,
+                    "expedition_rooms": level.expedition_rooms,
+                    "arrival": ({"kind": level.arrival.kind,
+                                  "portal": level.arrival.portal,
+                                  "player": level.arrival.player,
+                                  "facing": level.arrival.facing,
+                                  "car_cells": level.arrival.car_cells,
+                                  "item": level.arrival.item}
+                                 if level.arrival else None),
+                    "guard_recesses": [
+                        {"room": recess.room_index, "cells": recess.cells,
+                         "actor_cell": recess.actor_cell}
+                        for recess in level.guard_recesses],
+                    "guard_galleries": [
+                        {"room": gallery.room_index, "screen": gallery.screen,
+                         "actors": gallery.actor_cells,
+                         "rear_cells": gallery.rear_cells,
+                         "treatment": gallery.treatment}
+                        for gallery in level.guard_galleries],
+                    "encounters": [
+                        {"template": encounter.template,
+                         "room": encounter.room_index,
+                         "actors": [item for _, _, item in encounter.cells],
+                         "hidden_cells": encounter.hidden_cells,
+                         "family": encounter.family,
+                         "patrol_kind": encounter.patrol_kind,
+                         "patrol_path": encounter.patrol_path}
+                        for encounter in level.encounters],
+                    "patrol_target": level.patrol_target,
+                    "enemy_tiers": level.enemy_tiers,
+                    "variant": level.variant,
+                    "circulation_skeleton": level.circulation_skeleton,
+                    "progression_grammar": level.progression_grammar,
+                    "district_circulation": level.district_circulation,
+                    "layout_signature": level.layout_signature,
+                    "primary_hall_geometry": level.primary_hall_geometry,
+                    "barrel_families": level.barrel_families,
+                    "sky_vistas": level.sky_vistas,
+                    "sky_vista_recesses": level.sky_vista_recesses,
+                    "sky_vista_supports": level.sky_vista_supports,
+                    "door_axis_parity": [
+                        {"room": index, "width": room.w,
+                         "height": room.h,
+                         "odd_width": bool(room.w % 2),
+                         "odd_height": bool(room.h % 2)}
+                        for index, room in enumerate(level.rooms)],
+                    "motif_realizations": level.motif_realizations,
+                    "shape_target": level.shape_target,
+                    "rare_motif": ({"kind": level.rare_motif.kind,
+                                    "room": level.rare_motif.room_index,
+                                    "realization": level.rare_motif.realization,
+                                    "endpoints": level.rare_motif.endpoints}
+                                   if level.rare_motif else None),
+                    "boss_arena": ({"family": level.boss_arena.family,
+                                    "profile": level.boss_arena.profile,
+                                    "geometry": level.boss_arena.geometry,
+                                    "decorations": level.boss_arena.decorations}
+                                   if level.boss_arena else None),
+                    "landmarks": [
+                        {"room": plan.room_index, "rank": plan.rank,
+                         "purpose": plan.purpose, "score": plan.score,
+                         "approach_room": plan.approach_room}
+                        for plan in level.landmarks],
+                    # The one composition each room realized, "" for the rooms
+                    # deliberately left plain. This is the audit trail for motif
+                    # selection: without it there is no way to tell from a package
+                    # whether a floor's rooms were composed or merely filled.
+                    "shared_void": ({"family": level.shared_void.family,
+                                     "interior": len(level.shared_void.interior),
+                                     "screens": len(level.shared_void.screens),
+                                     "viewing_rooms": list(
+                                         level.shared_void.viewing_rooms)}
+                                    if level.shared_void else None),
+                    "authored_sightlines": [
+                        {"purpose": line.purpose, "length": line.length,
+                         "origin_room": line.origin_room,
+                         "target_room": line.target_room,
+                         "cells": [list(c) for c in line.cells]}
+                        for line in level.authored_sightlines],
+                    "room_motifs": level.room_motifs,
+                    "room_concepts": level.room_concepts,
+                    "room_shapes": level.room_shapes,
+                    "lighting_families": level.lighting_families,
+                    "vine_screens": [
+                        {"kind": screen.kind, "room": screen.room_index,
+                         "cells": screen.cells,
+                         "ambush_anchor": screen.ambush_anchor}
+                        for screen in level.vine_screens],
+                    "motifs": level.motifs,
+                    "secret_variants": level.secret_variants,
+                    "secret_details": [
+                        {"shape": detail.shape,
+                         "reward_count": detail.reward_count,
+                         "host_room": detail.host_room,
+                         "depth_ratio": round(detail.depth_ratio, 4),
+                         "pushwall": detail.pushwall,
+                         "secret_exit": detail.secret_exit,
+                         "hint_treatment": detail.hint_treatment,
+                         "return_floor": detail.return_floor,
+                         "push_direction": detail.push_direction}
+                        for detail in level.secret_details],
+                    "key_objectives": [
+                        {"color": objective.color, "cell": objective.cell,
+                         "host_room": objective.host_room,
+                         "stage": objective.stage, "detour": objective.detour,
+                         "treatment": objective.treatment}
+                        for objective in level.key_objectives],
+                    "pickup_compositions": [
+                        {"reason": placement.reason,
+                         "template": placement.template,
+                         "room": placement.room_index,
+                         "items": [item for _, _, item in placement.cells]}
+                        for placement in level.pickup_placements],
+                    "critique": level.critique,
+                    "validation": {
+                        "passed": True,
+                        "checks": ["bounds", "connectivity", "door_axes", "elevator",
+                                   "exit_depth", "critical_route",
+                                   "dual_key_progression", "key_room_separation",
+                                   "pushwall_clearance", "rewarded_secrets",
+                                   "secret_hints", "secret_route", "boss",
+                                   "circulation_hierarchy", "arrival_elevator",
+                                   "hallway_first_scaffold", "sky_vista_depth",
+                                   "room_barrel_family", "wall_backed_blue_urn",
+                                   "encounter_provenance", "patrol_routes",
+                                   "wall_backed_flags", "pickup_provenance"],
+                    }} for level in levels],
+    }
+    return manifest

@@ -55,6 +55,14 @@ def cell_char(tile: int, thing: int) -> str:
         return "*"
     if thing in G.STATIC_BLOCKING:
         return "o"
+    # Non-solid decor used to fall through to "." and render as bare floor,
+    # which made the whole open-item vocabulary -- every ceiling light and
+    # chandelier -- invisible to this tool. Lighting gets its own glyph so a
+    # room's fixture rhythm can actually be eyeballed.
+    if thing in G.LIGHTING_ITEMS:
+        return "i"
+    if thing in G.STATIC_OPEN:
+        return ","
     if tile in G.DOORS:
         return "+"
     if tile == G.ELEVATOR_TILE:
@@ -313,9 +321,15 @@ HUMAN_LABELS = (
     ("enemies_q3", "Enemies in depth Q3"), ("enemies_q4", "Enemies in depth Q4"),
 )
 
+LEGEND = ("  legend  S start  E elevator  + door  P pushwall  k key  ! enemy"
+          "  * treasure  o solid decor  i light  , open decor")
+
+
 def print_human(tiles: list[int], things: list[int], metrics: dict[str, object]) -> None:
     for line in render(tiles, things):
         print(line)
+    print()
+    print(LEGEND)
     print()
     for key, label in HUMAN_LABELS:
         value = metrics[key]

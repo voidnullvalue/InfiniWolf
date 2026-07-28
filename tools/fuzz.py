@@ -10,6 +10,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from infiniwolf.config import CampaignConfig, Intensity
+from infiniwolf.campaign import resolve_schedule
 from infiniwolf.generator import generate_map
 
 
@@ -26,10 +27,15 @@ def main() -> int:
                 supplies=intensity, treasure=intensity, secrets=intensity,
                 locked_doors=intensity, layout_complexity=intensity,
             )
+            # Mirror generate_campaign's own per-floor options. Hand-rolled kwargs
+            # never passed the floor-9 boss or the aesthetic phase, so the fuzzer
+            # was exercising a default path production no longer uses.
+            schedule = resolve_schedule(config)
             for floor in range(1, 11):
                 for attempt in range(args.attempts):
                     try:
-                        generate_map(config, floor, attempt, secret_exit=floor == 4)
+                        generate_map(config, floor, attempt,
+                                     **schedule.floor_options(floor))
                         maps += 1; retries += attempt
                         break
                     except ValueError:

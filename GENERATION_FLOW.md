@@ -13,7 +13,7 @@ rules and validation before a floor can be selected.
 
 ```mermaid
 flowchart TD
-    A[CampaignConfig<br/>seed + gameplay/style settings] --> B[LittleEntropyMachine<br/>derive independent deterministic streams]
+    A[CampaignConfig<br/>seed + gameplay/style settings] --> B[LittleEntropyMachine<br/>derive named blake2b deterministic streams]
     B --> B1[_variant_sequence<br/>floor material/theme identities]
     B --> B2[_circulation_sequence<br/>non-repeating building skeletons]
     B --> B3[_lock_schedule<br/>campaign gold/silver gate quota]
@@ -34,7 +34,7 @@ flowchart TD
     B8 --> C
     B9 --> C
 
-    C --> D[Derive floor_seed number + attempt<br/>create isolated floor RNG]
+    C --> D[Derive floor-attempt seed<br/>one RNG stream per subsystem]
 
     subgraph MAP[generate_map: one candidate floor]
         D --> E[_plan_floor]
@@ -82,7 +82,7 @@ flowchart TD
 
         J4 --> K{Floor 9 boss?}
         K -- yes --> K1[Prepare family-owned boss arena profile<br/>themed geometry, decoration, cover, and supplies]
-        K1 --> K2[Place Hans or Gretel<br/>verified native gold-key drop + bounded support]
+        K1 --> K2[Choose one of six native bosses<br/>Hans/Gretel key-gate; others arena cut-vertex gate]
         K2 --> K3[Stock pre-boss staging room<br/>keep post-boss victory room calm]
         K -- no --> M[Resolve finalized room identity]
         K3 --> M
@@ -140,11 +140,13 @@ flowchart TD
     S1 -- yes --> W
     S1 -- no --> Z[Abort campaign generation]
 
-    R --> T{No critique flags?}
-    T -- yes --> U[Accept floor immediately]
-    T -- no --> V{Three valid candidates collected?}
+    R --> T{Quality tier is fast and candidate clean?}
+    T -- yes --> U[Accept first clean candidate]
+    T -- no --> V{Tier pool collected?
+3 valid for fast fallback; 5 balanced; 8 thorough}
     V -- no --> S
-    V -- yes --> W[Accept candidate with fewest critique flags]
+    V -- yes --> W[Rank hard-valid pool: critique flags first,
+then contrast with accepted floors]
 
     U --> Y{All ten floors accepted?}
     W --> Y
@@ -158,6 +160,23 @@ flowchart TD
     AC -- yes --> AD[Atomically replace requested output<br/>with validated InfiniWolf campaign]
 ```
 
+## Determinism and shared reservations
+
+`LittleEntropyMachine` derives the named campaign and floor-attempt seeds with
+blake2b; those payload-name strings are a frozen compatibility contract. The
+floor generator then builds one `random.Random` per subsystem from
+`subsystem_seed(floor, attempt, name)`, over the eight names in
+`FLOOR_STREAM_NAMES`: planning, geometry, progression, semantics, encounters,
+pickups, decorations, special_floors. Neither the named campaign streams nor the
+per-subsystem floor streams can perturb one another, so a subsystem can be
+tuned without moving anything else on the floor. Those eight names are in the
+seed payload and are frozen for the same reason.
+
+`ledger.Ledger` records every claim made for a cell rather than replacing an
+earlier claim. A cell stays reserved until its final claim is released, and
+`release(cells, owner, reason)` removes claims belonging to that owner while
+leaving every other owner's claim in place.
+
 ## How to read the failure paths
 
 - A `ValueError` inside `generate_map` rejects only that `(floor, attempt)`.
@@ -165,16 +184,37 @@ flowchart TD
 - Hard validation is non-negotiable. A candidate with broken progression,
   untracked pickups, shallow exit placement, or invalid secrets cannot enter
   the soft-quality pool.
-- `_critique` is intentionally softer. It lets the campaign generator compare
-  up to three valid candidates and retain the least problematic one when no
-  candidate is completely flag-free.
+- `_critique` is intentionally softer. `fast` accepts the first clean candidate,
+  with a three-valid-candidate fallback; `balanced` ranks five valid candidates
+  and `thorough` ranks eight. Ranking uses critique-flag count before contrast
+  with accepted floors, so a contrast gain cannot buy off a concrete flag.
 - Cancellation and file installation are atomic: an incomplete or invalid
   temporary campaign never replaces the user's existing output.
 
 ## Placement responsibility
 
-| Output | Planner responsible | Required explanation |
-|---|---|---|
+Each output below has exactly one module that decides it. The module list is the
+architecture; the table is who owns which decision within it.
+
+| Module | Owns |
+| --- | --- |
+| `wl6.py` | The native WL6 code vocabulary. No imports; every other module builds on it |
+| `model.py` | Record types more than one system reads |
+| `grid.py` | Structure queries: what is at a cell, what can be walked to, how rooms connect |
+| `campaign.py` | Ten-map scheduling (attempt-invariant) and candidate ranking |
+| `planning.py` | The abstract building program, before any tile exists |
+| `geometry.py` | General structural realization: reusable room painting, corridor routing, repair passes, and space partitioning |
+| `progression.py` | Elevators, doors, locks, keys, secrets — whether the floor can be finished |
+| `semantics.py` | `RoomIdentity` and wall treatment — what each space means |
+| `encounters.py` | Room-owned combat composition and patrols |
+| `pickups.py` | Economy compositions and the ammo budget |
+| `decorations.py` | Aesthetic prop composition |
+| `special_floors.py` | Floor 9 and 10 authored contracts |
+| `quality.py` | Soft critique; cannot reach validation |
+| `generator_validation.py` | Hard validation. Non-negotiable, raises |
+| `generator_artifacts.py` | WAD/PK3 encoding and package verification |
+| `generator.py` | Phase order, floor-seed derivation, and the `boss_locks_exit` integration seam |
+
 | Building circulation | `_plan_floor` + `_place_planned_rooms` | Skeleton or hallway-first form, district mode, corridor width, occupied arms, suite/branch role |
 | Floor arrival | `_place_arrival_elevator` | Horizontal axis, complete working-door car, contextual item, player position and facing |
 | Elevator and keys | exit/gate planners | Mandatory route depth, explicit key states, meaningful physical-key detours |
@@ -187,6 +227,20 @@ flowchart TD
 | Hallway vines | campaign schedule + `_place_decorations` | Single nominated floor, complete longitudinal run, same-path budget, optional existing ambush anchor |
 | Gameplay pickups | `_place_authored_pickups` + `_PlacementGrammar` | Economy intent, owning room, named composition, exact provenance |
 | Room decoration | `_place_decorations` | Room identity, one lighting and barrel family, singular urn rule, architectural anchor, composition, reachability |
+| Ambient lighting | `_place_decorations` Stage B | Every room lit, one fixture family per room, 3–4 tile lattice spacing, allocated before furniture spends the statics budget |
+| Density fill | `_place_decorations` Stage C | Cell geometry (corner/nook/slot/wall/free) chooses the item from the mined corpus distribution, corner-first, concept-eligible only, spaced except for barrels, reachability re-checked |
+| Floor lamps | `_place_decorations` lamp gate + corner snap | Never on a cell with floor on all four sides, never abutting another lamp, at most two per room; matched pairs allowed from any composition, singles only from the corner snap |
+| Matched compositions | `_place_decorations` group commit | Cells committed as one multi-cell group are exempt from the flush-to-wall repair, so a pair cannot be pulled apart |
+| Room motif | `_choose_motif` | Exactly one composition per room, chosen from those structurally eligible and weighted inversely to how widely each applies; 18% of eligible rooms deliberately plain |
+| Room concept | `semantics` + `CONCEPT_AFFINITIES` | Repels a neighbour's concept first, then attracts a functional partner, then balances counts |
+| Landmark hierarchy | `plan_landmarks` | One primary and up to three secondaries per floor, never graph-adjacent, chosen before decoration from geometry alone |
+| Aesthetic arc | `aesthetic_phase` | Bounded per-floor multipliers; floors 9 and 10 pinned; modulates a variant, never replaces it |
+| Cell reservations | `ledger.Ledger` | Claims accumulate per cell with owner and reason; the cell remains reserved until its final claim is released, and `release` removes only the calling owner's claims |
+| Candidate selection | `campaign._best_candidate` | Ranks only hard-valid maps, flag count dominating contrast, pool size set by `generation_quality` |
+| Shared void | `carve_shared_void` | One per campaign at most; interior rock pocket overlooked by two or more rooms, sealed by a complete pillar screen, containment proved with the screens blocked, no pickups or actors inside |
+| Authored view | `plan_authored_sightlines` | The line ahead from a primary landmark's approach doorway, reserved so no prop fills it, truncated at anything already solid |
+| Floor 9 boss gate | `campaign.choose_boss` + `progression` + `validate_map` | Gold-locked elevator when the boss drops a key, otherwise the arena is a cut vertex and the exit and victory room are unreachable without crossing it |
+| Hallway furnishing | `_place_decorations` area gate | Rooms are skipped by floor area (< 20 cells), not by minimum dimension, so three-wide corridors are furnished along their flanking lanes; the centre lane of any room three cells across is reserved outright, since reachability still validates a plugged corridor |
 | Symmetric room profiles | shape carvers + `_place_decorations` | Bounded mirrored structure and matching themed accents |
 
 The long-term rule is simple: if a sprite or structural feature cannot answer
