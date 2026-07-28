@@ -42,11 +42,12 @@ class TraversalFrame:
     path: tuple[tuple[int, int], ...]
 
 def _doorway_keep_clear(tiles: list[int]) -> frozenset[tuple[int, int]]:
-    """Reserve two walkable cells on each side of every door.
+    """Reserve a three-cell egress lane on each side of every door.
 
     Room-local anchors cannot see connector repairs and corridor mouths that
     sit just beyond a room's recorded rectangle, so this map-wide reservation
-    is the authoritative collision buffer for blocking decoration.
+    is the authoritative collision buffer for blocking decoration. It reserves
+    only the travel lane: adjacent cells remain available for doorway frames.
     """
     clear: set[tuple[int, int]] = set()
     for y in range(len(tiles) // 64):
@@ -54,13 +55,11 @@ def _doorway_keep_clear(tiles: list[int]) -> frozenset[tuple[int, int]]:
             if _at(tiles, x, y) not in DOORS:
                 continue
             for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
-                first = x + dx, y + dy
-                if not _is_floor(_at(tiles, *first)):
-                    continue
-                clear.add(first)
-                second = first[0] + dx, first[1] + dy
-                if _is_floor(_at(tiles, *second)):
-                    clear.add(second)
+                for depth in range(1, 4):
+                    cell = x + depth * dx, y + depth * dy
+                    if not _is_floor(_at(tiles, *cell)):
+                        break
+                    clear.add(cell)
     return frozenset(clear)
 
 def _room_anchors(room: Room, tiles: list[int]) -> RoomAnchors:
