@@ -27,6 +27,7 @@ from .wl6 import (AMMO, BOSSES, CHAINGUN, DECOR_WALLS, DOORS, DOOR_ELEVATOR,
 from .campaign import (CIRCULATION_MODES, CIRCULATION_SKELETONS,
                        HALLWAY_FIRST_SKELETONS, PROGRESSION_GRAMMARS)
 from .pickups import AUTHORED_PICKUP_TEMPLATES
+from .placement import _doorway_keep_clear
 from .progression import _minimum_critical_route_rooms
 
 def validate_map(level: GeneratedMap) -> None:
@@ -35,6 +36,11 @@ def validate_map(level: GeneratedMap) -> None:
         raise ValueError("invalid plane dimensions")
     if 63 in level.things:
         raise ValueError("Call Apogee decoration is forbidden")
+    blocked_doorway_approach = next(
+        (cell for cell in _doorway_keep_clear(level.tiles)
+         if _at(level.things, *cell) in STATIC_BLOCKING), None)
+    if blocked_doorway_approach is not None:
+        raise ValueError(f"blocking decoration jams doorway approach at {blocked_doorway_approach}")
     for y in range(GRID):
         for x in range(GRID):
             if _is_perpendicular_door_junction(level.tiles, x, y):

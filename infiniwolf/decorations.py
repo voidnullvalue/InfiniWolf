@@ -23,7 +23,8 @@ from .grid import (_at, _inside_room, _is_floor, _reachable, _set,
                    qualifying_dead_end_alcoves)
 from .ledger import release as ledger_release, reserve as ledger_reserve
 from .model import AestheticPhase, PillarPlacement, Room, RoomIdentity, VineScreen
-from .placement import _room_anchors, _room_traversal_frame, _traversal_pair_candidates
+from .placement import (_doorway_keep_clear, _room_anchors, _room_traversal_frame,
+                        _traversal_pair_candidates)
 from .room_policy import base_theme as _decor_theme
 from .wl6 import (DECOR_WALLS, DOORS, ENEMY_CODES, GRID, LIGHTING_FAMILY_ITEMS,
                     LIGHTING_ITEMS, PLAYER_START_CODES, SPECIAL_WALL_TILES, STATIC_BLOCKING, STATIC_OPEN,
@@ -788,6 +789,9 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
     """
     baseline = len(_reachable(tiles, start, locked_open=True))
     # A default keeps direct unit callers compatible while generation passes the
+    # Connector repairs can sit outside a room record, so room-local anchors
+    # alone cannot reserve the corridor-side doorway approach.
+    doorway_clear = _doorway_keep_clear(tiles)
     # campaign-derived phase explicitly.
     phase = phase or AestheticPhase(1.0, 1.0, 1.0, 1.0, 1.0)
     blocked_cells: set[tuple[int, int]] = set()
@@ -981,7 +985,7 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
         anchors = _room_anchors(room, tiles)
         traversal = _room_traversal_frame(room, tiles, anchors)
         travel_pairs = _traversal_pair_candidates(room, tiles, traversal)
-        keep_clear = set(anchors.keep_clear)
+        keep_clear = set(anchors.keep_clear) | doorway_clear
         # Reachability alone still permits a table/barrel composition to
         # occupy the obvious route between two doors when a cramped detour
         # remains around it. Preserve the complete authored traversal lane;
