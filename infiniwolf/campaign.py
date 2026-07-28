@@ -89,7 +89,7 @@ PROGRESSION_GRAMMARS = (
     "clustered-chain", "nested-circuit", "bounded-perimeter",
 )
 
-RARE_MOTIF_CHANCE = 0.03
+RARE_MOTIF_CHANCE = 0.06
 
 def _variant_sequence(config: CampaignConfig) -> tuple[FloorVariant, ...]:
     """The campaign's per-floor variants, a pure function of the seed.

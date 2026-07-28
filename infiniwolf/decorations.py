@@ -48,14 +48,14 @@ _DECOR_BLOCKING: dict[str, tuple[int, ...]] = {
     "armory": (39, 62, 69, 58, 34),
     "checkpoint": (26, 62, 35),
     "grand": (30, 26, 35, 39, 31),
-    "war-room": (39, 62, 30, 31),
+    "war-room": (39, 62, 30, 31, 36),
     "trophy-hall": (39, 62, 34, 30, 31),
     "courtyard": (30, 31, 34, 59),
     "barracks": (25, 36, 58, 45, 34),
     "ready-room": (45, 36, 58, 34),
     "training-room": (69, 36, 58, 30),
-    "crypt": (30, 40, 58),
-    "ossuary": (30, 40, 41),
+    "crypt": (30, 40, 58, 28),
+    "ossuary": (30, 40, 41, 28),
     "burial-chamber": (30, 35, 40),
     "storage": (58, 24, 59, 60),
     "supply-cache": (58, 24, 60),
@@ -63,10 +63,10 @@ _DECOR_BLOCKING: dict[str, tuple[int, ...]] = {
     "lounge": (25, 35, 34, 31),
     "gallery": (39, 62, 34, 30, 31),
     "dining-hall": (25, 36, 35, 34),
-    "officers-quarters": (45, 25, 34, 31),
+    "officers-quarters": (45, 25, 34, 31, 36),
     "mess-kitchen": (36, 35, 34),
     "corridor": (26, 30),
-    "jail": (58, 40, 41),
+    "jail": (58, 40, 41, 28),
     "holding-cell": (40, 58, 36),
     "interrogation-room": (36, 25, 26),
 }
@@ -87,9 +87,9 @@ _DECOR_OPEN: dict[str, tuple[int, ...]] = {
     "guardpost": (37, 27),
     "armory": (37, 46, 67),
     "checkpoint": (37,),
-    "grand": (27, 37),
-    "war-room": (37,),
-    "trophy-hall": (27, 37),
+    "grand": (27, 37, 67),
+    "war-room": (37, 67, 46),
+    "trophy-hall": (27, 37, 46),
     "courtyard": (37, 23, 67),
     "barracks": (46, 61, 67),
     "ready-room": (46, 67),
@@ -101,9 +101,9 @@ _DECOR_OPEN: dict[str, tuple[int, ...]] = {
     "supply-cache": (46, 67, 23),
     "workshop": (37, 67, 23),
     "lounge": (27,),
-    "gallery": (27, 37),
+    "gallery": (27, 37, 46),
     "dining-hall": (27, 67),
-    "officers-quarters": (27, 37),
+    "officers-quarters": (27, 37, 46, 67),
     "mess-kitchen": (37, 67, 23),
     "corridor": (37, 23),
     "jail": (61, 61, 42, 64, 65, 66, 23),
@@ -595,11 +595,13 @@ _FILL_BUCKETS: dict[tuple[str, str], tuple[tuple[int, float], ...]] = {
     ("wall", "medium"): ((24, 10.1), (25, 8.9), (58, 8.5), (30, 5.5), (31, 5.5),
                          (61, 5.0), (42, 4.0), (36, 3.5), (62, 3.0)),
     ("wall", "open"): ((30, 15.0), (24, 11.0), (25, 9.8), (58, 6.8), (36, 4.0)),
-    ("wall", "tight"): ((24, 8.0), (58, 8.0), (30, 5.0), (61, 5.0), (42, 4.0)),
+    ("wall", "tight"): ((24, 8.0), (58, 8.0), (30, 5.0), (61, 5.0), (42, 4.0),
+                        (64, 2.5), (65, 2.0)),
     # Free cells are mostly ceiling in the corpus; with lighting excluded only
     # the genuinely free-standing furniture remains, which is why this is thin.
     ("free", "open"): ((25, 7.4), (30, 6.1), (67, 3.0), (61, 2.9), (46, 2.1)),
-    ("free", "medium"): ((67, 5.9), (46, 5.0), (25, 1.5), (61, 1.4), (23, 1.1)),
+    ("free", "medium"): ((67, 5.9), (46, 5.0), (25, 1.5), (64, 2.5), (65, 1.5),
+                         (61, 1.4), (23, 1.1), (66, 1.0)),
     ("free", "tight"): ((67, 2.0),),
 }
 # Order fill visits geometry classes in. Corner first is the headline finding.
@@ -636,6 +638,12 @@ _FLOOR_DECOR = _ALL_DECOR - LIGHTING_ITEMS
 # Ceiling fixtures are exempt because they are overhead and already spaced by their
 # own lattice.
 _MAY_ABUT = frozenset({24, 58}) | LIGHTING_ITEMS
+# Open items may sit against a floor lamp (an edge fixture that reads as "lit
+# corner") but not against a ceiling light, chandelier, or floor prop.  Ceiling
+# lights were the primary clustering source; chandeliers are now also excluded
+# because gallery/officers-quarters rooms carry both Basket and Chandelier and
+# the two tend to land adjacent when both are permitted.
+_NO_ABUT_DECOR = _ALL_DECOR - frozenset({26})
 
 
 def _spaced_from_neighbours(things: list[int], cell: tuple[int, int],
@@ -655,7 +663,7 @@ def _spaced_from_neighbours(things: list[int], cell: tuple[int, int],
     if item in _MAY_ABUT:
         return True
     x, y = cell
-    return not any(_at(things, x + dx, y + dy) in _FLOOR_DECOR
+    return not any(_at(things, x + dx, y + dy) in _NO_ABUT_DECOR
                    for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)))
 
 
@@ -1792,9 +1800,17 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
                 # the corpus's clustering budget spent on spill. The corpus puts
                 # Pots in contact 21% of the time and Basket 24%, meaning most are
                 # free-standing, so a third of rooms get spill and the rest do not.
+                # Prestige concepts (war-room, gallery, officers' quarters …) have
+                # floor_clutter only because fill needs these items eligible there.
+                # Actual spill beside a desk or suit of armor would read as
+                # combat debris rather than the tidy-but-furnished look those
+                # rooms carry in the corpus, so suppress the attachment roll there.
+                _NO_SPILL = frozenset({"war-room", "gallery", "trophy-hall",
+                                       "officers-quarters", "grand"})
                 attached = ([(cell, rng.choice(floor_clutter))
                              for cell in beside[:1]]
-                            if beside and rng.random() < 0.33 else [])
+                            if beside and rng.random() < 0.33
+                            and concept not in _NO_SPILL else [])
                 mids = [cell for cell in anchors.wall_midcells if cell in free]
                 rng.shuffle(mids)
                 spaced_spots = [(cell, rng.choice(floor_clutter)) for cell in mids]
@@ -1873,9 +1889,15 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
                    for y in range(room.y, room.y + room.h)
                    for x in range(room.x, room.x + room.w)):
                 continue
-            display_cells = [cell for cell in edge_free | free
-                             if cell not in keep_clear and _wall_backed(cell)
-                             and _wall_orientation(tiles, cell) == "terminus"]
+            display_cells = [
+                cell for cell in edge_free | free
+                if cell not in keep_clear and _wall_backed(cell)
+                and _wall_orientation(tiles, cell) == "terminus"
+                and not any(
+                    _at(things, cell[0] + dx, cell[1] + dy) in _FLOOR_DECOR
+                    for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1))
+                )
+            ]
             if not display_cells:
                 continue
             # No probability gate here. A terminus is already scarce -- most

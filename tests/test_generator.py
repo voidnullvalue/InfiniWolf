@@ -1834,15 +1834,14 @@ class GeneratorTests(unittest.TestCase):
             placed = [_at(things, x, y)
                       for y in range(room.y, room.y + room.h)
                       for x in range(room.x, room.x + room.w) if _at(things, x, y)]
-            # 32 is the flat skeleton the jail-remains corner vignette lays
-            # down; 40/41 are the hanging/skeleton cages; 37 is the ceiling
-            # lamp every room now gets -- everything else stays barrels, blood,
-            # and bone variants. The point of this test is that a jail draws
-            # from the grim palette rather than generic furniture, not that a
-            # jail is pitch dark.
-            self.assertTrue(set(placed) <= {23, 24, 61, 42, 64, 65, 66, 32, 40, 41, 37},
+            # 28 = HangedMan (blocking palette); 32 = flat skeleton (corner
+            # vignette); 40/41 = hanging/skeleton cages; 37 = ceiling lamp;
+            # everything else is barrels, blood, and bone variants. The test
+            # verifies the jail draws from its grim palette, not generic furniture.
+            allowed = {23, 24, 28, 40, 41, 42, 61, 64, 65, 66, 32, 37}
+            self.assertTrue(set(placed) <= allowed,
                             f"seed {seed} placed off-palette items: "
-                            f"{sorted(set(placed) - {23, 24, 61, 42, 64, 65, 66, 32, 40, 41, 37})}")
+                            f"{sorted(set(placed) - allowed)}")
             self.assertIn(37, placed, f"seed {seed} left the jail unlit")
 
     def test_decoration_zoning_splits_across_room_halves(self):
