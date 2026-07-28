@@ -64,6 +64,15 @@ GHOSTS = (224, 225, 226, 227)
 BOSSES = (HANS_GROSSE, SCHABBS, GRETEL, GIFT, FAT_FACE, MECHA_HITLER)
 # Only these native bosses declare DropItem GoldKey (wolfbosses.txt).
 KEY_DROP_BOSSES = frozenset({HANS_GROSSE, GRETEL})
+# The other four end the game where they stand. Schabbs, Gift and FatFace call
+# A_BossDeath in their death states (wolfbosses.txt), and MechaHitler spawns
+# Hitler, who calls it too (hitler.txt); ecwolf.pk3's mapinfo/wolf3d.txt binds
+# all four to `specialaction = <boss>, "Exit_Victory"` inside `adddefaultmap`,
+# and mapinfo/wolfcommon.txt sends victorynext to "EndTitle". That default map
+# block applies to our floors as well, so their kill is the end of the campaign
+# and a floor built around one of them must not also carry an elevator: the lift
+# would be unreachable content at best and a way to skip the boss at worst.
+VICTORY_BOSSES = frozenset(BOSSES) - KEY_DROP_BOSSES
 
 # Native Wolf3D map object numbers, interpreted by ECWolf's base translator.
 # ECWolf's old-format loader computes each thing's facing angle as

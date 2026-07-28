@@ -38,7 +38,7 @@ from .ledger import reserve as ledger_reserve
 def _carve_guard_recesses(tiles: list[int], things: list[int], rooms: list[Room],
                           specs: list[RoomSpec], roles: list[str],
                           reserved: set[tuple[int, int]], rng: random.Random,
-                          start: tuple[int, int], exit_room: Room,
+                          start: tuple[int, int], exit_room: Room | None,
                           chance: float = 0.40) -> tuple[GuardRecess, ...]:
     """Rarely carve one mirrored hallway pair owned by an ambush encounter.
 
@@ -266,7 +266,7 @@ def _spread_actor_cells(candidates: list[tuple[int, int]], count: int,
 def _place_population(config: CampaignConfig, number: int, rooms: list[Room],
                       tiles: list[int], things: list[int], reserved: set[tuple[int, int]],
                       rng: random.Random, start: tuple[int, int],
-                      exit_room: Room, *, patrol_chance: float = 0.15,
+                      exit_room: Room | None, *, patrol_chance: float = 0.15,
                       placements: list[SpritePlacement] | None = None,
                       actor_clearance: set[tuple[int, int]] | None = None,
                       progression_number: int | None = None,

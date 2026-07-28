@@ -37,6 +37,11 @@ class MapPreview:
                        and self.tiles[y * G.GRID + x + dx] == G.ELEVATOR_TILE
                        for dx in (-1, 1)):
                     return x, y
+        # A floor 9 whose boss ends the campaign has no lift: he is what the
+        # route leads to, so draw it to him rather than showing no route at all.
+        for index, thing in enumerate(self.things):
+            if thing in G.VICTORY_BOSSES:
+                return index % G.GRID, index // G.GRID
         return None
 
     def route(self) -> tuple[tuple[int, int], ...]:

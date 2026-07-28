@@ -298,11 +298,12 @@ def _lock_schedule(config: CampaignConfig) -> tuple[GatePlan, ...]:
             colors = (color,)
         plans[floor - 1] = GatePlan(colors)
 
-    # Floor 9's gold gate is now conditional on the boss. The arena gates the exit
-    # by position, so a boss who drops no key needs no lock -- and locking the
-    # elevator anyway would strand the player, since nothing else on the floor
-    # provides gold. Hans and Gretel keep the lock: their drop makes the kill
-    # mandatory rather than merely the crossing.
+    # Floor 9's gold gate is conditional on the boss, and so is the elevator it
+    # would lock. A boss who calls A_BossDeath ends the campaign where he falls,
+    # so his floor is built with no lift at all and there is nothing to gate;
+    # gold would also be unobtainable, since nothing else on the floor provides
+    # it. Hans and Gretel keep the lock: their drop makes the kill mandatory
+    # rather than merely the crossing.
     silver_boss_chance = (0.0, 0.0, 0.10, 0.25, 0.50, 0.70)[intensity]
     wants_silver = rng.random() < silver_boss_chance
     if choose_boss(config) in KEY_DROP_BOSSES:
@@ -312,10 +313,10 @@ def _lock_schedule(config: CampaignConfig) -> tuple[GatePlan, ...]:
     plans[9] = GatePlan()
     return tuple(plans)
 
-# Floor 9's boss. All six native WL6 bosses are eligible because the arena gates
-# the exit topologically -- everything past it is reachable only through it -- so
-# the exit no longer depends on a boss that drops a gold key. Hans and Gretel keep
-# their key drop as an additional gate when they are chosen.
+# Floor 9's boss, resolved before the floor is planned because he decides what
+# shape it has. All six native WL6 bosses are eligible: Hans and Gretel gate a
+# locked elevator with their key drop, and the other four end the campaign on
+# death, so their floors run out at the arena and are built without an exit.
 # wl6.BOSSES is already the curated native roster: it excludes FakeHitler, which
 # neither drops a key nor calls A_BossDeath, and the Spear of Destiny bosses whose
 # sprites live in SOD's VSWAP rather than wl6's.

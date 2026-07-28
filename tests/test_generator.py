@@ -15,7 +15,8 @@ from infiniwolf.config import (CampaignConfig, GenerationQuality, Intensity,
                                ThemeBias)
 from infiniwolf.generator import GenerationCancelled, generate_campaign, generate_map, validate_map, validate_package
 from infiniwolf.generator import (BOSSES, DECOR_WALLS, DOGS, ELEVATOR_TILE, FAKE_HITLER,
-                                   GHOSTS, GOLD_KEY, GRID, GUARDS, KEY_DROP_BOSSES, OFFICERS,
+                                   GHOSTS, GOLD_KEY, GRID, GUARDS, KEY_DROP_BOSSES,
+                                   VICTORY_BOSSES, OFFICERS,
                                    PUSHWALL, Room, RoomSpec, SECRET_EXIT_ZONE, SS, WALL, WALL_THEMES,
                                    AMMO, CHAINGUN, FIRST_AID, MACHINE_GUN, ONE_UP, SILVER_KEY,
                                    _DECOR_ZONES, _apply_wall_theme, _at, _decor_theme, _hint_secrets,
@@ -1579,6 +1580,75 @@ class GeneratorTests(unittest.TestCase):
             self.assertEqual(objective.treatment, "boss-drop")
             self.assertEqual(_at(level.things, *objective.cell), boss)
         self.assertGreater(len(seen_bosses), 1)
+
+    def test_a_boss_who_ends_the_game_leaves_the_floor_no_elevator(self):
+        """Schabbs, Gift, FatFace and MechaHitler call A_BossDeath, which
+        ecwolf.pk3's default map block binds to Exit_Victory: their kill ends
+        the campaign. An elevator on such a floor is unreachable content at
+        best, and at worst a way to finish floor 9 without fighting the boss,
+        since crossing the arena never required killing him. So the boss is
+        settled before the floor is planned and the plan simply has no lift."""
+        for boss in sorted(VICTORY_BOSSES):
+            level = _generate_with_retries(CampaignConfig(seed=boss), 9,
+                                           attempts=10, boss=boss)
+            self.assertIsNone(level.exit_stand)
+            self.assertNotIn(ELEVATOR_TILE, level.tiles)
+            arena = level.rooms[level.boss_arena_room]
+            boss_cell = next(index for index, thing in enumerate(level.things)
+                             if thing in BOSSES)
+            self.assertEqual(_at(level.things, boss_cell % GRID, boss_cell // GRID), boss)
+            self.assertTrue(arena.x <= boss_cell % GRID < arena.x + arena.w
+                            and arena.y <= boss_cell // GRID < arena.y + arena.h)
+            # The arena ends the mandatory route: no authored beat may sit past
+            # a kill that ends the game before the player could walk back for it.
+            # Optional rooms opening off the arena are fine -- they are taken
+            # during the fight, not after it.
+            self.assertEqual(level.critical_route[-1], level.boss_arena_room)
+            for index in range(len(level.rooms)):
+                route = generator._room_graph_path(
+                    len(level.rooms), list(level.edges), index)
+                if level.boss_arena_room in route[:-1]:
+                    self.assertNotIn(index, level.critical_route,
+                                     "a mandatory room sits past the arena")
+            self.assertNotIn("exit", level.room_roles)
+            self.assertNotIn("victory", level.room_roles)
+            self.assertNotIn(GOLD_KEY, level.things)
+            self.assertNotIn("gold", level.key_order)
+
+    def test_key_dropping_boss_keeps_its_locked_elevator_and_victory_room(self):
+        for boss in sorted(KEY_DROP_BOSSES):
+            level = _generate_with_retries(CampaignConfig(seed=boss), 9,
+                                           attempts=10, boss=boss)
+            self.assertIsNotNone(level.exit_stand)
+            self.assertIn(ELEVATOR_TILE, level.tiles)
+            self.assertIn("victory", level.room_roles)
+            self.assertIn("gold", level.key_order)
+
+    def test_boss_floor_plan_costs_the_same_rooms_either_way(self):
+        """The two tails are a re-roling of the same program, not a smaller
+        one: the victory and lift rooms become ordinary beats, so a floor 9
+        that ends at its arena still spends the full room budget."""
+        for seed in range(6):
+            rng = random.Random(seed)
+            lift = _plan_floor(rng, 3, 9, variant=generator.VARIANT_STRONGHOLD)
+            rng = random.Random(seed)
+            terminal = _plan_floor(rng, 3, 9, variant=generator.VARIANT_STRONGHOLD,
+                                   boss_ends_floor=True)
+            self.assertEqual(len(terminal.specs), len(lift.specs))
+            # Same count of connections too; a hub motif hangs its optional
+            # wings off whichever room holds the anchor, so which rooms they
+            # attach to legitimately differs between the two tails.
+            self.assertEqual(len(terminal.edges), len(lift.edges))
+            self.assertEqual(sum(spec.tier == "anchor" for spec in terminal.specs), 1)
+            # Same spine length, different last room on it: the chain stops at
+            # the arena instead of running on to a victory room and a lift.
+            terminal_roles = [spec.role for spec in terminal.specs]
+            lift_roles = [spec.role for spec in lift.specs]
+            arena = terminal_roles.index("boss-arena")
+            self.assertEqual(arena, lift_roles.index("exit"))
+            self.assertNotIn((arena, arena + 1), terminal.edges)
+            self.assertNotIn("exit", terminal_roles)
+            self.assertNotIn("victory", terminal_roles)
 
     def test_fake_hitler_is_not_a_boss_and_only_spawns_on_floor_nine(self):
         self.assertNotIn(FAKE_HITLER, BOSSES)

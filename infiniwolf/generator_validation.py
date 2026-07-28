@@ -18,7 +18,7 @@ from .wl6 import (AMMO, BOSSES, CHAINGUN, DECOR_WALLS, DOORS, DOOR_ELEVATOR,
                   PATROL_POINT_DIRECTIONS, PICKUP_CODES, PLAYER_START_CODES,
                   PURPLE_MIN_FLOOR, PUSHWALL, SECRET_EXIT_ZONE, SILVER_DOORS,
                   SILVER_KEY, SPEAR_CONCEPTS, STATIC_BLOCKING, TREASURE,
-                  _codes_for_colors, _patrol_actor_direction)
+                  VICTORY_BOSSES, _codes_for_colors, _patrol_actor_direction)
 
 # Validation imports the shared circulation vocabulary, pickup templates, and
 # critical-route threshold directly from their owning modules. Keeping those
@@ -577,21 +577,38 @@ def validate_map(level: GeneratedMap) -> None:
             tile = _at(level.tiles, *nxt)
             if _is_floor(tile) or tile in DOORS:
                 seen.add(nxt); queue.append(nxt)
-    if level.exit_stand not in seen:
-        raise ValueError("elevator standing position is unreachable")
-    sx, sy = level.exit_stand
-    # The switch must sit on the stand's east/west axis with the shaft floor
-    # opposite it: tile 21 cannot be activated from north or south.
-    if not any(_at(level.tiles, sx + dx, sy) == ELEVATOR_TILE
-               and _is_floor(_at(level.tiles, sx - dx, sy))
-               for dx in (1, -1)):
-        raise ValueError("elevator switch is not usable from its standing position")
-    switch_dx = next(dx for dx in (1, -1)
-                     if _at(level.tiles, sx + dx, sy) == ELEVATOR_TILE)
-    threshold = (sx - switch_dx, sy)
-    if any(_at(level.tiles, threshold[0], threshold[1] + side) != ELEVATOR_TILE
-           for side in (-1, 1)):
-        raise ValueError("elevator exposes a non-elevator wall inside the doorway")
+    # What the player must reach to finish the floor. Normally the elevator
+    # stand; on a floor 9 built around a boss who calls A_BossDeath there is no
+    # elevator at all and the boss himself is the terminus, because his death is
+    # what ends the campaign. Every route rule below is stated against that cell,
+    # so it keeps meaning the same thing under both contracts.
+    boss_cells = [(index % GRID, index // GRID)
+                  for index, thing in enumerate(level.things) if thing in BOSSES]
+    if level.exit_stand is None:
+        if (level.number != 9 or len(boss_cells) != 1
+                or _at(level.things, *boss_cells[0]) not in VICTORY_BOSSES):
+            raise ValueError("map has no elevator and no boss whose death ends it")
+        terminus = boss_cells[0]
+    else:
+        terminus = level.exit_stand
+    if terminus not in seen:
+        raise ValueError("the cell that ends the floor is unreachable")
+    if level.exit_stand is not None:
+        sx, sy = level.exit_stand
+        # The switch must sit on the stand's east/west axis with the shaft floor
+        # opposite it: tile 21 cannot be activated from north or south.
+        if not any(_at(level.tiles, sx + dx, sy) == ELEVATOR_TILE
+                   and _is_floor(_at(level.tiles, sx - dx, sy))
+                   for dx in (1, -1)):
+            raise ValueError("elevator switch is not usable from its standing position")
+        switch_dx = next(dx for dx in (1, -1)
+                         if _at(level.tiles, sx + dx, sy) == ELEVATOR_TILE)
+        threshold = (sx - switch_dx, sy)
+        if any(_at(level.tiles, threshold[0], threshold[1] + side) != ELEVATOR_TILE
+               for side in (-1, 1)):
+            raise ValueError("elevator exposes a non-elevator wall inside the doorway")
+    elif any(tile == ELEVATOR_TILE for tile in level.tiles):
+        raise ValueError("elevator-less floor still carries exit shaft paneling")
     if level.rooms and level.critical_route:
         distances = _floor_distances(level.tiles, level.start)
         anchor_index = next((index for index, tier in enumerate(level.room_tiers)
@@ -600,18 +617,25 @@ def validate_map(level: GeneratedMap) -> None:
         required_post_anchor = next(
             (index for index, role in enumerate(level.room_roles)
              if role in ("victory", "recovery")), None)
-        eligible_frontier = []
-        for index in range(1, len(level.rooms)):
-            room_route = _room_graph_path(len(level.rooms), list(level.edges), index)
-            if (anchor_index in room_route[:-1]
-                    and len(room_route) >= minimum_route_rooms
-                    and (required_post_anchor is None
-                         or required_post_anchor in room_route[:-1])):
-                eligible_frontier.append(index)
-        deepest_room = max((distances.get(level.rooms[index].center, 0)
-                            for index in eligible_frontier), default=1) or 1
-        if distances.get(level.exit_stand, 0) / deepest_room < 0.75:
-            raise ValueError("elevator route is shallower than 75% of the floor")
+        if level.exit_stand is None:
+            # Nothing is allowed past the arena on this floor, so the frontier a
+            # terminus may occupy is the whole floor rather than a post-anchor
+            # slice of it.
+            deepest_room = max((distances.get(room.center, 0)
+                                for room in level.rooms), default=1) or 1
+        else:
+            eligible_frontier = []
+            for index in range(1, len(level.rooms)):
+                room_route = _room_graph_path(len(level.rooms), list(level.edges), index)
+                if (anchor_index in room_route[:-1]
+                        and len(room_route) >= minimum_route_rooms
+                        and (required_post_anchor is None
+                             or required_post_anchor in room_route[:-1])):
+                    eligible_frontier.append(index)
+            deepest_room = max((distances.get(level.rooms[index].center, 0)
+                                for index in eligible_frontier), default=1) or 1
+        if distances.get(terminus, 0) / deepest_room < 0.75:
+            raise ValueError("route to the floor terminus is shallower than 75% of the floor")
         if len(level.critical_route) < minimum_route_rooms:
             raise ValueError("critical route visits too few authored rooms")
         edge_sets = [{first, second} for first, second in level.edges]
@@ -622,10 +646,10 @@ def validate_map(level: GeneratedMap) -> None:
         if (level.room_districts
                 and len({level.room_districts[index]
                          for index in level.critical_route}) < 2):
-            raise ValueError("elevator route never crosses a district boundary")
-        route = _shortest_floor_path(level.tiles, level.start, level.exit_stand)
+            raise ValueError("route to the floor terminus never crosses a district boundary")
+        route = _shortest_floor_path(level.tiles, level.start, terminus)
         if len(route) < 2 or _path_bends(route) < 2:
-            raise ValueError("elevator route is too visually direct")
+            raise ValueError("route to the floor terminus is too visually direct")
     if not level.secret_rewards:
         raise ValueError("map has no rewarded secret")
     if (len(level.secret_details) != len(level.secret_rewards)
@@ -861,7 +885,7 @@ def validate_map(level: GeneratedMap) -> None:
                 open_lock_codes=open_codes)
             if providers[color] not in normally_reachable:
                 raise ValueError(f"{color} key is unreachable at its progression stage")
-            if level.exit_stand in bypass_reachable:
+            if terminus in bypass_reachable:
                 raise ValueError(f"exit bypasses the required {color} key")
             matching = GOLD_DOORS if color == "gold" else SILVER_DOORS
             lock_sides = {(x + dx, y + dy)
@@ -872,7 +896,7 @@ def validate_map(level: GeneratedMap) -> None:
                 raise ValueError(f"{color} key shares a room with its lock")
             opened_colors.add(color)
 
-        if level.exit_stand not in _reachable(
+        if terminus not in _reachable(
                 level.tiles, level.start, locked_open=False,
                 open_lock_codes=_codes_for_colors(opened_colors)):
             raise ValueError("exit is unreachable after obtaining every key")
@@ -880,7 +904,7 @@ def validate_map(level: GeneratedMap) -> None:
         # key is treated as already collected and every secret is open.
         for color in opened_colors:
             other_colors = opened_colors - {color}
-            if level.exit_stand in _reachable(
+            if terminus in _reachable(
                     level.tiles, level.start, locked_open=False,
                     extra_passable=set(pushwalls), blocked=rests,
                     open_lock_codes=_codes_for_colors(other_colors)):
@@ -916,21 +940,22 @@ def validate_map(level: GeneratedMap) -> None:
                 or len(level.boss_arena.geometry) < 2
                 or len(level.boss_arena.decorations) < 3):
             raise ValueError("boss arena lacks its family-owned composition")
-        # The arena must be the only way past itself. This is what lets floor 9
-        # use bosses that drop no key: the exit is gated by position rather than
-        # by a lock, so the player cannot reach the elevator without crossing the
-        # arena. Measured at 96% before it was enforced -- the remaining 4% leaked
-        # through a motif or filler edge that reconnected the far side.
-        sealed = {(x, y)
-                  for y in range(arena.y, arena.y + arena.h)
-                  for x in range(arena.x, arena.x + arena.w)}
-        without_arena = _reachable(level.tiles, level.start, locked_open=True,
-                                   blocked=sealed)
-        if level.exit_stand in without_arena:
-            raise ValueError("floor 9 exit is reachable without crossing the arena")
-        for index, role in enumerate(level.room_roles):
-            if role == "victory" and level.rooms[index].center in without_arena:
-                raise ValueError("floor 9 victory room bypasses the arena")
+        if level.exit_stand is not None:
+            # The arena must be the only way past itself. The elevator is
+            # unlocked for a boss who drops no key, so position is the only gate
+            # left: the player cannot reach the lift without crossing the arena.
+            # Measured at 96% before it was enforced -- the remaining 4% leaked
+            # through a motif or filler edge that reconnected the far side.
+            sealed = {(x, y)
+                      for y in range(arena.y, arena.y + arena.h)
+                      for x in range(arena.x, arena.x + arena.w)}
+            without_arena = _reachable(level.tiles, level.start, locked_open=True,
+                                       blocked=sealed)
+            if level.exit_stand in without_arena:
+                raise ValueError("floor 9 exit is reachable without crossing the arena")
+            for index, role in enumerate(level.room_roles):
+                if role == "victory" and level.rooms[index].center in without_arena:
+                    raise ValueError("floor 9 victory room bypasses the arena")
         interior_cover = sum(
             not _is_floor(_at(level.tiles, x, y))
             for y in range(arena.y + 2, arena.y + arena.h - 2)
@@ -946,34 +971,46 @@ def validate_map(level: GeneratedMap) -> None:
                    and placement.room_index == level.preboss_room
                    for placement in level.pickup_placements):
             raise ValueError("pre-boss staging room has no authored stock-up")
-        victory = next((index for index, role in enumerate(level.room_roles)
-                        if role == "victory"), None)
-        if (victory is None or victory not in level.critical_route
-                or level.critical_route.index(victory)
-                <= level.critical_route.index(level.boss_arena_room)):
-            raise ValueError("boss arena does not lead into a victory space")
-        victory_room = level.rooms[victory]
-        if any(_at(level.things, x, y) in ENEMY_CODES
-               for y in range(victory_room.y, victory_room.y + victory_room.h)
-               for x in range(victory_room.x, victory_room.x + victory_room.w)):
-            raise ValueError("floor 9 victory room is not a calm transition")
+        if level.exit_stand is None:
+            # An elevator-less floor 9 ends at the arena, so no room may follow
+            # it on the mandatory route: a victory room or a lift room here is
+            # content the player could only reach by walking past a boss whose
+            # death would have ended the game before they came back for it.
+            # Optional rooms opening off the arena itself are fine -- those are
+            # taken during the fight, not after it.
+            if level.critical_route[-1] != level.boss_arena_room:
+                raise ValueError("boss arena does not end the elevator-less route")
+            if any(role in ("victory", "exit") for role in level.room_roles):
+                raise ValueError("elevator-less floor 9 still plans a victory or exit room")
+        else:
+            victory = next((index for index, role in enumerate(level.room_roles)
+                            if role == "victory"), None)
+            if (victory is None or victory not in level.critical_route
+                    or level.critical_route.index(victory)
+                    <= level.critical_route.index(level.boss_arena_room)):
+                raise ValueError("boss arena does not lead into a victory space")
+            victory_room = level.rooms[victory]
+            if any(_at(level.things, x, y) in ENEMY_CODES
+                   for y in range(victory_room.y, victory_room.y + victory_room.h)
+                   for x in range(victory_room.x, victory_room.x + victory_room.w)):
+                raise ValueError("floor 9 victory room is not a calm transition")
         # Floor 9 completion must be boss gated, by one of two mechanisms.
         #
         # A boss with a native gold drop keeps the locked elevator: the kill itself
         # is mandatory, because nothing else on the floor provides gold. The other
-        # four native bosses drop nothing, so their elevator is unlocked and the
-        # gate is topological -- the arena is a cut vertex, checked above, and the
-        # player cannot reach the exit without crossing it.
+        # four call A_BossDeath, which ECWolf's default map block binds to
+        # Exit_Victory, so their kill *is* the completion and the floor carries no
+        # elevator for them to skip.
         #
         # Accepting either is what lets all six bosses appear. Requiring the gold
         # objective outright restricted floor 9 to Hans and Gretel.
         gold_objectives = [objective for objective in level.key_objectives
                            if objective.color == "gold"]
-        boss_cells = [(index % GRID, index // GRID)
-                      for index, thing in enumerate(level.things)
-                      if thing in BOSSES]
         if not boss_cells:
             raise ValueError("floor 9 has no boss")
+        if (level.exit_stand is None) != (_at(level.things, *boss_cells[0])
+                                          in VICTORY_BOSSES):
+            raise ValueError("floor 9 elevator disagrees with how its boss dies")
         if gold_objectives:
             if _at(level.things, *gold_objectives[0].cell) not in KEY_DROP_BOSSES:
                 raise ValueError("floor 9 gold key is not backed by a boss drop")

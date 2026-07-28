@@ -28,7 +28,8 @@ from .wl6 import (  # noqa: F401
     DOOR_GOLD_EW, DOOR_GOLD_NS, DOOR_SILVER_EW, DOOR_SILVER_NS, GOLD_DOORS, SILVER_DOORS,
     LOCKED_DOORS, DOORS, PLAYER_START_CODES, PLAYER_START, PUSHWALL, ELEVATOR_TILE,
     DUMMY_ELEVATOR_TILE, SECRET_EXIT_ZONE, GOLD_KEY, SILVER_KEY, HANS_GROSSE, SCHABBS, GRETEL,
-    GIFT, FAT_FACE, MECHA_HITLER, FAKE_HITLER, GHOSTS, BOSSES, KEY_DROP_BOSSES, GUARDS,
+    GIFT, FAT_FACE, MECHA_HITLER, FAKE_HITLER, GHOSTS, BOSSES, KEY_DROP_BOSSES,
+    VICTORY_BOSSES, GUARDS,
     OFFICERS, SS, DOGS, PATROL_GUARDS, PATROL_OFFICERS, PATROL_SS, PATROL_DOGS,
     PATROL_POINT_CODES, PATROL_POINT_DIRECTIONS, DOG_FOOD, AMMO, FOOD, FIRST_AID, MACHINE_GUN,
     CHAINGUN, ONE_UP, TREASURE, PICKUP_CODES, ENEMY_CODES, ENEMY_FAMILIES,
@@ -65,8 +66,8 @@ from .progression import (  # noqa: F401
     _carve_secret_pocket, _hint_secrets, _key_spot, _key_spot_in_region,
     _lock_code, _minimum_critical_route_rooms, _pick_secret_variant,
     _place_arrival_elevator, _place_doors, _place_elevator, _place_secret,
-    _secret_reward, verify_exit_depth, install_secrets, select_exit_host,
-    gate_plan_for_floor, add_boss_gate_objective,
+    _secret_reward, verify_exit_depth, verify_arena_terminus, install_secrets,
+    select_exit_host, gate_plan_for_floor, add_boss_gate_objective,
 )
 from .planning import _plan_floor  # noqa: F401
 from .vignettes import plan_vignettes
@@ -164,10 +165,27 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
     circulation_skeleton = _circulation_sequence(config)[number - 1]
     progression_grammar = _progression_sequence(config)[number - 1]
     scheduled_gate = _lock_schedule(config)[number - 1]
+    is_boss = number == 9
+    # Floor 9's boss is settled before the building program exists, because it
+    # decides whether the program has a lift room at all. The campaign schedule
+    # normally supplies it so a rejected attempt cannot re-roll him; a standalone
+    # floor-9 call keeps the historic key-drop pair, which is also the first draw
+    # off this stream either way.
+    boss_choice = (boss if boss is not None
+                   else special_floors_rng.choice(tuple(sorted(KEY_DROP_BOSSES)))
+                   ) if is_boss else None
+    # Two gates, and the boss picks which one. Hans and Gretel drop a gold key
+    # natively, so their elevator stays locked and the kill is mandatory. The
+    # other four end the campaign themselves (see wl6.VICTORY_BOSSES), so their
+    # floor gets no elevator: the arena is the last room on the spine and the
+    # kill is the only way off the floor.
+    boss_locks_exit = is_boss and boss_choice in KEY_DROP_BOSSES
+    boss_ends_floor = is_boss and boss_choice in VICTORY_BOSSES
     plan = _plan_floor(planning_rng, complexity, number, variant=floor_variant,
                        skeleton=circulation_skeleton,
                        progression_grammar=progression_grammar,
-                       rare_motif=rare_motif_enabled)
+                       rare_motif=rare_motif_enabled,
+                       boss_ends_floor=boss_ends_floor)
     placed = _place_planned_rooms(geometry_rng, plan, number)
     rooms = placed.rooms
     edges = placed.edges
@@ -192,19 +210,11 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
                       or (floor_variant.name == "catacombs" and spec.tier == "anchor"))
         if structural:
             _add_pillars(tiles, room, geometry_rng, chance=floor_variant.pillar_chance)
-    is_boss = number == 9
     # Bounded visual modifiers for this floor's place in the campaign. A
     # standalone call gets the neutral phase, so single-map generation is
     # unaffected by an arc it has no position in.
     phase = phase or AestheticPhase(1.0, 1.0, 1.0, 1.0, 1.0)
-    # Floor 9's exit is gated two ways, and which one applies depends on the boss.
-    # Hans and Gretel drop a gold key natively, so their elevator stays locked and
-    # the kill itself is mandatory. The other four bosses drop nothing, so locking
-    # the elevator would strand the player -- for them the arena gates the exit by
-    # position instead, which validate_map now enforces as a cut vertex.
-    boss_locks_exit = is_boss and (
-        (boss if boss is not None else HANS_GROSSE) in KEY_DROP_BOSSES)
-    planned_exit_index = roles.index("exit")
+    planned_exit_index = roles.index("exit") if "exit" in roles else -1
     anchor_index = next(index for index, spec in enumerate(specs)
                         if spec.tier == "anchor")
     minimum_route_rooms = _minimum_critical_route_rooms(roles)
@@ -221,13 +231,20 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
         arrival = _place_arrival_elevator(
             tiles, rooms[0], rooms[first_neighbor].center, geometry_rng,
             floor_variant.name)
-    (preplaced_exit_index, preplaced_exit_route, exit_stand,
-     protected_elevators) = select_exit_host(
-         tiles, rooms, edges, anchor_index=anchor_index,
-         minimum_route_rooms=minimum_route_rooms,
-         required_post_anchor=required_post_anchor,
-         planned_exit_index=planned_exit_index, boss_locks_exit=boss_locks_exit,
-         arrival=arrival)
+    if boss_ends_floor:
+        # No lift to host, so nothing to reserve for one: the arena is the
+        # terminus and the route to it is the plan's own spine.
+        preplaced_exit_index, preplaced_exit_route = -1, []
+        exit_stand = None
+        protected_elevators = set(arrival.footprint) if arrival else set()
+    else:
+        (preplaced_exit_index, preplaced_exit_route, exit_stand,
+         protected_elevators) = select_exit_host(
+             tiles, rooms, edges, anchor_index=anchor_index,
+             minimum_route_rooms=minimum_route_rooms,
+             required_post_anchor=required_post_anchor,
+             planned_exit_index=planned_exit_index, boss_locks_exit=boss_locks_exit,
+             arrival=arrival)
     door_zones: set[tuple[int, int]] = ({arrival.portal} if arrival else set())
     paths = [_carve_connection(tiles, rooms[a], rooms[b], geometry_rng, complexity,
                                door_zones, protected_elevators)
@@ -248,15 +265,21 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
     _set(things, *start, PLAYER_START_CODES[facing])
     if arrival is not None and arrival.item is not None:
         _set(things, *arrival.item)
-    exit_room = rooms[preplaced_exit_index]
-    # The elevator belongs near the deepest authored frontier, after the
-    # anchor/climax room and at the end of a route containing most of the
-    # mandatory spine. The old behavior always tried the nominal exit first,
-    # even when a much deeper wing made it a trivial early solution.
-    exit_index, critical_route = verify_exit_depth(
-        tiles, rooms, edges, roles, start, exit_stand, anchor_index,
-        minimum_route_rooms, required_post_anchor, preplaced_exit_index,
-        preplaced_exit_route, planned_exit_index)
+    exit_room = rooms[preplaced_exit_index] if exit_stand is not None else None
+    if boss_ends_floor:
+        # The arena is the last authored room, so the mandatory route is the
+        # graph path to it and there is no shallower alternative to reject.
+        critical_route = verify_arena_terminus(
+            tiles, rooms, edges, start, anchor_index, minimum_route_rooms)
+    else:
+        # The elevator belongs near the deepest authored frontier, after the
+        # anchor/climax room and at the end of a route containing most of the
+        # mandatory spine. The old behavior always tried the nominal exit first,
+        # even when a much deeper wing made it a trivial early solution.
+        exit_index, critical_route = verify_exit_depth(
+            tiles, rooms, edges, roles, start, exit_stand, anchor_index,
+            minimum_route_rooms, required_post_anchor, preplaced_exit_index,
+            preplaced_exit_route, planned_exit_index)
     notch_cells = {cell for cells in notch_anchors.values() for cell in cells}
     # A Ledger is a set subclass, so every existing .add/.update/in/|/- keeps
     # working and adopting it cannot change generated output. Attribution is added
@@ -264,7 +287,8 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
     # ledger.report() shows how far that migration has reached.
     reserved = Ledger()
     reserved.reserve([start], "progression", "player-start")
-    reserved.reserve([exit_stand], "progression", "exit-elevator-stand")
+    if exit_stand is not None:
+        reserved.reserve([exit_stand], "progression", "exit-elevator-stand")
     reserved.reserve(notch_cells, "geometry", "shape-anchor", hard=False)
     if arrival:
         reserved.reserve(arrival.clearance, "progression", "arrival-clearance")
@@ -371,10 +395,6 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
     if is_boss:
         boss_index = anchor_index
         boss_room = rooms[boss_index]
-        # Chosen by the campaign schedule so a rejected attempt cannot re-roll
-        # it. Standalone calls fall back to the historic key-drop pair.
-        boss_choice = boss if boss is not None else special_floors_rng.choice(
-            tuple(sorted(KEY_DROP_BOSSES)))
         boss_arena_detail = _prepare_boss_arena(
             tiles, things, boss_room, reserved, special_floors_rng, plan.special_family)
         realized_shapes[boss_index] = f"boss-{boss_arena_detail.profile}"
@@ -388,9 +408,9 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
             preboss_index = None
         boss_cell = next((index % GRID, index // GRID)
                          for index, thing in enumerate(things) if thing == boss)
-        # Only a boss with a native gold drop contributes a key objective. For the
-        # others the arena gates the exit by position instead, so no gold exists
-        # on the floor and claiming otherwise would fail key solvency.
+        # Only a boss with a native gold drop contributes a key objective. The
+        # others end the floor by dying, so no gold exists on it and claiming
+        # otherwise would fail key solvency.
         if boss_locks_exit:
             key_objectives, locks, key_order = add_boss_gate_objective(
                 key_objectives, locks, key_order, boss_cell, boss_index)
@@ -530,7 +550,10 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
     final_distances = _floor_distances(tiles, start)
     deepest_room_distance = max((final_distances.get(room.center, 0) for room in rooms),
                                 default=1) or 1
-    exit_depth_ratio = final_distances.get(exit_stand, 0) / deepest_room_distance
+    # How deep the thing that ends the floor sits: the elevator stand, or the
+    # boss himself when killing him is what ends it.
+    terminus = exit_stand if exit_stand is not None else rooms[anchor_index].center
+    exit_depth_ratio = final_distances.get(terminus, 0) / deepest_room_distance
     layout_signature = _layout_signature(
         plan, specs, realized_shapes, guard_recesses, encounters, edges)
     realized_vignettes = tuple(

@@ -38,7 +38,7 @@ def _room_identities(rooms: list[Room], specs: list[RoomSpec], districts: list[i
                      jail_rooms: frozenset[int],
                      component_of: dict[tuple[int, int], int],
                      group_theme: dict[int, tuple[int, tuple[int, ...]]],
-                     exit_room: Room, boss_room: Room | None = None,
+                     exit_room: Room | None, boss_room: Room | None = None,
                      special_family: str = "standard",
                      key_objectives: tuple[KeyObjective, ...] = ()
                      ) -> list[RoomIdentity]:

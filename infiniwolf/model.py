@@ -345,7 +345,9 @@ class GeneratedMap:
     tiles: list[int]
     things: list[int]
     start: tuple[int, int]
-    exit_stand: tuple[int, int]
+    # None only on a floor 9 whose boss ends the campaign when he dies: that
+    # floor has no elevator, because the kill is the exit (see wl6.VICTORY_BOSSES).
+    exit_stand: tuple[int, int] | None
     secret_rewards: list[tuple[int, int]]
     seed: int
     has_secret_exit: bool = False

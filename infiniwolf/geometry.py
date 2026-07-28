@@ -170,8 +170,13 @@ def _room_size(rng: random.Random, tier: str, number: int = 0) -> tuple[int, int
 
 
 def _place_planned_rooms(rng: random.Random, plan: FloorPlan, number: int = 0) -> PlacedPlan:
+    # The spine is the run of rooms up to and including the plan's terminus:
+    # the elevator room normally, the boss arena on a floor 9 whose boss ends
+    # the campaign himself and therefore has no lift room to reach.
+    terminus = ("exit" if any(spec.role == "exit" for spec in plan.specs)
+                else "boss-arena")
     spine_count = next(index for index, spec in enumerate(plan.specs)
-                       if spec.role == "exit") + 1
+                       if spec.role == terminus) + 1
     sizes = [_room_size(rng, spec.tier, number) for spec in plan.specs]
     for index, spec in enumerate(plan.specs):
         if spec.motif == "hallway-arm":

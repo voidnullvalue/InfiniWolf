@@ -25,7 +25,8 @@ def _plan_floor(rng: random.Random, complexity: int, number: int,
                 variant: FloorVariant | None = None,
                 skeleton: str | None = None,
                 progression_grammar: str | None = None,
-                rare_motif: bool = False) -> FloorPlan:
+                rare_motif: bool = False,
+                boss_ends_floor: bool = False) -> FloorPlan:
     variant = variant or FloorVariant("default")
     skeleton = skeleton or rng.choice(CIRCULATION_SKELETONS)
     if skeleton not in CIRCULATION_SKELETONS:
@@ -63,7 +64,18 @@ def _plan_floor(rng: random.Random, complexity: int, number: int,
                             for _ in range(beat_count)]
     tiers += ["anchor", rng.choice(("closet", "standard")), "standard"]
     roles = ["start"] + ["beat"] * beat_count + ["climax", "relief", "exit"]
-    if number == 9:
+    if number == 9 and boss_ends_floor:
+        # A boss who calls A_BossDeath ends the campaign where he falls, so this
+        # floor has no elevator to walk to and nothing to put after the arena:
+        # the spine runs out at the anchor. Two rooms that would have been the
+        # victory transition and the lift room stay in the program as ordinary
+        # beats before the staging pause, which keeps the room count, the spine
+        # count and every draw above identical to the elevator plan.
+        roles[-4:] = ["beat", "beat", "staging", "boss-arena"]
+        tiers[-3] = "standard"
+        tiers[-2] = "standard"
+        tiers[-1] = "anchor"
+    elif number == 9:
         # The final four beats are an explicit dramatic sequence. The arena
         # remains the unique anchor; the room before it is a readable pause,
         # and the room after it is a victory transition to the elevator.

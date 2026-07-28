@@ -36,6 +36,13 @@ class PlanningTests(unittest.TestCase):
                     self.assertEqual(
                         len(anchors), 1,
                         f"{len(anchors)} anchors: {[s.role for s in anchors]}")
+            with self.subTest(seed=seed, floor="9-no-elevator"):
+                # The arena moves to the end of the spine when the boss ends the
+                # campaign himself, taking the anchor tier with it.
+                specs = plan(seed, number=9, boss_ends_floor=True).specs
+                anchors = [s for s in specs if s.tier == "anchor"]
+                self.assertEqual(len(anchors), 1)
+                self.assertEqual(anchors[0].role, "boss-arena")
 
     def test_plan_graph_is_connected_and_start_is_room_zero(self):
         for seed in self.SEEDS:
@@ -63,6 +70,20 @@ class PlanningTests(unittest.TestCase):
                     self.assertTrue(p.critical, "plan recorded no critical spine")
                     self.assertIn(roles.index("exit"), p.critical,
                                   "the exit is not on the mandatory route")
+            with self.subTest(seed=seed, floor="9-no-elevator"):
+                # A floor 9 whose boss ends the game has no elevator to reach:
+                # the arena is the terminus and must be the mandatory route's
+                # last room, with nothing planned past it.
+                p = plan(seed, number=9, boss_ends_floor=True)
+                roles = [s.role for s in p.specs]
+                self.assertNotIn("exit", roles)
+                self.assertNotIn("victory", roles)
+                terminus = roles.index("boss-arena")
+                self.assertIn(terminus, p.critical)
+                # The spine chain stops here. Optional rooms may still open off
+                # the arena -- they are grabbed during the fight, not after it --
+                # but no further mandatory beat follows.
+                self.assertNotIn((terminus, terminus + 1), p.edges)
 
     def test_special_floors_carry_their_authored_spine(self):
         """Floor 9 must plan a boss arena, floor 10 a premium vault.
@@ -75,6 +96,10 @@ class PlanningTests(unittest.TestCase):
                 nine = [s.role for s in plan(seed, number=9).specs]
                 self.assertIn("boss-arena", nine)
                 self.assertIn("victory", nine)
+                terminal = [s.role for s in
+                            plan(seed, number=9, boss_ends_floor=True).specs]
+                self.assertIn("boss-arena", terminal)
+                self.assertIn("staging", terminal)
                 ten = [s.role for s in plan(seed, number=10).specs]
                 self.assertIn("premium-vault", ten)
                 self.assertIn("recovery", ten)

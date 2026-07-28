@@ -95,7 +95,7 @@ def select_exit_host(tiles: list[int], rooms: list[Room], edges: list[tuple[int,
 
 def gate_plan_for_floor(is_boss: bool, scheduled_gate: GatePlan,
                         critical_route: list[int], anchor_index: int,
-                        rooms: list[Room], exit_stand: tuple[int, int]
+                        rooms: list[Room], exit_stand: tuple[int, int] | None
                         ) -> tuple[GatePlan, list[int], tuple[int, int]]:
     """Choose the route and target governed by this floor's progression gate."""
     if is_boss and scheduled_gate.colors[:1] == ("silver",):
@@ -874,8 +874,29 @@ def verify_exit_depth(tiles: list[int], rooms: list[Room], edges,
     return exit_index, critical_route
 
 
+def verify_arena_terminus(tiles: list[int], rooms: list[Room], edges,
+                          start: tuple[int, int], anchor_index: int,
+                          minimum_route_rooms: int) -> list[int]:
+    """Confirm the boss arena is deep enough to be the whole floor's terminus.
+
+    The elevator-less floor 9 has no room to reassign and no shallower candidate
+    to reject, so this asks the two questions verify_exit_depth asks of a lift:
+    does reaching it cross most of the authored spine, and is it at the deep end
+    of what the player can walk to. Measured against every room rather than a
+    post-anchor frontier, because on this floor there is nothing past the anchor.
+    """
+    route = _room_graph_path(len(rooms), edges, anchor_index)
+    if len(route) < minimum_route_rooms:
+        raise ValueError("boss arena does not end a long enough mandatory route")
+    distances = _floor_distances(tiles, start)
+    deepest = max((distances.get(room.center, 0) for room in rooms), default=1) or 1
+    if distances.get(rooms[anchor_index].center, 0) / deepest < 0.75:
+        raise ValueError("boss arena is shallower than 75% of the floor")
+    return route
+
+
 def install_secrets(canvas: FloorCanvas, config: CampaignConfig, number: int,
-                    rng: random.Random, *, arrival, exit_room: Room,
+                    rng: random.Random, *, arrival, exit_room: Room | None,
                     anchor_index: int, critical_route, rare_profile,
                     secret_exit: bool) -> SecretInstallation:
     """Carve the floor's sealed reward pockets and, when scheduled, its secret lift.
@@ -931,13 +952,17 @@ def install_secrets(canvas: FloorCanvas, config: CampaignConfig, number: int,
         # optional room even when one is deep within the explorable floor.
         host_depth_scale = (max((room_distances[room] for room in candidates),
                                 default=max_room_distance) or 1)
+        # Only floors 1-6 host the secret lift, and those always have a normal
+        # one to stay away from; the start is a harmless stand-in if that ever
+        # stops being true.
+        lift_center = exit_room.center if exit_room is not None else start
         ranked_hosts = sorted(candidates, key=lambda room: (
             room_distances[room] / host_depth_scale >= 0.45,
             room_index_by_room[room] not in critical_route,
             roles[room_index_by_room[room]] in ("branch", "ring", "relief", "closet"),
             room_distances[room] / host_depth_scale,
-            abs(room.center[0] - exit_room.center[0])
-            + abs(room.center[1] - exit_room.center[1]),
+            abs(room.center[0] - lift_center[0])
+            + abs(room.center[1] - lift_center[1]),
             room.w * room.h), reverse=True)
         ranked_hosts = [room for room in ranked_hosts
                         if room_distances[room] / host_depth_scale >= 0.45]

@@ -82,8 +82,8 @@ flowchart TD
 
         J4 --> K{Floor 9 boss?}
         K -- yes --> K1[Prepare family-owned boss arena profile<br/>themed geometry, decoration, cover, and supplies]
-        K1 --> K2[Choose one of six native bosses<br/>Hans/Gretel key-gate; others arena cut-vertex gate]
-        K2 --> K3[Stock pre-boss staging room<br/>keep post-boss victory room calm]
+        K1 --> K2[Place the boss chosen before planning<br/>Hans/Gretel key-gate a lift; the other four end the game on death]
+        K2 --> K3[Stock pre-boss staging room<br/>keep post-boss victory room calm, where there is one]
         K -- no --> M[Resolve finalized room identity]
         K3 --> M
         M --> M1[Assign sound zones and district wall-material groups]
@@ -213,7 +213,7 @@ architecture; the table is who owns which decision within it.
 | `quality.py` | Soft critique; cannot reach validation |
 | `generator_validation.py` | Hard validation. Non-negotiable, raises |
 | `generator_artifacts.py` | WAD/PK3 encoding and package verification |
-| `generator.py` | Phase order, floor-seed derivation, and the `boss_locks_exit` integration seam |
+| `generator.py` | Phase order, floor-seed derivation, and the `boss_locks_exit` / `boss_ends_floor` integration seam |
 
 | Building circulation | `_plan_floor` + `_place_planned_rooms` | Skeleton or hallway-first form, district mode, corridor width, occupied arms, suite/branch role |
 | Floor arrival | `_place_arrival_elevator` | Horizontal axis, complete working-door car, contextual item, player position and facing |
@@ -239,7 +239,7 @@ architecture; the table is who owns which decision within it.
 | Candidate selection | `campaign._best_candidate` | Ranks only hard-valid maps, flag count dominating contrast, pool size set by `generation_quality` |
 | Shared void | `carve_shared_void` | One per campaign at most; interior rock pocket overlooked by two or more rooms, sealed by a complete pillar screen, containment proved with the screens blocked, no pickups or actors inside |
 | Authored view | `plan_authored_sightlines` | The line ahead from a primary landmark's approach doorway, reserved so no prop fills it, truncated at anything already solid |
-| Floor 9 boss gate | `campaign.choose_boss` + `progression` + `validate_map` | Gold-locked elevator when the boss drops a key, otherwise the arena is a cut vertex and the exit and victory room are unreachable without crossing it |
+| Floor 9 boss gate | `campaign.choose_boss` + `planning` + `progression` + `validate_map` | Boss resolved before the floor is planned. Gold-locked elevator when he drops a key and the arena is a cut vertex; when he calls `A_BossDeath` the floor is planned with no victory or exit room, carries no elevator paneling, and its critical route ends at the arena |
 | Hallway furnishing | `_place_decorations` area gate | Rooms are skipped by floor area (< 20 cells), not by minimum dimension, so three-wide corridors are furnished along their flanking lanes; the centre lane of any room three cells across is reserved outright, since reachability still validates a plugged corridor |
 | Symmetric room profiles | shape carvers + `_place_decorations` | Bounded mirrored structure and matching themed accents |
 
