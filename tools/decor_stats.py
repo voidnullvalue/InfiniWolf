@@ -28,6 +28,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+from collections import Counter
 import glob
 import json
 import statistics
@@ -93,6 +94,8 @@ def measure(tiles: list[int], things: list[int]) -> dict:
         "types": len({at(things, *c) for c in cells}),
         "fixtures": sum(1 for c in cells if at(things, *c) in FIXTURES),
         "items": [at(things, *c) for c in cells],
+        "pillars": sum(at(things, *c) == 30 for c in cells),
+        "pillar_density": sum(at(things, *c) == 30 for c in cells) / floor_cells if floor_cells else 0.0,
     }
 
 
@@ -157,6 +160,12 @@ def load_generated(seeds: int, floors: tuple[int, ...]) -> list[tuple[str, dict]
                 stats["rooms"] = rooms
                 stats["rooms_lit"] = lit
                 stats["rooms_furnished"] = furnished
+                stats["pillar_rooms"] = [sum(at(result.things, x, y) == 30
+                    for y in range(room.y, room.y + room.h)
+                    for x in range(room.x, room.x + room.w)) for room in result.rooms]
+                stats["pillar_sources"] = dict(Counter(
+                    placement.source for placement in result.pillar_placements
+                    for _ in placement.cells))
                 out.append((f"seed{index}/floor{floor}", stats))
                 break
     return out
@@ -174,6 +183,11 @@ def summarise(rows: list[tuple[str, dict]]) -> dict:
     # Room-level coverage is only knowable for generated floors (the authored
     # corpus has no room list), so it stays absent rather than faked.
     total_rooms = sum(r.get("rooms", 0) for _, r in rows)
+    pillar_counts = [r["pillars"] for _, r in rows]
+    pillar_rooms = [count for _, r in rows for count in r.get("pillar_rooms", ())]
+    pillar_sources = Counter(source for _, r in rows
+                             for source, count in r.get("pillar_sources", {}).items()
+                             for _ in range(count))
     return {
         "maps": len(rows),
         "rooms_lit": (sum(r.get("rooms_lit", 0) for _, r in rows) / total_rooms
@@ -183,6 +197,13 @@ def summarise(rows: list[tuple[str, dict]]) -> dict:
         "decor_per_map": mean("decor"),
         "blocking_per_map": mean("blocking"),
         "density": mean("density"),
+        "pillars_per_map": mean("pillars"),
+        "pillar_density": mean("pillar_density"),
+        "pillar_median": statistics.median(pillar_counts) if pillar_counts else 0.0,
+        "pillar_max": max(pillar_counts, default=0),
+        "pillar_p95": (sorted(pillar_counts)[max(0, round(0.95 * (len(pillar_counts) - 1)))] if pillar_counts else 0),
+        "pillars_per_room": statistics.fmean(pillar_rooms) if pillar_rooms else None,
+        "pillar_sources": dict(pillar_sources),
         "wall_adj": mean("wall_adj"),
         "clustered": mean("clustered"),
         "types_per_map": mean("types"),
@@ -197,6 +218,9 @@ ROW_SPECS = (
     ("decorations / map", "decor_per_map", "{:.1f}"),
     ("blocking / map", "blocking_per_map", "{:.1f}"),
     ("decor per floor cell", "density", "{:.3f}"),
+    ("WhitePillar / map", "pillars_per_map", "{:.1f}"),
+    ("WhitePillar / floor cell", "pillar_density", "{:.4f}"),
+    ("WhitePillar median", "pillar_median", "{:.1f}"),
     ("blocking wall-adjacency", "wall_adj", "{:.1%}"),
     ("clustering", "clustered", "{:.1%}"),
     ("distinct item types", "types_per_map", "{:.1f}"),
