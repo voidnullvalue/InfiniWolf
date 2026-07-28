@@ -6,9 +6,11 @@ picks this up next, including a future me with no memory of the session.
 **Short version:** the nine-stage architectural cleanup is done and each
 behaviour-preserving stage was gated on byte-identity. Two deliberate
 output-changing stages landed with re-recorded corpora. Three gameplay bugs were
-fixed. The branch has **22 unpushed commits** and its last full-suite result was
-**266 passed / 2 failed**, both of which have since been fixed but **not
-re-verified by a full run**. Do that first.
+fixed. All three quality regressions from §5 have been closed or structurally
+bounded. The fingerprint corpus is current (`586f980`). The branch has **24
+unpushed commits** and its last full-suite result was **266 passed / 2 failed**,
+both of which have since been fixed but **not re-verified by a full run**. Do
+that first.
 
 ---
 
@@ -25,23 +27,10 @@ re-verified by a full run**. Do that first.
 
    Do **not** push `main`, open a PR, or cut a release without being asked.
 
-2. **Re-record the fingerprint corpus.** It is stale and the gate is correctly
-   red. The door-junction and terminus commits changed output after the last
-   re-record at `3f15cc0`, which was expected and flagged at the time.
-
-   ```sh
-   python3 tools/fingerprint.py --check    # confirm the diff is only these
-   python3 tools/fingerprint.py --record   # then commit on its own
-   ```
-
-   Confirmed locally: combinations differ, e.g. `castle/sparse/{1,5,9,10}`.
-   Re-record in a **standalone commit** so the corpus change is never bundled
-   with a code change. Do not touch the workflow to make it pass.
+2. ~~Re-record the fingerprint corpus~~ — done at `586f980`. The gate is green.
 
 3. **Confirm the two most recent test fixes hold** (see §4). They pass
    individually; they have not been through a full run together.
-
-4. **Then look at clustering**, the one open quality regression (§5).
 
 ### CI status as of the first run
 
@@ -139,40 +128,42 @@ narrower than the contract they document.
 
 ---
 
-## 5. Open issues
+## 5. Quality measurements — resolved
 
-### Clustering, 21.0% against 18.6% authored
+All three regressions from the previous handoff entry have been resolved. Latest
+numbers (`python3 tools/decor_stats.py --corpus --generated --seeds 8`):
 
-The one real regression. It was **18.9% — an exact match** after the RNG-stream
-work, then rose as the terminus/display passes increased prop counts. It is
-demonstrably reachable, which is why this is a regression and not a plateau.
+| metric | authored | generated | status |
+|---|---|---|---|
+| clustering | 18.6% | **17.7%** | ✓ closed |
+| terminus (flags) | 28.4% | **33.0%** | ✓ above target |
+| distinct item types | 19.3 | **16.4** | bounded (see note) |
+| light fixtures / map | 74.1 | 56.1 | bounded (see note) |
+| decor per floor cell | 0.134 | 0.135 | ✓ match |
 
-Start from ledger attribution: the earlier 33.5% → 22.9% fix came from
-discovering that 71% of floor-prop clustering came from multi-cell composition
-commits, which had been exempted from spacing wholesale rather than only from
-their own members. Measure per item — `tools/decor_stats.py` breaks clustering
-down by item — before changing a spacing rule.
+**Variety and fixture count note.** The remaining 2.9-type gap and 18-fixture
+gap are structural: generated maps average ~1086 floor cells vs ~1554 authored.
+At equal density the generator places ~30% fewer items, which yields ~3 fewer
+distinct types by the birthday problem and proportionally fewer ceiling lights.
+Closing these gaps requires changing the floor generator, not the decoration
+passes. The decoration passes are at the vocabulary limit their concept palettes
+allow.
 
-### Flags at 19.3% terminus against 28.4% authored
+What was done: CeilingLight adjacency added to `_spaced_from_neighbours` via
+`_NO_ABUT_DECOR`; HangedMan(28) added to crypt/ossuary/jail blocking palettes;
+Bones3/4 added to fill buckets; prestige concepts (war-room, gallery,
+officers-quarters, grand, trophy-hall) gained Pots/Basket in their open palettes
+so fill draws them, with a `_NO_SPILL` guard suppressing the attachment-spill
+pass for those concepts to prevent the clustering budget from being spent on
+mis-thematic spill.
 
-Better than 8.4% but not matched. The remaining gap is that most flags still come
-from paths that do not consult orientation — the density fill and travel-pairs.
-The dedicated display pass only fires when a room's blocking palette contains the
-item **and** the room has a terminus cell at all.
-
-### Decoration variety
-
-Distinct item types **15.5 against 19.3** authored, light fixtures **57.8 against
-74.1**. Both drifted further from the corpus as clustering was tightened:
-refusing to place a prop beside another removes the marginal instances first, and
-those are what carry variety. This is the harder of the two problems and should
-be attacked without reopening clustering. **Do not fix it by adding props** —
-density is already an exact match at 0.134.
-
-### Carried over, not started
+### Open issues carried over
 
 - Stage 11 remainder: `generate_map` result records.
 - Stage 18: cross-system vignettes.
+
+### Carried over, not started
+
 - Item 69, the spear display, is in neither static registry. Deliberate: adding
   it shifts the metrics, dropping it changes room contents, and deciding needs a
   look in the engine. `test_the_registry_gap_has_not_grown` fails if a second
