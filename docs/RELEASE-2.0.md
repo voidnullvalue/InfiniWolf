@@ -70,9 +70,7 @@ Stated rather than hidden, with what is known about each.
 - **Positional boss gating is weaker than a key gate.** It forces the player to
   enter and cross the arena, not to kill its occupant. Crossing a fifteen-tile room
   under fire is a fight in practice, but the two contracts are not identical.
-- **Four of five `AestheticPhase` fields are unused.** Declared and recorded, not
-  consumed. Tilting decoration's clutter palette by them produced no measurable
-  change, because concept gating already decides what a room may hold.
+- `AestheticPhase` fields are consumed by bounded, named policies: damage affects wall fabric; orderliness affects composition organization; occupation and abandonment bias existing compatible evidence of use or neglect; monumentality affects formal landmark composition rather than generic prop density.
 
 ---
 

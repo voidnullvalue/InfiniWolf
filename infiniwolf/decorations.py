@@ -22,7 +22,7 @@ import random
 from .grid import (_at, _inside_room, _is_floor, _reachable, _set,
                    qualifying_dead_end_alcoves)
 from .ledger import release as ledger_release, reserve as ledger_reserve
-from .model import Room, RoomIdentity, VineScreen
+from .model import AestheticPhase, Room, RoomIdentity, VineScreen
 from .placement import _room_anchors, _room_traversal_frame, _traversal_pair_candidates
 from .room_policy import base_theme as _decor_theme
 from .wl6 import (DECOR_WALLS, DOORS, ENEMY_CODES, GRID, LIGHTING_FAMILY_ITEMS,
@@ -134,6 +134,38 @@ SKY_VISTA_INTERIOR_CHANCE = 0.18
 # of armor, and flags.
 _FRAMEABLE = frozenset({26, 30, 31, 34, 39, 62})
 
+
+class _PillarPolicy:
+    """The single owner of WhitePillar placement limits and provenance."""
+    _ORDINARY_CONCEPTS = frozenset({"grand", "courtyard", "gallery", "trophy-hall", "war-room", "crypt", "ossuary", "burial-chamber"})
+    _ARCHITECTURAL = frozenset({"sky-vista", "colonnade", "courtyard-centerpiece", "divider", "pillar-signature", "architectural-frame"})
+
+    def __init__(self, tiles: list[int], things: list[int], rooms: list[Room]) -> None:
+        floor_cells = sum(1 for tile in tiles if _is_floor(tile))
+        self.map_cap = max(6, round(floor_cells * 0.0134))
+        self.map_count = sum(thing == 30 for thing in things)
+        self.room_counts = [sum(_at(things, x, y) == 30 for y in range(room.y, room.y + room.h) for x in range(room.x, room.x + room.w)) for room in rooms]
+        self.structural_rooms: set[int] = set()
+        self.placements: list[PillarPlacement] = []
+
+    def permits(self, room_index: int, concept: str, pieces, source: str) -> bool:
+        cells = tuple(cell for cell, item in pieces if item == 30)
+        if not cells:
+            return True
+        if source not in self._ARCHITECTURAL:
+            if concept not in self._ORDINARY_CONCEPTS or room_index in self.structural_rooms or self.room_counts[room_index] + len(cells) > 2:
+                return False
+        return self.map_count + len(cells) <= self.map_cap
+
+    def record(self, room_index: int, pieces, source: str) -> None:
+        cells = tuple(cell for cell, item in pieces if item == 30)
+        if cells:
+            self.map_count += len(cells)
+            self.room_counts[room_index] += len(cells)
+            if source in self._ARCHITECTURAL:
+                self.structural_rooms.add(room_index)
+            self.placements.append(PillarPlacement(source, room_index, cells))
+
 # One motif per room, chosen deliberately.
 #
 # These compositions used to be a sequence of independent probability gates that
@@ -185,6 +217,46 @@ _MOTIF_ABSTENTION = 0.18
 # A weight at or above this means "choose this if it is eligible", bypassing
 # both the weighted draw and the abstention.
 _MOTIF_FORCED = 100.0
+
+# The campaign aesthetic is intentionally owned by a few composition decisions,
+# rather than being a multiplier sprinkled across every decoration pass.  These
+# sets describe evidence of current use versus neglect in the existing WL6
+# vocabulary; concept palettes still remain the hard eligibility boundary.
+_OCCUPIED_OPEN = frozenset({27, 46, 67})       # fixtures, baskets, supplies
+_ABANDONED_OPEN = frozenset({23, 32, 42, 61, 64, 65, 66})
+
+
+def _phase_item_weight(item: int, phase: AestheticPhase) -> float:
+    """Return the narrow campaign-era bias for an already eligible prop."""
+    if item in _OCCUPIED_OPEN:
+        return phase.occupation / max(phase.abandonment, 0.01)
+    if item in _ABANDONED_OPEN:
+        return phase.abandonment / max(phase.occupation, 0.01)
+    return 1.0
+
+
+def _phase_choice(items: list[int], rng: random.Random, phase: AestheticPhase) -> int:
+    """Choose an eligible open prop with the campaign-era evidence bias."""
+    return rng.choices(items, weights=[_phase_item_weight(item, phase) for item in items], k=1)[0]
+
+
+def _phase_motif_overrides(phase: AestheticPhase) -> dict[str, float]:
+    """Map the visual arc onto explicit organization/landmark policies.
+
+    Orderliness chooses between deliberate pairs and irregular corner spill.
+    Monumentality only promotes formal architectural compositions; it never
+    changes the generic furniture budget or turns into a pillar multiplier.
+    """
+    return {
+        "travel-pair": _MOTIF_WEIGHTS["travel-pair"] * phase.orderliness,
+        "doorway-frame": _MOTIF_WEIGHTS["doorway-frame"] * phase.orderliness,
+        "landmark-frame": (_MOTIF_WEIGHTS["landmark-frame"]
+                           * phase.orderliness * phase.monumentality),
+        "colonnade": _MOTIF_WEIGHTS["colonnade"] * phase.monumentality,
+        "divider": _MOTIF_WEIGHTS["divider"] * phase.monumentality,
+        "corner-stash": (_MOTIF_WEIGHTS["corner-stash"]
+                         * phase.abandonment / max(phase.orderliness, 0.01)),
+    }
 
 
 def _choose_motif(eligible: dict[str, bool], rng: random.Random,
@@ -696,9 +768,11 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
                        traversal_pair_chance: float | None = None,
                        hallway_vine_budget: int = 0,
                        allow_sky_vista: bool = True,
+                       phase: AestheticPhase | None = None,
                        force_motif: str = "",
+                       vignette_motifs: dict[int, str] | None = None,
                        ) -> tuple[tuple[str, ...], tuple[VineScreen, ...],
-                                  tuple[str, ...]]:
+                                  tuple[str, ...], tuple[PillarPlacement, ...]]:
     """Place purposeful, themed furniture in rooms following community-map patterns.
 
     Blocking statics go in deliberate arrangements (landmark-wall frames,
@@ -713,6 +787,9 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
     niche piece in each small dead-end alcove pocket.
     """
     baseline = len(_reachable(tiles, start, locked_open=True))
+    # A default keeps direct unit callers compatible while generation passes the
+    # campaign-derived phase explicitly.
+    phase = phase or AestheticPhase(1.0, 1.0, 1.0, 1.0, 1.0)
     blocked_cells: set[tuple[int, int]] = set()
     _roles = roles or ["beat"] * len(rooms)
     _tiers = [s.tier for s in specs] if specs else ["standard"] * len(rooms)
@@ -735,6 +812,10 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
     room_motifs = [""] * len(rooms)
     vine_screens: list[VineScreen] = []
     sky_composition_placed = False
+    pillar_policy = _PillarPolicy(tiles, things, rooms)
+    pillar_policy = _PillarPolicy(tiles, things, rooms)
+    vignette_motifs = vignette_motifs or {}
+    pillar_policy = _PillarPolicy(tiles, things, rooms)
 
     for ridx, room in enumerate(rooms):
         role = _roles[ridx] if ridx < len(_roles) else "beat"
@@ -979,13 +1060,15 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
         lamp_cap = 2 if room.w * room.h >= 20 else 1
         composed_cells: set[tuple[int, int]] = set()
 
-        def _try_place_items(pieces: list[tuple[tuple[int, int], int]]) -> bool:
+        def _try_place_items(pieces: list[tuple[tuple[int, int], int]], source: str = "generic-fill") -> bool:
             """Commit a blocking group if all cells are free, no doorway
             approach is jammed, statics headroom remains, and reachability
             holds."""
             nonlocal static_headroom
             cells = [cell for cell, _ in pieces]
             if static_headroom < len(cells):
+                return False
+            if not pillar_policy.permits(ridx, concept, pieces, source):
                 return False
             if not all((c in free or c in edge_free) and c not in keep_clear
                        for c in cells):
@@ -1061,10 +1144,11 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
                 composed_cells.update(cells)
             wall_display_budget -= displays
             static_headroom -= len(cells)
+            pillar_policy.record(ridx, pieces, source)
             return True
 
-        def _try_place(cells: list[tuple[int, int]], item: int) -> bool:
-            return _try_place_items([(cell, item) for cell in cells])
+        def _try_place(cells: list[tuple[int, int]], item: int, source: str = "generic-fill") -> bool:
+            return _try_place_items([(cell, item) for cell in cells], source)
 
         def _place_open(cell: tuple[int, int], item: int,
                         spaced: bool = True) -> bool:
@@ -1324,7 +1408,7 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
         # probabilities of those specific gates. Preserved as weight overrides so a
         # caller can still force or suppress one composition -- 1.0 forces, 0.0
         # suppresses, anything else leaves the normal weighting alone.
-        motif_overrides: dict[str, float] = {}
+        motif_overrides: dict[str, float] = _phase_motif_overrides(phase)
         if traversal_pair_chance is not None:
             if traversal_pair_chance >= 1.0:
                 motif_overrides["travel-pair"] = _MOTIF_FORCED
@@ -1340,6 +1424,8 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
         # which passes for the wrong reason the moment the weights change.
         if force_motif:
             motif_overrides[force_motif] = _MOTIF_FORCED
+        if ridx in vignette_motifs:
+            motif_overrides[vignette_motifs[ridx]] = _MOTIF_FORCED
         motif = _choose_motif(eligible_motifs, rng, motif_overrides)
         room_motifs[ridx] = motif
         concept_frames = {
@@ -1778,7 +1864,10 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
             # within two tiles of a lattice lamp and undid the 3-4 tile rhythm
             # the corpus shows. One pass, one rhythm.
             area = room.w * room.h
-            open_budget = max(1, round((3 if area >= 80 else 2 if area >= 45 else 1) * density))
+            open_budget = max(1, round((3 if area >= 80 else 2 if area >= 45 else 1)
+                                             * density
+                                             * (0.80 + 0.20 * phase.occupation
+                                                + 0.15 * phase.abandonment)))
             count = rng.randrange(0, open_budget + 1)
             floor_clutter = [item for item in open_items if item not in (27, 37)]
             # Two kinds of spot, and they get different rules. Spill deliberately
@@ -1807,13 +1896,13 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
                 # rooms carry in the corpus, so suppress the attachment roll there.
                 _NO_SPILL = frozenset({"war-room", "gallery", "trophy-hall",
                                        "officers-quarters", "grand"})
-                attached = ([(cell, rng.choice(floor_clutter))
+                attached = ([(cell, _phase_choice(floor_clutter, rng, phase))
                              for cell in beside[:1]]
                             if beside and rng.random() < 0.33
                             and concept not in _NO_SPILL else [])
                 mids = [cell for cell in anchors.wall_midcells if cell in free]
                 rng.shuffle(mids)
-                spaced_spots = [(cell, rng.choice(floor_clutter)) for cell in mids]
+                spaced_spots = [(cell, _phase_choice(floor_clutter, rng, phase)) for cell in mids]
             placed_open = 0
             for cell, item in attached:
                 if placed_open >= count:
@@ -2008,7 +2097,8 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
                     material = _material_behind(tiles, cell)
                     affinity = _MATERIAL_AFFINITY.get(material or "", frozenset())
                     orientation = _wall_orientation(tiles, cell)
-                    weights = [w * (_MATERIAL_MULTIPLIER if i in affinity else 1.0)
+                    weights = [w * _phase_item_weight(i, phase)
+                               * (_MATERIAL_MULTIPLIER if i in affinity else 1.0)
                                * (1.35 if i in (39, 62, 69) and geo == "corner"
                                   else 1.20 if i in (39, 62, 69) and orientation == "terminus"
                                   else 0.72 if i in (39, 62, 69) and orientation == "flank"
@@ -2247,7 +2337,7 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
                            "niche-prop")
             static_headroom -= 1
 
-    return tuple(lighting_families), tuple(vine_screens), tuple(room_motifs)
+    return tuple(lighting_families), tuple(vine_screens), tuple(room_motifs), tuple(pillar_policy.placements)
 
 
 def _barrel_families(rooms, things) -> tuple[str, ...]:
