@@ -1,4 +1,40 @@
-# Recommendations for Human-Quality InfiniWolf Maps
+# Roadmap: Human-Quality InfiniWolf Maps
+
+> **Status as of 2.1.0.** This is a live roadmap, not a wishlist and not a record of
+> completed work. Three of its twelve recommendations have shipped, three are partial,
+> and six are untouched — including the two the document itself ranks highest.
+>
+> | # | Recommendation | Status |
+> |---|----------------|--------|
+> | 1 | Whole-map `QualityReport` | **Done** (2.1.0) |
+> | 2 | Corpus analysis beyond decoration | **Done** (2.1.0) |
+> | 3 | Concept-first planner | **Partial** — `SetPiecePlan` ships; contracts omitted |
+> | 4 | Vignettes before geometry | **Partial** — request side only; geometry ignores it |
+> | 5 | Spatial scale and hierarchy | **Partial** — anchor reserved early; no sector packing |
+> | 6 | Staged beam search | Outstanding |
+> | 7 | Multi-room encounter grammars | Outstanding |
+> | 8 | Simulated player experience | Outstanding |
+> | 9 | Pacing as explicit beats | Outstanding |
+> | 10 | Landmark usefulness scoring | Outstanding |
+> | 11 | Secrets as authored deductions | Outstanding |
+> | 12 | Room-sequence composition | Outstanding |
+>
+> **One correction the document could not have known.** §2 and §5 reason from a corpus
+> that is 227 fan maps, and conclude generated floors carry ~30% less usable space.
+> Decoding id's own 60 maps from `GAMEMAPS.WL6` (`tools/gamemaps.py`, added in 2.1.0)
+> showed the generator was already id-sized — 1120 walkable cells against id's 1098.
+> `totengraeber` and `wolfoverdrive` alone are 44% of the fan corpus and both build
+> large. The real defect was **distribution**, not scale: id spends ~1100 cells on 15
+> rooms with a 514-cell largest; the generator spent them on 21 smaller, squarer ones.
+> So §5's "do not solve this by uniformly enlarging every room" was right, and its
+> premise that the floor is short of space was not. Measure against
+> `structure_stats.py --id-corpus` before acting on any area figure quoted below.
+>
+> **Where the honest gaps are.** `QualityReport.encounter_quality` and
+> `.pacing_quality` are wired but literally `UNMEASURED = 0.0` — they are #7 and #9,
+> stubbed deliberately rather than faked. And §4's inversion is half-built: planning
+> can express a vignette's adjacency request, but `_place_planned_rooms` never reads
+> one, so nothing yet honours it.
 
 ## Assessment
 
@@ -38,7 +74,12 @@ Meanwhile, `_candidate_score` strongly rewards difference from previous maps, ac
 
 # Highest-impact recommendations
 
-## 1. Introduce a whole-map `QualityReport`
+## 1. Introduce a whole-map `QualityReport` — **DONE (2.1.0)**
+
+> Shipped in `infiniwolf/quality.py`. Selection is lexicographic and campaign contrast is
+> demoted to the final tiebreaker, as recommended. Six flags that provably never fire were
+> split out as regression-only tripwires. `encounter_quality` and `pacing_quality` remain
+> `UNMEASURED` stubs — they are items 7 and 9 below.
 
 Keep hard validation exactly separate, but replace the mostly binary soft critique with a structured report:
 
@@ -88,7 +129,12 @@ Measure:
 
 These should be calibrated against the authored corpus, not assigned arbitrary ideals.
 
-## 2. Expand corpus analysis beyond decoration
+## 2. Expand corpus analysis beyond decoration — **DONE (2.1.0)**
+
+> `tools/structure_stats.py`, `tools/corpus_io.py` and `tools/gamemaps.py`. The mode this
+> section assumed already worked (`inspect_map --compare`) had in fact been globbing loose
+> `*.wad` while the corpus ships inside `.pk3`, so it was measuring zero maps. See the
+> corpus correction in the status header before trusting any area figure here.
 
 The decoration system is already one of InfiniWolf's strongest components. Internal measurements report nearly identical decoration density:
 
@@ -118,7 +164,14 @@ Mine the 207-map corpus for:
 
 The existing corpus work demonstrates that empirical analysis is effective. Apply the same discipline to layout and gameplay that was applied to props.
 
-## 3. Make the planner concept-first rather than graph-first
+## 3. Make the planner concept-first rather than graph-first — **PARTIAL (2.1.0)**
+
+> `SetPiecePlan` exists and `planning.py` reserves one primary 3–5 room program plus one or
+> two secondaries before any filler, so a floor now reads as
+> `processing-desk → guardroom → cell-block`. The `visibility_contracts`,
+> `encounter_contract`, `reward_contract` and `landmark_contract` fields proposed below were
+> deliberately **omitted** rather than stubbed: nothing downstream can consume them until
+> geometry integration lands.
 
 The current planner creates a progression spine, corridor nodes, generic motifs, and filler branches. Filler rooms are attached until the room target is reached, usually as a closet, standard room, or hall.
 
@@ -159,7 +212,13 @@ Each normal floor should receive:
 
 This would make the floor feel like a designed location rather than a high-quality sequence of independently sensible rooms.
 
-## 4. Move vignettes before geometry
+## 4. Move vignettes before geometry — **PARTIAL (2.1.0)**
+
+> Planning can now express a vignette's adjacency request, and `_FAMILIES` gained
+> request-side entries. The inversion is **not** complete: `_place_planned_rooms` never reads
+> a request, so geometry still does not exist *because of* a scenario. Separately, a vignette
+> that cannot be realized now degrades to no vignette instead of failing the whole map —
+> that alone cut rejected generation attempts from 46% to 31%.
 
 The current vignette layer is promising but too limited. It contains six two-room families, produces at most one vignette, and only attempts one on roughly one-third of ordinary floors. It selects from room identities and adjacencies that already happen to exist.
 
@@ -180,7 +239,15 @@ Promote vignettes into the planning phase. A vignette should be able to request:
 
 The geometry should exist **because of the scenario**, not merely accommodate a scenario afterward.
 
-## 5. Increase spatial scale and hierarchy
+## 5. Increase spatial scale and hierarchy — **PARTIAL (2.1.0)**
+
+> The anchor's footprint is now reserved *before* the spine grows, which lifted the largest
+> room from 222 to 418 cells and biggest-room-share p90 from 0.19 to 0.33. Room proportions
+> were the bigger win: both corpora report a median aspect of 1.40 and the generator sat at
+> 1.22 because `standard` and `anchor` drew both axes from one range. Still absent:
+> **sector-first packing** and the **compaction pass**. Rooms currently *plan* to ~1638
+> walkable cells but only ~1150 realize, because the greedy spine-growth placer cannot pack
+> them — that gap, not the size grammar, is what caps the large-space tail.
 
 The repository's own measurements show generated maps averaging about 1,086 walkable floor cells versus about 1,554 for the authored maps. That is roughly 30 percent less usable space. The remaining decoration variety and fixture-count gaps are explicitly attributed to this structural difference.
 
@@ -200,7 +267,11 @@ The current conservative room shell and axis-aligned rectangle model simplify co
 
 A sector-first layout algorithm would likely outperform simply increasing the 24-room cap.
 
-## 6. Use staged search rather than fully generating only eight candidates
+## 6. Use staged search rather than fully generating only eight candidates — **OUTSTANDING**
+
+> Not started. Still eight fully-realized candidates per floor. Note the interaction with
+> item 5: ~31% of generation attempts are still rejected outright, and a beam search that
+> scored cheap abstract plans first would avoid paying for geometry on plans that cannot work.
 
 Generating 32 complete decorated maps per floor would be expensive. Instead, use a beam-search pipeline.
 
@@ -248,7 +319,9 @@ Determinism can be preserved by assigning candidate and mutation streams explici
 
 # Gameplay-specific improvements
 
-## 7. Add multi-room encounter grammars
+## 7. Add multi-room encounter grammars — **OUTSTANDING**
+
+> Not started. `QualityReport.encounter_quality` is an `UNMEASURED` stub awaiting this.
 
 The encounter system is currently room-owned. It has good local behavior—entry-aware placement, visible sentries, staggered flanks, strongpoints, blind ambushes, objective guards, patrols, and rare galleries—but most fights remain compositions inside one room.
 
@@ -268,7 +341,9 @@ Add encounter sequences spanning rooms and sound zones:
 
 Wolfenstein's sound propagation should become an authoring instrument. Design intentional alert chains rather than merely preventing zones from becoming too large.
 
-## 8. Simulate approximate player experience
+## 8. Simulate approximate player experience — **OUTSTANDING**
+
+> Not started.
 
 Current pacing mainly depends on BFS depth and a fixed density multiplier. Visibility is used locally for placement.
 
@@ -295,7 +370,9 @@ For each, estimate:
 
 This need not be a perfect Wolf3D bot. Even a tile-based exposure and resource model would distinguish dramatically different maps that currently receive similar scores.
 
-## 9. Design pacing as a sequence of beats
+## 9. Design pacing as a sequence of beats — **OUTSTANDING**
+
+> Not started. `QualityReport.pacing_quality` is an `UNMEASURED` stub awaiting this.
 
 The current depth curve provides a sensible overall ramp, peak, and recovery. Human pacing is not merely a smooth function of distance.
 
@@ -330,7 +407,10 @@ Then reject sequences with repeated medium-intensity rooms, even when every indi
 
 # Navigation, secrets, and visual composition
 
-## 10. Score landmark usefulness, not landmark existence
+## 10. Score landmark usefulness, not landmark existence — **OUTSTANDING**
+
+> Not started. `landmark_hierarchy_broken` remains a count-of-primaries tripwire, which is
+> exactly the "existence, not usefulness" check this section criticises.
 
 The current system identifies a primary landmark and reserves authored sightlines. That is a good foundation. The quality check mainly verifies that exactly one primary landmark exists.
 
@@ -347,7 +427,9 @@ Build a visibility graph from door thresholds and choice points to landmarks. Re
 
 Secondary landmarks should identify district transitions and branch destinations.
 
-## 11. Turn secrets into authored deductions
+## 11. Turn secrets into authored deductions — **OUTSTANDING**
+
+> Not started.
 
 Current secret pockets have bespoke shapes, containment, rewards, and material-aware hints. Structurally they are strong.
 
@@ -375,7 +457,9 @@ Score:
 
 Guarantee at least one fairly deducible secret on secret-rich settings rather than treating every secret as equally obscure.
 
-## 12. Use composition rules at the room-sequence level
+## 12. Use composition rules at the room-sequence level — **OUTSTANDING**
+
+> Not started.
 
 The decoration system already composes individual rooms intelligently. Extend composition across adjacent rooms:
 
@@ -442,7 +526,36 @@ Collect the seed, current metrics, and preference. Fit a small interpretable pre
 
 That feedback loop is the realistic path from statistically similar to human maps to players being unable to reliably identify which maps were generated.
 
-# The single best next project
+# The single best next project — **HALF DONE**
+
+> The set-piece half landed in 2.1.0; the staged-search half has not started, and the
+> pipeline below is still the target rather than the implementation.
+>
+> **What is now true.** `campaign identity → primary and secondary set-piece programs`
+> works: every ordinary floor reserves a 3–5 room primary program and one or two
+> secondaries before any generic filler is allocated. `full quality report → campaign
+> contrast tiebreaker` also works, in that order.
+>
+> **What is still missing, and the order has changed.** `many abstract floor plans →
+> structural corpus scoring → realize best plans` does not exist — generation is still
+> eight fully-realized candidates. Two things learned since make this *more* worth doing,
+> not less:
+>
+> 1. **Roughly 31% of generation attempts are still rejected outright**, each discarding
+>    planning, placement, routing and population. The largest single cause is the exit
+>    elevator's 5×5 rock requirement, which cannot be evaluated until the whole floor
+>    exists. A staged search that scored cheap abstract plans first would stop paying
+>    geometry costs for plans that were never going to validate.
+> 2. **Backtracking may matter more than beam width.** Most late failures have a local
+>    repair — pick a different exit host, nudge one room — but today they restart the
+>    entire floor. Checkpointing state before each risky stage and retrying just that
+>    stage would recover most of that waste, and is a smaller change than a full
+>    beam-search pipeline.
+>
+> The one prerequisite the document does not mention: the greedy spine-growth placer in
+> `_place_planned_rooms` cannot pack the rooms it is already given — planned area is
+> ~1638 walkable cells against ~1150 realized. Sector-first packing (item 5) should land
+> before, or alongside, staged search; otherwise better plans will still fail to realize.
 
 Build **concept-first set pieces plus staged candidate search**.
 
