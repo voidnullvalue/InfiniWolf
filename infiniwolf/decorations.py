@@ -553,8 +553,9 @@ def _fixture_lattice(room: Room, tiles: list[int], stride: int
 # --------------------------------------------------------------------- Stage C
 # The geometry of a candidate cell predicts the authored item better than the
 # room's theme does. Mined from all 43,122 decoration instances in the 207-map
-# hand-authored corpus (docs/decor-corpus-patterns.md; regenerate with
-# tools/mine_decor_patterns.py). This is a prior, not a replacement for theming:
+# hand-authored corpus (the 64x64 maps carrying at least five decorations;
+# regenerate the model with tools/mine_decor_patterns.py). This is a prior,
+# not a replacement for theming:
 # the concept still chooses the eligible item set, and this only ranks within it
 # and decides which cells are candidates for which item at all.
 

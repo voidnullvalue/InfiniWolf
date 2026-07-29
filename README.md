@@ -19,13 +19,11 @@ InfiniWolf generates deterministic ten-map Wolfenstein 3D campaigns for ECWolf, 
 
 2.0 is a rewrite of how the generator is organised and a broad pass over map quality. Generated output differs from 1.9.x for every seed; the settings and reproduction commands from an older release will not reproduce an older campaign under this version.
 
-**Architecture.** `generator.py` went from 6,073 lines owning nine systems to a coordinator of about 700 lines, alongside sixteen modules that each own one design decision — `planning`, `geometry`, `progression`, `semantics`, `encounters`, `pickups`, `decorations`, `special_floors`, `campaign`, `quality`, `ledger` and the `wl6`/`model`/`grid` leaves. The import cycle that forced validation and artifact encoding to be imported from the generator's last lines is gone; the package is an acyclic graph with no deferred or bottom-of-file relative imports. `watermark_cli.py` holds the Tkinter interface so `watermark.py` can be imported eagerly without making headless generation require a GUI toolkit. Every extraction step was proven byte-identical against a 32-combination fingerprint corpus before any behaviour was changed.
+**Architecture.** `generator.py` went from 6,073 lines owning nine systems to a coordinator of about 700 lines (it is 1,640 in 2.1.1; the set-piece program and contract layers landed after 2.0), alongside sixteen modules that each own one design decision — `planning`, `geometry`, `progression`, `semantics`, `encounters`, `pickups`, `decorations`, `special_floors`, `campaign`, `quality`, `ledger` and the `wl6`/`model`/`grid` leaves. The import cycle that forced validation and artifact encoding to be imported from the generator's last lines is gone; the package is an acyclic graph with no deferred or bottom-of-file relative imports. `watermark_cli.py` holds the Tkinter interface so `watermark.py` can be imported eagerly without making headless generation require a GUI toolkit. Every extraction step was proven byte-identical against a 32-combination fingerprint corpus before any behaviour was changed.
 
 **Map quality.** One deliberate motif per room instead of nine racing probability gates, which took the concept-specific composition — bunks in a barracks, a spear rack in an armory — from 1% of rooms to 28%, and cut rooms with no composition from 70% to 18%. Functional room adjacency doubled from 8.2% to 16.0% of connections. Decoration density and per-item mix now track the authored corpus closely. Every room is lit. Hallways are furnished. All five boss-arena families and all six native bosses can appear, where previously two families and four bosses were unreachable.
 
 **Performance.** Generation is 2.8× faster, so the new `--generation-quality thorough` default — which halves critique flags by ranking eight candidates per floor instead of taking the first clean one — still finishes sooner than 1.9.x did taking the first.
-
-The full list of intentional output changes, the architecture, and a note on where new work belongs are in [`docs/RELEASE-2.0.md`](docs/RELEASE-2.0.md).
 
 Curious how the generator actually works? Start with the human-readable
 [`GENERATION_FLOW.md`](GENERATION_FLOW.md) flowchart, then use
@@ -141,7 +139,7 @@ python3 -m unittest discover -s tests -v
 
 Most tests generate whole floors, and a floor costs a few seconds, so the full
 suite runs for roughly 50 minutes on four cores. The current `--fast` gate runs
-109 tests; `tools/check.py` offers three gates sized to what you changed — pick
+130 tests; `tools/check.py` offers three gates sized to what you changed — pick
 the smallest one that can actually catch your mistake:
 
 ```sh
@@ -185,9 +183,8 @@ Decoration quality is measured rather than eyeballed. With a collection of
 hand-authored community maps installed alongside this repo, `tools/decor_stats.py`
 reports decoration density, wall-adjacency, clustering, and per-item frequency for
 that reference corpus and for freshly generated floors side by side, and
-`tools/mine_decor_patterns.py` regenerates
-[`docs/decor-corpus-patterns.md`](docs/decor-corpus-patterns.md), the per-item
-placement model mined from the same corpus:
+`tools/mine_decor_patterns.py` writes out the per-item placement model mined
+from the same corpus:
 
 ```sh
 python3 tools/decor_stats.py

@@ -726,7 +726,7 @@ class GeneratorTests(unittest.TestCase):
                 f"fixtures at {(ax, ay)} and {(bx, by)} are closer than 3 tiles")
 
     def test_cell_geometry_matches_the_mined_corpus_classes(self):
-        """The Stage C classifier must agree with docs/decor-corpus-patterns.md.
+        """The Stage C classifier must agree with the mined corpus model.
 
         The whole fill model is keyed on these five classes, so a drift here
         silently repoints every bucket at the wrong cells.
