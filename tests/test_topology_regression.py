@@ -16,6 +16,11 @@ from infiniwolf.generator import (DOGS, DOOR_ELEVATOR, DOOR_EW, DOOR_GOLD_EW, DO
                                    SECRET_EXIT_ZONE, STATIC_BLOCKING, ZONE_MAX, _at,
                                    _floor_components, _is_floor, FLOOR_TEN_STONE_THEME,
                                    TREASURE, WALL_THEMES, _plan_floor, generate_map)
+from infiniwolf.geometry import (_open_closet_doors,
+                                 _remove_redundant_plain_doors,
+                                 _remove_stacked_doors)
+from infiniwolf.grid import _door_zone, _set
+from infiniwolf.wl6 import DOOR_GOLD_NS, WALL
 
 
 def _generate_with_retries(config: CampaignConfig, floor: int, attempts: int = 50):
@@ -473,6 +478,214 @@ class AreaThemeRegressionTests(unittest.TestCase):
                         f"seed={seed!r} floor={floor}: component {component} "
                         f"mixes wall materials {sorted(tiles)}")
         self.assertTrue(seen_multiple, "no regression level used multiple base materials")
+
+
+class ClosetDoorwayTests(unittest.TestCase):
+    """No plain door may gate a dead end smaller than 4x4.
+
+    A connector that claimed a threshold and never got its corridor leaves a
+    door opening onto a single walled-in cell -- a door cut for no reason with a
+    hole cut behind it. 34 such doors stood across 68 sampled floors, on half of
+    them. `_open_closet_doors` opens the door and lets the pocket become an
+    ordinary recess, which the dead-end occupancy pass then dresses.
+    """
+
+    @staticmethod
+    def _plan(rows):
+        tiles = [WALL] * (GRID * GRID)
+        for y, row in enumerate(rows):
+            for x, char in enumerate(row):
+                if char == ".":
+                    _set(tiles, x, y, FLOOR)
+                elif char == "|":
+                    _set(tiles, x, y, DOOR_NS)
+                elif char == "-":
+                    _set(tiles, x, y, DOOR_EW)
+                elif char == "G":
+                    _set(tiles, x, y, DOOR_GOLD_NS)
+        return tiles
+
+    def test_a_doorway_onto_one_cell_opens(self):
+        tiles = self._plan(("##########",
+                            "#........#",
+                            "#........#",
+                            "#........#",
+                            "#........#",
+                            "####|#####",
+                            "####.#####",
+                            "##########"))
+        self.assertEqual(_open_closet_doors(tiles), 1)
+        self.assertEqual(_at(tiles, 4, 5), FLOOR)
+
+    def test_a_doorway_gating_a_route_is_load_bearing(self):
+        """Both ends gated means the space is a corridor, not a cupboard: 47 of
+        the sampled sub-4x4 regions were exactly this and must keep their
+        doors."""
+        tiles = self._plan(("##########",
+                            "#........#",
+                            "#........#",
+                            "#........#",
+                            "#........#",
+                            "####|#####",
+                            "####.#####",
+                            "####.#####",
+                            "####|#####",
+                            "#........#",
+                            "#........#",
+                            "#........#",
+                            "#........#",
+                            "##########"))
+        self.assertEqual(_open_closet_doors(tiles), 0)
+        self.assertEqual(_at(tiles, 4, 5), DOOR_NS)
+        self.assertEqual(_at(tiles, 4, 8), DOOR_NS)
+
+    def test_a_doorway_onto_a_four_by_four_room_stays(self):
+        tiles = self._plan(("##########",
+                            "#........#",
+                            "#...|....#",
+                            "###....###",
+                            "###....###",
+                            "###....###",
+                            "###....###",
+                            "##########"))
+        self.assertEqual(_open_closet_doors(tiles), 0)
+        self.assertEqual(_at(tiles, 4, 2), DOOR_NS)
+
+    def test_two_doorway_slabs_back_to_back_collapse_to_one(self):
+        """A one-wide neck is still one wide after a slab lands in it, so a
+        second pass can door the next cell and the player opens a door onto a
+        door. Two pairs stood across 68 sampled floors."""
+        tiles = self._plan(("##########",
+                            "#........#",
+                            "#........#",
+                            "####.#####",
+                            "####|#####",
+                            "####|#####",
+                            "#........#",
+                            "#........#",
+                            "##########"))
+        self.assertEqual(_remove_stacked_doors(tiles), 1)
+        self.assertEqual(_at(tiles, 4, 4), DOOR_NS)
+        self.assertEqual(_at(tiles, 4, 5), FLOOR)
+
+    def test_a_gated_doorway_outranks_the_plain_one_beside_it(self):
+        tiles = self._plan(("##########",
+                            "#........#",
+                            "#........#",
+                            "####.#####",
+                            "####|#####",
+                            "####G#####",
+                            "#........#",
+                            "#........#",
+                            "##########"))
+        self.assertEqual(_remove_stacked_doors(tiles), 1)
+        self.assertEqual(_at(tiles, 4, 4), FLOOR)
+        self.assertEqual(_at(tiles, 4, 5), DOOR_GOLD_NS)
+
+    def test_a_cosmetic_run_of_slabs_is_removed_whole(self):
+        """A wall two tiles thick gets a slab in each tile, and then each one's
+        flanking cell is the other slab -- which is in no floor component, so
+        the redundancy test read None and never fired. A fully cosmetic pair
+        survived precisely because there were two of them (sparse seed '42'
+        floor 8). Here an open route round the bottom makes the run cosmetic."""
+        tiles = self._plan(("############",
+                            "#....##....#",
+                            "#....##....#",
+                            "#....--....#",
+                            "#....##....#",
+                            "#..........#",
+                            "############"))
+        self.assertEqual(_remove_redundant_plain_doors(tiles), 2)
+        self.assertEqual(_at(tiles, 5, 3), FLOOR)
+        self.assertEqual(_at(tiles, 6, 3), FLOOR)
+
+    def test_a_gating_run_of_slabs_is_thinned_not_removed(self):
+        """The same wall with no way around: the run is the only route, so
+        redundancy must keep it and the stacked pass thins it to one slab."""
+        tiles = self._plan(("############",
+                            "#....##....#",
+                            "#....##....#",
+                            "#....--....#",
+                            "#....##....#",
+                            "#....##....#",
+                            "############"))
+        self.assertEqual(_remove_redundant_plain_doors(tiles), 0)
+        self.assertEqual(_remove_stacked_doors(tiles), 1)
+        self.assertEqual(_at(tiles, 5, 3), DOOR_EW)
+        self.assertEqual(_at(tiles, 6, 3), FLOOR)
+
+    def test_a_single_doorway_keeps_its_original_verdict(self):
+        """Run resolution must not change the one-slab cases the pass already
+        handled: a cosmetic door still goes, a gating door still stays."""
+        cosmetic = self._plan(("##########",
+                               "#...#....#",
+                               "#...-....#",
+                               "#........#",
+                               "##########"))
+        self.assertEqual(_remove_redundant_plain_doors(cosmetic), 1)
+        self.assertEqual(_at(cosmetic, 4, 2), FLOOR)
+        gating = self._plan(("##########",
+                             "#...#....#",
+                             "#...-....#",
+                             "#...#....#",
+                             "##########"))
+        self.assertEqual(_remove_redundant_plain_doors(gating), 0)
+        self.assertEqual(_at(gating, 4, 2), DOOR_EW)
+
+    def test_parallel_slabs_across_a_two_wide_neck_are_left_alone(self):
+        """Removing one of a side-by-side pair would leave the survivor a
+        floor-only walkaround, which test_plain_doors_have_no_floor_only_
+        walkaround forbids. Repairing that shape needs a different edit, so it
+        is left rather than repaired blind."""
+        tiles = self._plan(("###########",
+                            "###########",
+                            "#...-.....#",
+                            "#...-.....#",
+                            "###########"))
+        self.assertEqual(_remove_stacked_doors(tiles), 0)
+        self.assertEqual(_at(tiles, 4, 2), DOOR_EW)
+        self.assertEqual(_at(tiles, 4, 3), DOOR_EW)
+
+    def test_generated_floors_have_no_doorway_opening_onto_a_doorway(self):
+        for seed in REGRESSION_SEEDS:
+            config = CampaignConfig(seed=seed)
+            for floor in (2, 5, 8):
+                level = _generate_with_retries(config, floor)
+                for index, tile in enumerate(level.tiles):
+                    if tile not in DOORS:
+                        continue
+                    x, y = index % GRID, index // GRID
+                    dx, dy = (1, 0) if tile % 2 == 0 else (0, 1)
+                    for side in ((x - dx, y - dy), (x + dx, y + dy)):
+                        self.assertNotIn(
+                            _at(level.tiles, *side), DOORS,
+                            f"seed={seed!r} floor={floor}: door at ({x},{y}) "
+                            f"opens onto another door at {side}")
+
+    def test_generated_floors_have_no_cupboard_doorway(self):
+        for seed in REGRESSION_SEEDS:
+            config = CampaignConfig(seed=seed)
+            for floor in (2, 5, 8):
+                level = _generate_with_retries(config, floor)
+                tiles = level.tiles
+                for index, tile in enumerate(tiles):
+                    if tile not in (DOOR_EW, DOOR_NS):
+                        continue
+                    x, y = index % GRID, index // GRID
+                    dx, dy = (1, 0) if tile % 2 == 0 else (0, 1)
+                    for side in ((x - dx, y - dy), (x + dx, y + dy)):
+                        if not _is_floor(_at(tiles, *side)):
+                            continue
+                        region = _door_zone(tiles, side)
+                        if len(region) >= 16:
+                            continue
+                        adjoining = {(cx + ndx, cy + ndy) for cx, cy in region
+                                     for ndx, ndy in ((1, 0), (-1, 0), (0, 1), (0, -1))
+                                     if _at(tiles, cx + ndx, cy + ndy) in DOORS}
+                        self.assertNotEqual(
+                            adjoining, {(x, y)},
+                            f"seed={seed!r} floor={floor}: door at ({x},{y}) "
+                            f"gates a {len(region)}-cell dead end")
 
 
 if __name__ == "__main__":

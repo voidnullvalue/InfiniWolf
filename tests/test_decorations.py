@@ -2,18 +2,22 @@
 import random
 import unittest
 
+from infiniwolf.campaign import resolve_schedule
+from infiniwolf.config import CampaignConfig
 from infiniwolf.decorations import (
     _PillarPolicy,
     _blocking_budget,
+    _bypass_preserved,
     _open_budget,
     _phase_item_weight,
     _phase_motif_overrides,
     _place_zoned,
     _wall_orientation,
 )
+from infiniwolf.generator import generate_map
 from infiniwolf.model import AestheticPhase, Room
-from infiniwolf.grid import _set
-from infiniwolf.wl6 import FLOOR, GRID, WALL
+from infiniwolf.grid import _at, _is_floor, _set
+from infiniwolf.wl6 import ENGINE_SOLID, FLOOR, GRID, WALL
 
 
 class WallOrientationTests(unittest.TestCase):
@@ -82,6 +86,106 @@ class AreaScaledBudgetTests(unittest.TestCase):
         policy.record(1, pair, "large-hall-pair")
         self.assertTrue(policy.permits(1, "guardpost", second_pair,
                                        "large-hall-pair"))
+
+
+def _plan(rows: tuple[str, ...]) -> tuple[list[int], list[int]]:
+    """Build a tile/thing plane from ASCII: '#' wall, '.' floor, 'o' solid prop."""
+    tiles = [WALL] * (GRID * GRID)
+    things = [0] * (GRID * GRID)
+    for y, row in enumerate(rows):
+        for x, char in enumerate(row):
+            if char != "#":
+                _set(tiles, x, y, FLOOR)
+            if char == "o":
+                _set(things, x, y, 30)
+    return tiles, things
+
+
+class PassageBypassTests(unittest.TestCase):
+    """A prop may cost a step around it, never a walk around the floor.
+
+    The reachability guard on each commit only asks whether every cell is still
+    reachable, which a plugged corridor with a loop back around satisfies. Seed
+    1785355280054893495 floor 9 shipped a floor lamp on the junction cell where
+    a one-wide north corridor met a one-wide west corridor: both mouths stayed
+    reachable the long way round and the step between them became 48 tiles.
+    """
+
+    def test_room_corner_and_wall_keep_their_bypass(self):
+        tiles, things = _plan(("#####",
+                               "#...#",
+                               "#...#",
+                               "#...#",
+                               "#####"))
+        for cell in ((1, 1), (2, 1), (1, 2)):
+            with self.subTest(cell=cell):
+                self.assertTrue(_bypass_preserved(tiles, things, [cell]))
+
+    def test_corridor_cell_and_bend_have_none(self):
+        straight = _plan(("#####",
+                          "#...#",
+                          "#####"))
+        self.assertFalse(_bypass_preserved(*straight, [(2, 1)]))
+        # The floor-9 shape: two one-wide corridors meeting at a corner. The
+        # cell reads as a "corner" to _cell_geometry, which is why the corpus
+        # corner rule let a lamp onto it.
+        bend = _plan(("##.##",
+                      "##.##",
+                      "...##"))
+        self.assertFalse(_bypass_preserved(*bend, [(2, 2)]))
+
+    def test_diagonal_contact_between_two_props_is_not_a_bypass(self):
+        # A prop placed diagonally opposite an existing one leaves the two sides
+        # touching at a corner only, and the engine will not walk a player
+        # through the gap between two solid props. Committing (2, 2) here cuts
+        # (3, 2) off from (2, 1) except across that corner.
+        tiles, things = _plan(("######",
+                               "#..o.#",
+                               "#....#",
+                               "######"))
+        self.assertFalse(_bypass_preserved(tiles, things, [(2, 2)]))
+
+    def test_group_leaving_one_lane_of_a_three_wide_hallway_is_allowed(self):
+        # The matched pair bisecting door-to-door travel is a real composition
+        # and must survive: two of the three lanes taken, one left open.
+        tiles, things = _plan(("##########",
+                               "#........#",
+                               "#........#",
+                               "#........#",
+                               "##########"))
+        self.assertTrue(_bypass_preserved(tiles, things, [(5, 1), (5, 2)]))
+
+
+class GeneratedPassageTests(unittest.TestCase):
+    SEED = "1785355280054893495"
+    FLOOR, ATTEMPT = 9, 30      # the campaign's own winner for this floor
+
+    @classmethod
+    def setUpClass(cls):
+        config = CampaignConfig.with_seed(cls.SEED)
+        options = resolve_schedule(config).floor_options(cls.FLOOR)
+        cls.level = generate_map(config, cls.FLOOR, cls.ATTEMPT, **options)
+
+    def test_the_reported_lamp_no_longer_plugs_its_hallway(self):
+        self.assertEqual(_at(self.level.things, 36, 35), 0)
+
+    def test_no_solid_prop_plugs_a_passage(self):
+        tiles, things = self.level.tiles, self.level.things
+        for y in range(GRID):
+            for x in range(GRID):
+                if (_at(things, x, y) not in ENGINE_SOLID
+                        or not _is_floor(_at(tiles, x, y))):
+                    continue
+                with self.subTest(cell=(x, y), item=_at(things, x, y)):
+                    self.assertTrue(
+                        _bypass_preserved(tiles, things, [(x, y)]),
+                        f"prop {_at(things, x, y)} at ({x},{y}) leaves its "
+                        f"neighbours no local route around it")
+
+    def test_the_floor_is_still_furnished(self):
+        """The guard rejects plugs, not decoration: a floor keeps its props."""
+        solid = sum(1 for thing in self.level.things if thing in ENGINE_SOLID)
+        self.assertGreater(solid, 40)
 
 
 if __name__ == "__main__":

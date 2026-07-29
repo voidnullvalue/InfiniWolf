@@ -95,7 +95,8 @@ from .geometry import (  # noqa: F401
     SHAPE_MULTIPLIERS, SHAPE_TARGETS,
     _assign_sound_zones, _break_long_sightlines, _close_door_graph_loops,
     _heal_pinched_room_door_pairs,
-    _limit_theme_merge_size, _remove_redundant_plain_doors,
+    _limit_theme_merge_size, _open_closet_doors, _remove_redundant_plain_doors,
+    _remove_stacked_doors,
     _spatial_districts, _split_oversized_zones, _harvest_sky_vistas,
     _primary_hall_geometry, paint_room_floors, plan_authored_sightlines, carve_shared_void,
 )
@@ -963,6 +964,19 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
     door_pushwalls = {(index % GRID, index // GRID)
                       for index, thing in enumerate(things) if thing == PUSHWALL}
     if _heal_pinched_room_door_pairs(tiles, rooms, start, door_pushwalls):
+        _break_long_sightlines(tiles, things, rooms, reserved, geometry_rng, start,
+                               allow_doors=False, walls_for_redundant_doors=True)
+    # Last of the three door repairs, because the two above both leave stubs of
+    # their own: the pinch healer says so outright ("the stub becomes a plain
+    # alcove"). A door onto a dead end smaller than 4x4 gates a cupboard, so it
+    # opens and the cupboard becomes a recess for the decoration pass to dress.
+    if _open_closet_doors(tiles):
+        _break_long_sightlines(tiles, things, rooms, reserved, geometry_rng, start,
+                               allow_doors=False, walls_for_redundant_doors=True)
+    # Each door pass judges the chokepoint condition alone, so a one-wide neck
+    # can collect a slab from two of them and the player opens a door onto a
+    # door. Runs after every pass that can install one.
+    if _remove_stacked_doors(tiles):
         _break_long_sightlines(tiles, things, rooms, reserved, geometry_rng, start,
                                allow_doors=False, walls_for_redundant_doors=True)
     # With the gate probe below, seeds 0--19 on floors 2/5/8 placed at most

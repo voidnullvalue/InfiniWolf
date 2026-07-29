@@ -273,6 +273,21 @@ STATIC_BLOCKING = (
     62,  # Flag
     68,  # Stove
 )
+
+# What the *engine* refuses to walk through, which is not the same list. Four
+# +SOLID actors sit outside STATIC_BLOCKING: 63/72/73 the generator never
+# emits, and 69 the spear display, which three blocking palettes do place and
+# which the decoration registries have never carried (see
+# test_semantics.KNOWN_REGISTRY_GAP -- resolving that is a metrics decision,
+# because 69 appears nowhere in the authored corpus this generator is tuned
+# against). Traversal is not a metrics question, so anything that asks "can the
+# player get past this cell" reads this set and gets the engine's answer.
+ENGINE_SOLID = frozenset(STATIC_BLOCKING) | {
+    63,  # CallApogee
+    69,  # Spears
+    72,  # Skewer
+    73,  # TruckRear
+}
 STATIC_OPEN = (
     23,  # Puddle
     27,  # Chandelier

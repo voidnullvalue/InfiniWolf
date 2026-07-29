@@ -19,7 +19,7 @@ InfiniWolf generates deterministic ten-map Wolfenstein 3D campaigns for ECWolf, 
 
 2.0 is a rewrite of how the generator is organised and a broad pass over map quality. Generated output differs from 1.9.x for every seed; the settings and reproduction commands from an older release will not reproduce an older campaign under this version.
 
-**Architecture.** `generator.py` went from 6,073 lines owning nine systems to a coordinator of about 700 lines (it is 1,640 in 2.1.1; the set-piece program and contract layers landed after 2.0), alongside sixteen modules that each own one design decision — `planning`, `geometry`, `progression`, `semantics`, `encounters`, `pickups`, `decorations`, `special_floors`, `campaign`, `quality`, `ledger` and the `wl6`/`model`/`grid` leaves. The import cycle that forced validation and artifact encoding to be imported from the generator's last lines is gone; the package is an acyclic graph with no deferred or bottom-of-file relative imports. `watermark_cli.py` holds the Tkinter interface so `watermark.py` can be imported eagerly without making headless generation require a GUI toolkit. Every extraction step was proven byte-identical against a 32-combination fingerprint corpus before any behaviour was changed.
+**Architecture.** `generator.py` went from 6,073 lines owning nine systems to a coordinator of about 700 lines (it is 1,654 in 2.2.0; the set-piece program and contract layers landed after 2.0), alongside sixteen modules that each own one design decision — `planning`, `geometry`, `progression`, `semantics`, `encounters`, `pickups`, `decorations`, `special_floors`, `campaign`, `quality`, `ledger` and the `wl6`/`model`/`grid` leaves. The import cycle that forced validation and artifact encoding to be imported from the generator's last lines is gone; the package is an acyclic graph with no deferred or bottom-of-file relative imports. `watermark_cli.py` holds the Tkinter interface so `watermark.py` can be imported eagerly without making headless generation require a GUI toolkit. Every extraction step was proven byte-identical against a 32-combination fingerprint corpus before any behaviour was changed.
 
 **Map quality.** One deliberate motif per room instead of nine racing probability gates, which took the concept-specific composition — bunks in a barracks, a spear rack in an armory — from 1% of rooms to 28%, and cut rooms with no composition from 70% to 18%. Functional room adjacency doubled from 8.2% to 16.0% of connections. Decoration density and per-item mix now track the authored corpus closely. Every room is lit. Hallways are furnished. All five boss-arena families and all six native bosses can appear, where previously two families and four bosses were unreachable.
 
@@ -205,7 +205,7 @@ package by hand:
 pip install pyinstaller .
 pyinstaller --onefile --windowed --name InfiniWolf run.py
 pyinstaller --onefile --name infiniwolf-cli infiniwolf_cli.py
-python3 packaging/make_release.py --platform linux --version 2.1.1   # or windows / macos
+python3 packaging/make_release.py --platform linux --version 2.2.0   # or windows / macos
 ```
 
 The script downloads ECWolf's official prebuilt binary for the target platform from `maniacsvault.net`, checks it against a pinned SHA-256, and packages it alongside the two executables. It never touches Wolfenstein 3D game data.

@@ -26,7 +26,7 @@ from .model import AestheticPhase, PillarPlacement, Room, RoomIdentity, VineScre
 from .placement import (_doorway_keep_clear, _room_anchors, _room_traversal_frame,
                         _traversal_pair_candidates)
 from .room_policy import base_theme as _decor_theme
-from .wl6 import (DECOR_WALLS, DOORS, ENEMY_CODES, GRID, LIGHTING_FAMILY_ITEMS,
+from .wl6 import (DECOR_WALLS, DOORS, ENEMY_CODES, ENGINE_SOLID, GRID, LIGHTING_FAMILY_ITEMS,
                     LIGHTING_ITEMS, PLAYER_START_CODES, SPECIAL_WALL_TILES, STATIC_BLOCKING, STATIC_OPEN,
                     VINE_SCREEN_CONCEPTS, WALL_MATERIALS)
 
@@ -583,6 +583,112 @@ def _cell_geometry(tiles: list[int], cell: tuple[int, int]) -> str:
     return "wall" if solid else "free"
 
 
+# A prop may cost the player a walk around itself; it may not cost a walk around
+# the floor. Four cells is the neighbourhood the route has to stay inside, and
+# that single bound is the whole rule -- deliberately not a step count. A
+# staggered banquet row makes its own ten-step weave and is a real composition;
+# what separates it from a plugged passage is not how long the way round is but
+# whether there is one at all nearby.
+_BYPASS_RADIUS = 4
+
+
+def _bypass_preserved(tiles: list[int], things: list[int],
+                      cells: list[tuple[int, int]],
+                      vacated: tuple[tuple[int, int], ...] = (),
+                      pending: tuple[tuple[int, int], ...] = ()) -> bool:
+    """Do these cells' own neighbours still reach each other locally?
+
+    The reachability guard on every commit asks whether each cell is still
+    *reachable*; it cannot see whether a *route* survived. A prop on a corridor
+    bend that the floor loops back around passes it and still plugs the
+    hallway: seed 1785355280054893495 floor 9 put a floor lamp on the junction
+    where a one-wide north corridor met a one-wide west corridor, leaving both
+    mouths reachable the long way and the step between them a 48-tile walk.
+
+    So this asks the local question instead: can the player still get from one
+    side of the prop to the other without leaving its neighbourhood? A prop in a
+    room corner, along a wall, in a wall-stub slot, or in a banquet row can. A
+    prop plugging a passage leaves its two sides joined only by the rest of the
+    map, or not at all -- and that is the same test for a pair of props whose
+    diagonal contact the engine will not let the player through.
+
+    `vacated` is for the repair pass, which validates a destination while the
+    prop it is about to move still stands on the plane: those cells count as
+    floor, because by the time the commit lands they are. `pending` is solid
+    like `cells` but is not what is under test, which is how a commit re-checks
+    the props already standing beside it -- see `_bypass_ok`.
+    """
+    tested = set(cells)
+    if not tested:
+        return True                       # an empty commit blocks nothing
+    solid = tested | set(pending)
+    leaving = set(vacated)
+    lo_x = min(x for x, _ in tested) - _BYPASS_RADIUS
+    hi_x = max(x for x, _ in tested) + _BYPASS_RADIUS
+    lo_y = min(y for _, y in tested) - _BYPASS_RADIUS
+    hi_y = max(y for _, y in tested) + _BYPASS_RADIUS
+
+    def walkable(cell: tuple[int, int]) -> bool:
+        if cell in solid or not (lo_x <= cell[0] <= hi_x
+                                 and lo_y <= cell[1] <= hi_y):
+            return False
+        value = _at(tiles, *cell)
+        if not (_is_floor(value) or value in DOORS):
+            return False
+        if cell in leaving:
+            return True
+        # The engine's own solid list: a spear rack stops the player even though
+        # the decoration registries do not carry it.
+        return _at(things, *cell) not in ENGINE_SOLID
+
+    mouths = {(x + dx, y + dy) for x, y in tested
+              for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1))}
+    mouths = {cell for cell in mouths if walkable(cell)}
+    if len(mouths) < 2:
+        return True                       # nothing to route between
+
+    source = min(mouths)
+    seen = {source}
+    queue = deque([source])
+    while queue:
+        cell = queue.popleft()
+        for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+            nxt = (cell[0] + dx, cell[1] + dy)
+            if nxt in seen or not walkable(nxt):
+                continue
+            seen.add(nxt)
+            queue.append(nxt)
+    return mouths <= seen
+
+
+def _bypass_ok(tiles: list[int], things: list[int],
+               cells: list[tuple[int, int]],
+               vacated: tuple[tuple[int, int], ...] = ()) -> bool:
+    """`_bypass_preserved` for a commit *and* for the props it lands beside.
+
+    Checking only the cells being committed is order-dependent: two props that
+    each keep their own bypass can take away each other's, and whichever went
+    down first is never looked at again. So the second one re-runs the test for
+    every solid prop already touching its footprint, with itself counted as
+    solid. That is what stops a barrel and a table from closing a diagonal on
+    each other one commit apart.
+    """
+    if not _bypass_preserved(tiles, things, cells, vacated=vacated):
+        return False
+    footprint = set(cells)
+    neighbours = {(x + dx, y + dy)
+                  for x, y in footprint
+                  for dx in (-1, 0, 1) for dy in (-1, 0, 1)}
+    pending = tuple(footprint)
+    for cell in sorted(neighbours - footprint - set(vacated)):
+        if _at(things, *cell) not in ENGINE_SOLID:
+            continue
+        if not _bypass_preserved(tiles, things, [cell], vacated=vacated,
+                                 pending=pending):
+            return False
+    return True
+
+
 def _wall_orientation(tiles: list[int], cell: tuple[int, int]) -> str | None:
     """Classify a one-wall cell by the sightline away from its backing wall.
 
@@ -658,13 +764,24 @@ def occupy_dead_end_alcoves(tiles: list[int], things: list[int], rooms: list[Roo
                             identities: list[RoomIdentity], reserved: set[tuple[int, int]],
                             rng: random.Random, start: tuple[int, int]
                             ) -> tuple[tuple[int, int], ...]:
-    """Put a themed open prop in every qualifying gameplay dead-end alcove.
+    """Put a themed prop in every qualifying gameplay dead-end alcove.
 
     A one-cell dead end with nothing in it reads as a hole cut in a wall for no
     reason, so `validate_map` refuses one. That makes occupancy mandatory
     rather than budgeted: this pass is allowed past the 320 soft cap, because
     the alternative is rejecting an otherwise good floor over a handful of
     props. Only ECWolf's own 400-static limit is a genuine wall.
+
+    A one-cell dead end is also the one place a solid prop costs nothing: it has
+    a single walkable neighbour by definition, so there is nothing beyond it to
+    strand. That matters because the corpus's whole nook vocabulary is solid --
+    suits of armour stand in a nook 80% of the time, bunk beds 51% -- and
+    filtering it through an open palette, which by invariant holds no solid prop
+    (`test_open_palettes_hold_no_solid_props`), could only ever yield the empty
+    set. So the themed pick never fired and every alcove on every floor fell
+    through to a flat `rng.choice` over the open palette: of 30 measured guard
+    recesses, 22 got a ceiling light, which is overhead and leaves the niche
+    reading exactly as bare as an empty one.
     """
     static_count = sum(23 <= thing <= 74 for thing in things)
     occupied = []
@@ -680,10 +797,33 @@ def occupy_dead_end_alcoves(tiles: list[int], things: list[int], rooms: list[Roo
                                  for nx, ny in ((x + 1, y), (x - 1, y), (x, y + 1), (x, y - 1)))), None)
         concept = identities[owner].concept if owner is not None and owner < len(identities) else "corridor"
         open_items = _DECOR_OPEN.get(concept, STATIC_OPEN)
-        nook_items = [item for item, _ in
-                      _FILL_BUCKETS.get(("nook", _cell_openness(tiles, cell)), ())
-                      if item in open_items]
-        item = rng.choice(nook_items or list(open_items))
+        # Two cases keep the flat decor they always had. A dead end whose only
+        # neighbour is a *door* must stay steppable, because a door that opens
+        # onto a pillar is worse than a bare niche -- so a solid prop needs a
+        # plain-floor approach, which `_is_dead_end` does not guarantee (it
+        # counts doors as walkable). And a stationary sentry in that approach
+        # cell is the only actor who can be facing into the niche; a guard nose
+        # to nose with a bunk bed reads exactly like a guard facing a wall.
+        approach = next(((x + dx, y + dy) for dx, dy in
+                         ((1, 0), (-1, 0), (0, 1), (0, -1))
+                         if _is_floor(_at(tiles, x + dx, y + dy))), None)
+        solid_ok = (approach is not None
+                    and _at(things, *approach) not in ENEMY_CODES)
+        # Theming still decides the vocabulary: a solid pick has to be in the
+        # concept's own blocking palette, so a crypt niche gets its hanged man
+        # and a barracks its bunk rather than whatever the corpus bucket ranked
+        # highest. Eight of the twenty-five concepts share nothing with the nook
+        # bucket and keep the open-palette behaviour.
+        blocking_items = _DECOR_BLOCKING.get(concept, STATIC_BLOCKING)
+        eligible = [(item, weight) for item, weight
+                    in _FILL_BUCKETS.get(("nook", _cell_openness(tiles, cell)), ())
+                    if (item in open_items
+                        or (item in blocking_items and solid_ok))]
+        if eligible:
+            item = rng.choices([item for item, _ in eligible],
+                               weights=[weight for _, weight in eligible], k=1)[0]
+        else:
+            item = rng.choice(list(open_items))
         _set(things, x, y, item)
         ledger_reserve(reserved, [cell], "decorations", "dead-end-alcove")
         static_count += 1
@@ -838,7 +978,23 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
     furniture or wall midpoints, rhythm lights down long corridors, and one
     niche piece in each small dead-end alcove pocket.
     """
-    baseline = len(_reachable(tiles, start, locked_open=True))
+    # The cells, not just how many. Comparing a count against
+    # `baseline - len(candidate)` grants one cell of stranding slack for every
+    # blocked cell that was not reachable to begin with, because it subtracts a
+    # cell the baseline never counted -- so a prop committed inside a sealed
+    # pocket would pay for a real cell walled off somewhere else. Measured over
+    # eleven floors, including ones carrying a shared void and a guard gallery,
+    # the two forms never actually disagree: nothing currently commits a
+    # blocking prop outside the reachable set. This is the exact form of the
+    # question the docstring above promises, kept so that stays true whatever
+    # later passes decide to decorate.
+    baseline_cells = _reachable(tiles, start, locked_open=True)
+
+    def _reach_preserved(candidate: set[tuple[int, int]]) -> bool:
+        """Is every cell the player could reach still reachable, bar the props?"""
+        reachable = _reachable(tiles, start, locked_open=True, blocked=candidate)
+        return (baseline_cells - candidate) <= reachable
+
     # A default keeps direct unit callers compatible while generation passes the
     # Connector repairs can sit outside a room record, so room-local anchors
     # alone cannot reserve the corridor-side doorway approach.
@@ -1176,7 +1332,9 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
                        for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1))):
                     return False
             candidate = blocked_cells | set(cells)
-            if len(_reachable(tiles, start, locked_open=True, blocked=candidate)) < baseline - len(candidate):
+            if not _reach_preserved(candidate):
+                return False
+            if not _bypass_ok(tiles, things, cells):
                 return False
             for c, item in pieces:
                 _set(things, *c, item)
@@ -2197,7 +2355,13 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
                         rng.shuffle(terminus)
                         if terminus:
                             target = terminus.pop()
-                    if item in STATIC_BLOCKING:
+                    # ENGINE_SOLID, not STATIC_BLOCKING: the spear display is
+                    # solid to the engine and absent from the registries, so this
+                    # dispatch used to hand it to the open path, which checks
+                    # neither keep_clear nor reachability. A prop the player
+                    # cannot walk through belongs on the checked path whatever
+                    # the registries say about it.
+                    if item in ENGINE_SOLID:
                         _try_place([target], item, "density-fill")
                     elif not _place_open(target, item):
                         continue
@@ -2239,8 +2403,9 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
             if target is None:
                 continue
             candidate = (blocked_cells - {cell}) | {target}
-            if len(_reachable(tiles, start, locked_open=True,
-                              blocked=candidate)) < baseline - len(candidate):
+            if not _reach_preserved(candidate):
+                continue
+            if not _bypass_ok(tiles, things, [target], vacated=(cell,)):
                 continue
             _set(things, *cell, 0)
             _set(things, *target, item)
@@ -2398,8 +2563,8 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
                 continue
             if deep not in mouths:
                 candidate = blocked_cells | {deep}
-                if len(_reachable(tiles, start, locked_open=True,
-                                  blocked=candidate)) == baseline - len(candidate):
+                if (_reach_preserved(candidate)
+                        and _bypass_ok(tiles, things, [deep])):
                     _set(things, *deep, rng.choice((31, 26, 58)))
                     ledger_reserve(reserved, [deep], "decorations",
                                    "alcove-prop")

@@ -45,13 +45,14 @@ import random
 
 from .campaign import HALLWAY_FIRST_SKELETONS
 from .config import CampaignConfig
-from .grid import (_FLOOR_OR_DOOR, _at, _dead_ends_near,
+from .grid import (_FLOOR_OR_DOOR, _at, _dead_ends_near, _door_zone,
                    _door_would_create_perpendicular_junction, _floor_components,
                    _inside_room, _is_dead_end, _is_floor, _overlaps, _reachable, _set)
 from .model import (AuthoredSightline, FloorPlan, PlacedPlan, Room, RoomSpec,
                     SharedVoid)
-from .wl6 import (DOOR_EW, DOOR_GOLD_EW, DOOR_NS, DOORS, FLOOR, GRID,
-                  STATIC_BLOCKING, WALL, ZONE_MAX)
+from .wl6 import (DOOR_ELEVATOR, DOOR_ELEVATOR_NS, DOOR_EW, DOOR_GOLD_EW,
+                  DOOR_NS, DOORS, FLOOR, GRID, LOCKED_DOORS, STATIC_BLOCKING,
+                  WALL, ZONE_MAX)
 from .ledger import reserve as ledger_reserve
 
 
@@ -2507,21 +2508,148 @@ def _remove_redundant_plain_doors(tiles: list[int]) -> int:
     leave the open route and remove the now-purely-cosmetic plain door.
     Locked and elevator doors have separate gating invariants and are not
     considered here.
+
+    A door pierces a *run* of slabs, not always a single one: a wall two tiles
+    thick gets a door in each tile, and then each slab's flanking cell is the
+    other slab, which is not in any floor component -- so the test read None,
+    never fired, and a fully cosmetic pair survived precisely because there were
+    two of them. Sparse seed '42' floor 8 shipped one at (35,28)+(36,28).
+    Resolving each side across consecutive slabs judges the run as the one
+    threshold it really is, and a redundant run is removed whole; a run that
+    does gate is left for `_remove_stacked_doors` to thin to a single slab.
     """
     components = _floor_components(tiles)
     owner = {cell: index for index, component in enumerate(components) for cell in component}
     removed = 0
+    handled: set[tuple[int, int]] = set()
     for index, tile in enumerate(tiles):
         if tile not in (DOOR_EW, DOOR_NS):
             continue
         x, y = index % GRID, index // GRID
+        if (x, y) in handled:
+            continue
         dx, dy = (1, 0) if tile % 2 == 0 else (0, 1)
-        before = owner.get((x - dx, y - dy))
-        after = owner.get((x + dx, y + dy))
+        # Walk the run of slabs along this door's own travel axis. A locked or
+        # elevator slab anywhere in it makes the whole run someone else's.
+        run = [(x, y)]
+        for step in (1, -1):
+            cursor = (x + step * dx, y + step * dy)
+            while _at(tiles, *cursor) in DOORS:
+                run.append(cursor)
+                cursor = (cursor[0] + step * dx, cursor[1] + step * dy)
+        if any(_at(tiles, *cell) not in (DOOR_EW, DOOR_NS) for cell in run):
+            handled.update(run)
+            continue
+        low = min(run, key=lambda cell: cell[0] * dx + cell[1] * dy)
+        high = max(run, key=lambda cell: cell[0] * dx + cell[1] * dy)
+        before = owner.get((low[0] - dx, low[1] - dy))
+        after = owner.get((high[0] + dx, high[1] + dy))
+        handled.update(run)
         if before is not None and before == after:
-            _set(tiles, x, y, FLOOR)
-            removed += 1
+            for cell in run:
+                _set(tiles, *cell, FLOOR)
+                removed += 1
     return removed
+
+
+def _remove_stacked_doors(tiles: list[int]) -> int:
+    """Collapse two door slabs standing back to back into one threshold.
+
+    Every door pass tests the chokepoint condition on its own, and a neck one
+    tile wide is still one tile wide after a slab lands in it -- so a later pass
+    can door the very next cell too, and the player opens a door onto another
+    door. Two pairs stood across 68 sampled floors, both on sparse seed '42'
+    floor 8: (46,17)+(46,18) and (35,28)+(36,28), each a matched pair sharing
+    its travel axis.
+
+    The survivor is ranked, never coined: a locked or elevator door outranks a
+    plain one, because its gating carries progression, and between two equals
+    the first in map order stays.
+
+    The removal is kept only if the survivor still gates -- its two flanking
+    cells must stay in separate floor components with every door held shut. That
+    is what keeps this from turning a *side-by-side* pair, two slabs across one
+    two-wide neck, into a door with a floor-only walkaround beside it, which
+    `test_plain_doors_have_no_floor_only_walkaround` forbids. No side-by-side
+    pair occurred in the sample; if one ever does it is left alone rather than
+    repaired blind. Uses no rng, so the shared generation stream is untouched.
+    """
+    gated = LOCKED_DOORS | {DOOR_ELEVATOR, DOOR_ELEVATOR_NS}
+    removed = 0
+    for index in range(len(tiles)):
+        tile = tiles[index]
+        if tile not in DOORS:
+            continue
+        x, y = index % GRID, index // GRID
+        for dx, dy in ((1, 0), (0, 1)):
+            neighbour = (x + dx, y + dy)
+            other = _at(tiles, *neighbour)
+            if other not in DOORS:
+                continue
+            if tile not in gated and other in gated:
+                victim, keeper, kept = (x, y), neighbour, other
+            else:
+                victim, keeper, kept = neighbour, (x, y), tile
+            _set(tiles, *victim, FLOOR)
+            kdx, kdy = (1, 0) if kept % 2 == 0 else (0, 1)
+            owner = {cell: component
+                     for component, cells in enumerate(_floor_components(tiles))
+                     for cell in cells}
+            before = owner.get((keeper[0] - kdx, keeper[1] - kdy))
+            after = owner.get((keeper[0] + kdx, keeper[1] + kdy))
+            if before is not None and before == after:
+                _set(tiles, *victim, other if victim == neighbour else tile)
+                continue
+            removed += 1
+            if victim == (x, y):
+                break
+    return removed
+
+
+def _open_closet_doors(tiles: list[int], min_cells: int = 16) -> int:
+    """Open plain doors that gate nothing bigger than a cupboard.
+
+    A door earns its place by gating a space worth gating. Across 68 sampled
+    floors, 34 plain doors instead opened onto a dead-end pocket smaller than
+    4x4 -- 33 of them a single cell -- which reads as a door cut into a wall for
+    no reason, with a hole cut behind it for no reason either. Both halves are
+    one artifact: a connector that claimed its threshold and never got the
+    corridor it was claiming it for.
+
+    Opening the door rather than sealing it keeps the pocket, which then belongs
+    to the space it always adjoined: an ordinary recess, which the dead-end
+    occupancy pass dresses as the niche-with-a-suit-of-armour the authored maps
+    are full of. Sealing it instead would throw away a good architectural
+    detail to hide a bad door.
+
+    Two things this deliberately does not touch. Locked and elevator doors have
+    their own gating invariants, exactly as in `_remove_redundant_plain_doors`.
+    And the pocket must be one this door is the *sole* opening of: 47 of the
+    sampled sub-4x4 regions were short corridor segments gated at both ends,
+    where the space is a route and its doors carry it. Uses no rng, so the
+    shared generation stream is untouched.
+    """
+    opened = 0
+    for index, tile in enumerate(list(tiles)):
+        if tile not in (DOOR_EW, DOOR_NS):
+            continue
+        x, y = index % GRID, index // GRID
+        dx, dy = (1, 0) if tile % 2 == 0 else (0, 1)
+        for side in ((x - dx, y - dy), (x + dx, y + dy)):
+            if not _is_floor(_at(tiles, *side)):
+                continue
+            region = _door_zone(tiles, side)
+            if len(region) >= min_cells:
+                continue
+            adjoining = {(cx + ndx, cy + ndy) for cx, cy in region
+                         for ndx, ndy in ((1, 0), (-1, 0), (0, 1), (0, -1))
+                         if _at(tiles, cx + ndx, cy + ndy) in DOORS}
+            if adjoining != {(x, y)}:
+                continue
+            _set(tiles, x, y, FLOOR)
+            opened += 1
+            break
+    return opened
 
 
 def _heal_pinched_room_door_pairs(tiles: list[int], rooms: list[Room],
