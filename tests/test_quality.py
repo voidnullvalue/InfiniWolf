@@ -10,7 +10,8 @@ import unittest
 
 from infiniwolf.model import (EncounterPlacement, GeneratedMap, Room, SecretDetail,
                               SpritePlacement)
-from infiniwolf.quality import _critique, weighted_distance
+from infiniwolf.quality import (UNMEASURED, _critique, quality_report,
+                                    weighted_distance)
 from infiniwolf.wl6 import FLOOR, GRID, WALL
 
 
@@ -49,6 +50,37 @@ class WeightedDistanceTests(unittest.TestCase):
     def test_symmetric(self):
         a, b = ("x", "x", "y"), ("y", "z")
         self.assertEqual(weighted_distance(a, b), weighted_distance(b, a))
+
+
+class QualityReportTests(unittest.TestCase):
+    SCALARS = (
+        "spatial_composition", "route_quality", "navigational_legibility",
+        "encounter_quality", "pacing_quality", "secret_quality",
+        "landmark_quality", "corpus_similarity", "campaign_contrast",
+    )
+
+    def test_report_is_bounded_and_unmeasured_fields_are_honest(self):
+        sample = level(rooms=(Room(10, 10, 6, 6),),
+                       critical_route=(0,), room_concepts=("hall",),
+                       room_shapes=("rectangle",), room_districts=(0,))
+        report = quality_report(sample, [], object(), campaign_contrast=4.0)
+        for name in self.SCALARS:
+            with self.subTest(metric=name):
+                self.assertGreaterEqual(getattr(report, name), 0.0)
+                self.assertLessEqual(getattr(report, name), 1.0)
+        self.assertEqual(report.encounter_quality, UNMEASURED)
+        self.assertEqual(report.pacing_quality, UNMEASURED)
+        self.assertEqual(report.campaign_contrast, 1.0)
+        self.assertEqual(report.severe_defects, ("no_loop",))
+        self.assertIn("no_loop", report.diagnostics)
+
+    def test_report_is_deterministic_and_does_not_read_config(self):
+        sample = level(rooms=(Room(10, 10, 6, 6),),
+                       critical_route=(0,), room_concepts=("hall",),
+                       room_shapes=("rectangle",), room_districts=(0,))
+        first = quality_report(sample, [level()], object())
+        second = quality_report(sample, [], {"different": "config"})
+        self.assertEqual(first, second)
 
 
 class CritiqueFlagTests(unittest.TestCase):

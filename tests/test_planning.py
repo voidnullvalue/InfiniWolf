@@ -155,5 +155,58 @@ class PlanningTests(unittest.TestCase):
                         f"{skeleton} planned only {corridors} corridor rooms")
 
 
+    def test_ordinary_floors_reserve_authored_programs_inside_the_cap(self):
+        for complexity in range(1, 6):
+            target = min(24, 14 + 2 * complexity)
+            for seed in self.SEEDS:
+                with self.subTest(complexity=complexity, seed=seed):
+                    p = plan(seed, complexity=complexity)
+                    primary = [item for item in p.set_pieces
+                               if item.scale == "primary"]
+                    secondary = [item for item in p.set_pieces
+                                 if item.scale == "secondary"]
+                    self.assertEqual(len(primary), 1)
+                    self.assertIn(len(secondary), (1, 2))
+                    families = [item.family for item in p.set_pieces]
+                    self.assertEqual(len(families), len(set(families)),
+                                     "set-piece families repeat within a floor")
+                    self.assertIn(len(primary[0].rooms), range(3, 7))
+                    core = primary[0].rooms[:3]
+                    self.assertTrue(set(core) <= p.critical)
+                    self.assertEqual(tuple(second - first for first, second
+                                           in zip(core, core[1:])), (1, 1))
+                    self.assertTrue(all(1 <= len(item.rooms) <= 3
+                                        for item in secondary))
+                    self.assertEqual(len(p.specs), target)
+
+                    filler = [index for index, spec in enumerate(p.specs)
+                              if spec.motif == "filler"]
+                    program_rooms = [room for item in p.set_pieces
+                                     for room in item.rooms]
+                    if filler:
+                        self.assertLess(max(program_rooms), min(filler),
+                                        "generic rooms preceded set pieces")
+
+    def test_set_piece_contracts_name_real_rooms_and_real_edges(self):
+        for seed in self.SEEDS:
+            with self.subTest(seed=seed):
+                p = plan(seed)
+                edge_set = set(p.edges)
+                for item in p.set_pieces:
+                    self.assertEqual(len(item.rooms), len(item.room_roles))
+                    self.assertIn(item.entry_role, item.room_roles)
+                    self.assertIn(item.exit_role, item.room_roles)
+                    self.assertTrue(set(item.required_edges) <= edge_set)
+                    for room, role in zip(item.rooms, item.room_roles):
+                        self.assertLess(room, len(p.specs))
+                        self.assertEqual(
+                            p.specs[room].motif,
+                            f"setpiece:{item.family}:{role}")
+
+    def test_special_floor_programs_are_left_alone(self):
+        for seed in self.SEEDS:
+            self.assertEqual(plan(seed, number=9).set_pieces, ())
+            self.assertEqual(plan(seed, number=10).set_pieces, ())
+
 if __name__ == "__main__":
     unittest.main()

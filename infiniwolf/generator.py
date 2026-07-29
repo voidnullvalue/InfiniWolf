@@ -71,7 +71,7 @@ from .progression import (  # noqa: F401
 )
 from .planning import _plan_floor  # noqa: F401
 from .vignettes import plan_vignettes
-from .quality import _critique  # noqa: F401
+from .quality import _critique, quality_report  # noqa: F401
 from .special_floors import _place_boss, _prepare_boss_arena  # noqa: F401
 from .pickups import (  # noqa: F401
     AUTHORED_PICKUP_TEMPLATES, _PlacementGrammar, _place_authored_pickups,
@@ -89,9 +89,10 @@ from .geometry import (  # noqa: F401
     _carve_notches, _carve_swastika_profile, _carve_symmetric_profiles,
     _door_axis, _door_candidate, _far_from_doors, _place_planned_rooms,
     _room_size, _snap_offsets, _widen_corridors, ShapeBudget, shape_budget,
-    realize_room_shapes,
+    plan_ring_hall, realize_room_shapes,
     SHAPE_MULTIPLIERS, SHAPE_TARGETS,
-    _assign_sound_zones, _break_long_sightlines, _heal_pinched_room_door_pairs,
+    _assign_sound_zones, _break_long_sightlines, _close_door_graph_loops,
+    _heal_pinched_room_door_pairs,
     _limit_theme_merge_size, _remove_redundant_plain_doors,
     _spatial_districts, _split_oversized_zones, _harvest_sky_vistas,
     _primary_hall_geometry, paint_room_floors, plan_authored_sightlines, carve_shared_void,
@@ -99,7 +100,8 @@ from .geometry import (  # noqa: F401
 from .campaign import (  # noqa: F401
     CIRCULATION_MODES, CIRCULATION_SKELETONS, FLOOR_VARIANT_ROTATION,
     HALLWAY_FIRST_SKELETONS, PROGRESSION_GRAMMARS, RARE_MOTIF_CHANCE,
-    VARIANT_STRONGHOLD, VARIANT_VAULT, _aardwolf_variant, _candidate_score,
+    VARIANT_STRONGHOLD, VARIANT_VAULT, _aardwolf_variant, _campaign_contrast,
+    _candidate_score,
     _circulation_sequence, _lock_schedule, _progression_sequence,
     _rare_motif_schedule, _set_distance, _variant_sequence,
     CampaignSchedule, resolve_schedule, _layout_signature, validate_campaign_budgets,
@@ -245,6 +247,12 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
              required_post_anchor=required_post_anchor,
              planned_exit_index=planned_exit_index, boss_locks_exit=boss_locks_exit,
              arrival=arrival)
+    ring_hall_index = plan_ring_hall(
+        tiles, rooms, specs, geometry_rng, number=number,
+        shape_scale=shape_scale, protected=protected_elevators,
+        exit_index=preplaced_exit_index)
+    if ring_hall_index is not None:
+        realized_shapes[ring_hall_index] = "ring-hall"
     door_zones: set[tuple[int, int]] = ({arrival.portal} if arrival else set())
     paths = [_carve_connection(tiles, rooms[a], rooms[b], geometry_rng, complexity,
                                door_zones, protected_elevators)
@@ -350,6 +358,10 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
                              room_index=objective.host_room)
     _break_long_sightlines(tiles, things, rooms, reserved, geometry_rng, start)
     _split_oversized_zones(tiles, rooms, geometry_rng, reserved)
+    # Before the redundant-door sweep, so a loop closed here is judged on its
+    # merits by that pass rather than being installed after it has already run.
+    _close_door_graph_loops(tiles, rooms, reserved, placed.loop_edges,
+                            budget=2 if number in (9, 10) else 1)
     if _remove_redundant_plain_doors(tiles):
         # A removed door can extend a floor-only sightline which the earlier
         # pass correctly treated as interrupted; repair only that new case.
@@ -422,7 +434,8 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
                                                     theme_pool=floor_variant.theme_pool)
     jail_rooms = _select_jail_rooms(rooms, districts, component_of, group_theme, tiles, semantics_rng,
                                     jail_probability=floor_variant.jail_probability)
-    identities = _room_identities(rooms, specs, districts, edges, floor_variant, jail_rooms,
+    identities = _room_identities(tiles,
+                                  rooms, specs, districts, edges, floor_variant, jail_rooms,
                                   component_of, group_theme, exit_room, boss_room,
                                   plan.special_family, key_objectives)
     # Intent is selected from semantic identities and graph adjacency once.  It
@@ -556,15 +569,28 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
     exit_depth_ratio = final_distances.get(terminus, 0) / deepest_room_distance
     layout_signature = _layout_signature(
         plan, specs, realized_shapes, guard_recesses, encounters, edges)
+    # A vignette is *realized* only when all three systems actually contributed;
+    # anything less is an intent that did not come off, and it degrades to no
+    # vignette rather than failing the floor. Recording every plan as realized
+    # regardless made validate_map raise "realized vignette lacks a cross-system
+    # component", which threw away an otherwise sound map -- planning, placement,
+    # routing and population included -- because a decorative coordination
+    # feature could not find a compatible room pair. It was the single largest
+    # source of rejected attempts at 28 of 90. The plan is still recorded in
+    # `vignette_plans`, so the intent remains auditable and its own ownership and
+    # concept checks still apply; only the claim of realization is dropped.
     realized_vignettes = tuple(
-        RealizedVignette(item.family, item.rooms,
-                         tuple(sorted({entry.room_index for entry in encounters
-                                       if entry.room_index in item.rooms})),
-                         tuple(sorted({entry.room_index for entry in pickup_placements
-                                       if entry.reason == f"vignette-{item.family}"})),
-                         tuple(room for room in item.rooms
-                               if room_motifs[room] == item.decoration_treatment))
-        for item in vignette_plans)
+        realized for realized in (
+            RealizedVignette(item.family, item.rooms,
+                             tuple(sorted({entry.room_index for entry in encounters
+                                           if entry.room_index in item.rooms})),
+                             tuple(sorted({entry.room_index for entry in pickup_placements
+                                           if entry.reason == f"vignette-{item.family}"})),
+                             tuple(room for room in item.rooms
+                                   if room_motifs[room] == item.decoration_treatment))
+            for item in vignette_plans)
+        if realized.encounter_rooms and realized.pickup_rooms
+        and realized.decoration_rooms)
     result = GeneratedMap(number=number, tiles=tiles, things=things, start=start,
                           exit_stand=exit_stand, secret_rewards=rewards, seed=seed,
                           has_secret_exit=secret_exit, locked_doors=locks, boss=is_boss,
@@ -624,22 +650,111 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
 
 
 
-def _best_candidate(candidates, clean, accepted, config):
-    """Pick among hard-valid candidates: fewest critique flags first, then score.
+_SELECTION_TERMS = (
+    "severe_defects",
+    "live_diagnostics",
+    "corpus_similarity",
+    "gameplay_mean",
+    "composition_mean",
+    "campaign_contrast",
+)
 
-    Flag count dominates deliberately. A candidate with a concrete defect should
-    never outrank a clean one because it contrasts more with the previous floor;
-    contrast is a tiebreaker among equally sound maps, not a currency that buys
-    off a defect.
+
+def _candidate_ranking(level, accepted, config):
+    """Return the selector's unchanged key plus its explainable components."""
+    contrast = _campaign_contrast(level, accepted, config)
+    report = quality_report(
+        level, accepted, config, campaign_contrast=contrast)
+    gameplay = (report.route_quality + report.pacing_quality
+                + report.encounter_quality) / 3.0
+    composition = (report.spatial_composition
+                   + report.navigational_legibility
+                   + report.secret_quality
+                   + report.landmark_quality) / 4.0
+    values = (
+        len(report.severe_defects),
+        len(report.diagnostics),
+        report.corpus_similarity,
+        gameplay,
+        composition,
+        report.campaign_contrast,
+    )
+    key = (-values[0], -values[1], *values[2:])
+    return key, values, report
+
+
+def _selection_record(candidates, clean, accepted, config, winner, mode):
+    """Build JSON-safe evidence for one completed candidate selection."""
+    active = clean or candidates
+    active_ids = {id(level) for level in active}
+    rows = []
+    for index, level in enumerate(candidates, 1):
+        key, values, report = _candidate_ranking(level, accepted, config)
+        rows.append({
+            "candidate": index,
+            "map_seed": level.seed,
+            "eligible": id(level) in active_ids,
+            "winner": level is winner,
+            "ranking_key": list(key),
+            "terms": {
+                name: {"value": value, "rank_value": rank}
+                for name, value, rank in zip(_SELECTION_TERMS, values, key)
+            },
+            "severe_defects": list(report.severe_defects),
+            "live_diagnostics": list(report.diagnostics),
+        })
+
+    winner_row = next(row for row in rows if row["winner"])
+    eligible_rows = [row for row in rows if row["eligible"] and not row["winner"]]
+    runner_up = max(eligible_rows, key=lambda row: row["ranking_key"],
+                    default=None)
+    decisive = None
+    if runner_up is not None:
+        decisive = next(
+            (name for name, winner_value, runner_value in zip(
+                _SELECTION_TERMS,
+                winner_row["ranking_key"],
+                runner_up["ranking_key"],
+            ) if winner_value != runner_value),
+            None,
+        )
+    return {
+        "floor": winner.number,
+        "mode": mode,
+        "active_pool": "clean" if clean else "all-hard-valid",
+        "winner": winner_row["candidate"],
+        "runner_up": runner_up["candidate"] if runner_up else None,
+        "decisive_term": decisive,
+        "candidates": rows,
+    }
+
+
+def _best_candidate(candidates, clean, accepted, config, selection_trace=None):
+    """Pick hard-valid candidates by quality, with contrast last.
+
+    Keeping the clean sub-pool preserves the stronger invariant that any critique
+    flag, including a regression-only tripwire, prevents a candidate outranking a
+    clean map. Within the active pool the report ranks structural defects before
+    diagnostics, measured corpus fit, gameplay and composition; campaign novelty
+    can only break a complete quality tie.
     """
     pool = clean or candidates
-    return max(pool, key=lambda level: (-len(level.critique),
-                                        _candidate_score(level, accepted, config)))
+
+    def key(level):
+        return _candidate_ranking(level, accepted, config)[0]
+
+    winner = max(pool, key=key)
+    if selection_trace is not None:
+        selection_trace(_selection_record(
+            candidates, clean, accepted, config, winner, "ranked"))
+    return winner
 
 
 def generate_campaign(config: CampaignConfig, output: Path,
                       progress: Callable[[int, int], None] | None = None,
-                      cancelled: Callable[[], bool] | None = None) -> Path:
+                      cancelled: Callable[[], bool] | None = None,
+                      selection_trace: Callable[[dict[str, object]], None] | None = None,
+                      level_collector: list[GeneratedMap] | None = None) -> Path:
     schedule = resolve_schedule(config)
     levels = []
     secret_from = schedule.secret_from
@@ -668,15 +783,22 @@ def generate_campaign(config: CampaignConfig, output: Path,
             if not candidate.critique:
                 clean.append(candidate)
             if quality is GenerationQuality.FAST and clean:
-                levels.append(clean[0])
+                winner = clean[0]
+                levels.append(winner)
+                if selection_trace is not None:
+                    selection_trace(_selection_record(
+                        candidates, clean, levels[:-1], config, winner,
+                        "first-clean"))
                 break
             if len(clean) >= pool_size or len(candidates) >= pool_size:
-                levels.append(_best_candidate(candidates, clean, levels, config))
+                levels.append(_best_candidate(
+                    candidates, clean, levels, config, selection_trace))
                 break
         else:
             if not candidates:
                 raise RuntimeError(f"floor {number} failed generation: {last_error}")
-            levels.append(_best_candidate(candidates, clean, levels, config))
+            levels.append(_best_candidate(
+                candidates, clean, levels, config, selection_trace))
         if progress:
             progress(number, 10)
     validate_campaign_budgets(levels, schedule)
@@ -690,6 +812,8 @@ def generate_campaign(config: CampaignConfig, output: Path,
     apply_campaign_watermark(levels, config.seed)
     for level in levels:
         validate_map(level)
+    if level_collector is not None:
+        level_collector.extend(levels)
     manifest = _manifest(
         config, levels, secret_from, vine_floor, vine_budget, realized_vine_runs,
         gallery_floor, realized_gallery_floors, rare_motif_floor, realized_rare,

@@ -15,7 +15,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / 'tools'))
 from infiniwolf import wl6 as G
-from inspect_map import parse_wad
+from corpus_io import iter_corpus_maps
 
 # The hand-authored reference corpus: sibling ECWolf mods installed alongside
 # this repo. Override with --corpus when they live elsewhere.
@@ -44,17 +44,14 @@ for fam in G.WALL_MATERIALS:
 
 def load(pattern=DEFAULT_CORPUS):
     maps = []
-    for f in sorted(glob.glob(pattern)):
-        if 'infiniwolf' in f:
+    for entry in iter_corpus_maps(pattern):
+        # This miner indexes on a fixed 64-tile stride, so a larger map would
+        # be read as garbage rather than merely being unsupported.
+        if entry.width != GRID:
             continue
-        mod = f.split('/')[-2]
-        z = zipfile.ZipFile(f)
-        for n in z.namelist():
-            if not n.lower().endswith('.wad'):
-                continue
-            p = parse_wad(z.read(n))
-            if p and sum(1 for v in p[1] if v in DECOR) >= 5:
-                maps.append((mod, n, p[0], p[1]))
+        if sum(1 for v in entry.things if v in DECOR) >= 5:
+            mod, _, name = entry.label.partition('/')
+            maps.append((mod, name, entry.tiles, entry.things))
     return maps
 
 

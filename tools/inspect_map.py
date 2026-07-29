@@ -39,9 +39,55 @@ PATROL_CODES = frozenset(
 TREASURE_LO, TREASURE_HI = 43, 56  # gold key through the native pickup block
 DIRS4 = ((1, 0), (-1, 0), (0, 1), (0, -1))
 
+# Wolf3D's AMBUSHTILE is 106 and the engine walks it, but the generator never
+# emits one so grid._is_floor starts at FLOOR (108). 200 of the 218 authored
+# corpus maps use it (median 25 cells), and reading those as wall punches
+# phantom pillars into corpus rooms. Corpus callers pass corpus_is_floor;
+# generated maps keep the generator's own predicate so the two never disagree
+# about our output.
+CORPUS_FLOOR_MIN = 106
+
+
+def corpus_is_floor(value: int) -> bool:
+    return value >= CORPUS_FLOOR_MIN
+
+
+def at(plane: list[int], x: int, y: int, grid: int = G.GRID) -> int:
+    """Bounds-checked plane read. Mirrors grid._at but for any map size."""
+    return plane[y * grid + x] if 0 <= x < grid and 0 <= y < grid else -1
+
+
+def floor_components(tiles: list[int], is_floor=G._is_floor,
+                     grid: int = G.GRID) -> list[set[tuple[int, int]]]:
+    """Connected components of plain floor, the partition _assign_sound_zones
+    turns into zone ids. Doors are boundaries and never join a component.
+
+    Reimplemented rather than reusing grid._floor_components because that one
+    hardcodes both the 64-tile grid and the generator's floor predicate, and
+    corpus maps satisfy neither."""
+    unassigned = {(x, y) for y in range(grid) for x in range(grid)
+                  if is_floor(at(tiles, x, y, grid))
+                  and at(tiles, x, y, grid) != G.SECRET_EXIT_ZONE}
+    components = []
+    while unassigned:
+        start = min(unassigned, key=lambda point: (point[1], point[0]))
+        component = {start}
+        queue = deque([start])
+        unassigned.remove(start)
+        while queue:
+            x, y = queue.popleft()
+            for dx, dy in DIRS4:
+                nxt = x + dx, y + dy
+                if nxt in unassigned:
+                    unassigned.remove(nxt)
+                    component.add(nxt)
+                    queue.append(nxt)
+        components.append(component)
+    return components
+
 # --------------------------------------------------------------------------- rendering
 
-def cell_char(tile: int, thing: int) -> str:
+def cell_char(tile: int, thing: int, is_floor=G._is_floor) -> str:
     """One ASCII glyph for a tile/thing pair. Things win over base tiles."""
     if thing == G.PUSHWALL:
         return "P"
@@ -67,17 +113,18 @@ def cell_char(tile: int, thing: int) -> str:
         return "+"
     if tile == G.ELEVATOR_TILE:
         return "E"
-    if G._is_floor(tile):
+    if is_floor(tile):
         return "."
     return "#"
 
-def render(tiles: list[int], things: list[int]) -> list[str]:
+def render(tiles: list[int], things: list[int], is_floor=G._is_floor,
+           grid: int = G.GRID) -> list[str]:
     """ASCII rows, trimmed of all-solid border rows/columns."""
-    w = h = G.GRID
+    w = h = grid
     interesting = [
         (x, y) for y in range(h) for x in range(w)
-        if G._is_floor(G._at(tiles, x, y)) or G._at(tiles, x, y) in G.DOORS
-        or G._at(tiles, x, y) == G.ELEVATOR_TILE or things[y * w + x]
+        if is_floor(at(tiles, x, y, grid)) or at(tiles, x, y, grid) in G.DOORS
+        or at(tiles, x, y, grid) == G.ELEVATOR_TILE or things[y * w + x]
     ]
     if not interesting:
         return []
@@ -85,13 +132,18 @@ def render(tiles: list[int], things: list[int]) -> list[str]:
     ys = [p[1] for p in interesting]
     x0, x1 = max(0, min(xs) - 1), min(w - 1, max(xs) + 1)
     y0, y1 = max(0, min(ys) - 1), min(h - 1, max(ys) + 1)
-    return ["".join(cell_char(G._at(tiles, x, y), things[y * w + x]) for x in range(x0, x1 + 1))
+    return ["".join(cell_char(at(tiles, x, y, grid), things[y * w + x], is_floor)
+                    for x in range(x0, x1 + 1))
             for y in range(y0, y1 + 1)]
 
 # --------------------------------------------------------------------------- WAD/pk3 IO
 
-def parse_wad(data: bytes) -> tuple[list[int], list[int]] | None:
-    """Parse a WDC3.1 PWAD, returning (tiles, things) or None if unreadable."""
+def parse_wad(data: bytes) -> tuple[list[int], list[int], int, int] | None:
+    """Parse a WDC3.1 PWAD, returning (tiles, things, width, height) or None.
+
+    Any square-ish map size is accepted. Restricting this to 64x64 silently
+    dropped every 128x128 corpus pack from measurement, which is a survey bug
+    rather than a real constraint -- the metrics that matter are ratios."""
     if len(data) < 12 or data[:4] != b"PWAD":
         return None
     size = struct.unpack_from("<I", data, 8)[0]
@@ -102,21 +154,23 @@ def parse_wad(data: bytes) -> tuple[list[int], list[int]] | None:
     off = 14 + namelen
     w, h = struct.unpack_from("<HH", body, off)
     off += 4
-    if w * h != G.GRID * G.GRID or numplanes < 2:
+    if numplanes < 2 or w != h or not 0 < w <= 256:
+        return None
+    if len(body) < off + 2 * numplanes * w * h:
         return None
     planes = []
     for _ in range(numplanes):
         planes.append(list(struct.unpack_from(f"<{w * h}H", body, off)))
         off += w * h * 2
-    return planes[0], planes[1]
+    return planes[0], planes[1], w, h
 
-def load_wad_file(path: Path) -> tuple[list[int], list[int]]:
+def load_wad_file(path: Path) -> tuple[list[int], list[int], int, int]:
     parsed = parse_wad(path.read_bytes())
     if parsed is None:
         raise ValueError(f"{path}: not a readable WDC3.1 PWAD")
     return parsed
 
-def load_pk3(path: Path, floor: int) -> tuple[list[int], list[int]]:
+def load_pk3(path: Path, floor: int) -> tuple[list[int], list[int], int, int]:
     name = f"maps/iw{floor:02d}.wad"
     with zipfile.ZipFile(path) as package:
         if name not in package.namelist():
@@ -128,28 +182,30 @@ def load_pk3(path: Path, floor: int) -> tuple[list[int], list[int]]:
 
 # --------------------------------------------------------------------------- detection
 
-def find_start(things: list[int]) -> tuple[int, int] | None:
+def find_start(things: list[int], grid: int = G.GRID) -> tuple[int, int] | None:
     for index, thing in enumerate(things):
         if G.PLAYER_START <= thing <= G.PLAYER_START + 3:
-            return index % G.GRID, index // G.GRID
+            return index % grid, index // grid
     return None
 
-def find_exit_stand(tiles: list[int]) -> tuple[int, int] | None:
+def find_exit_stand(tiles: list[int], is_floor=G._is_floor,
+                    grid: int = G.GRID) -> tuple[int, int] | None:
     """Locate a floor cell standing on the east/west axis of an elevator
     switch (tile 21), the same usability check validate_map performs."""
-    for y in range(G.GRID):
-        for x in range(G.GRID):
-            if not G._is_floor(G._at(tiles, x, y)):
+    for y in range(grid):
+        for x in range(grid):
+            if not is_floor(at(tiles, x, y, grid)):
                 continue
             for dx in (1, -1):
-                if (G._at(tiles, x + dx, y) == G.ELEVATOR_TILE
-                        and G._is_floor(G._at(tiles, x - dx, y))):
+                if (at(tiles, x + dx, y, grid) == G.ELEVATOR_TILE
+                        and is_floor(at(tiles, x - dx, y, grid))):
                     return x, y
     return None
 
 # --------------------------------------------------------------------------- metrics
 
-def bfs_distances(tiles: list[int], start: tuple[int, int] | None) -> dict[tuple[int, int], int]:
+def bfs_distances(tiles: list[int], start: tuple[int, int] | None,
+                  is_floor=G._is_floor, grid: int = G.GRID) -> dict[tuple[int, int], int]:
     if start is None:
         return {}
     dist = {start: 0}
@@ -160,21 +216,22 @@ def bfs_distances(tiles: list[int], start: tuple[int, int] | None) -> dict[tuple
             nxt = x + dx, y + dy
             if nxt in dist:
                 continue
-            tile = G._at(tiles, *nxt)
-            if G._is_floor(tile) or tile in G.DOORS:
+            tile = at(tiles, *nxt, grid)
+            if is_floor(tile) or tile in G.DOORS:
                 dist[nxt] = dist[(x, y)] + 1
                 queue.append(nxt)
     return dist
 
-def door_graph(tiles: list[int]) -> dict[str, float]:
+def door_graph(tiles: list[int], is_floor=G._is_floor,
+               grid: int = G.GRID) -> dict[str, float]:
     """Rooms-as-components/doors-as-edges graph metrics, adapted from the
     scratch topology script onto the generator's own floor/door primitives."""
-    components = G._floor_components(tiles)
+    components = floor_components(tiles, is_floor, grid)
     comp_of = {cell: i for i, comp in enumerate(components) for cell in comp}
     edges: set[tuple[int, int]] = set()
-    for y in range(G.GRID):
-        for x in range(G.GRID):
-            if G._at(tiles, x, y) not in G.DOORS:
+    for y in range(grid):
+        for x in range(grid):
+            if at(tiles, x, y, grid) not in G.DOORS:
                 continue
             sides = {comp_of[(x + dx, y + dy)] for dx, dy in DIRS4
                      if (x + dx, y + dy) in comp_of}
@@ -199,7 +256,7 @@ def door_graph(tiles: list[int]) -> dict[str, float]:
                     seen.add(nxt); queue.append(nxt)
     big = [i for i, comp in enumerate(components) if len(comp) >= 12]
     degrees = [len(adjacency[i]) for i in big]
-    floor_tiles = sum(1 for tile in tiles if G._is_floor(tile))
+    floor_tiles = sum(1 for tile in tiles if is_floor(tile))
     biggest = max((len(c) for c in components), default=0)
     perfect, pillars = _room_shape(components)
     return {
@@ -237,30 +294,30 @@ def _room_shape(components: list[set[tuple[int, int]]]) -> tuple[int, int]:
             pillars += 1
     return perfect, pillars
 
-def corridor_share(tiles: list[int]) -> float:
+def corridor_share(tiles: list[int], is_floor=G._is_floor, grid: int = G.GRID) -> float:
     """Share of floor cells whose 3x3 neighborhood has <=5 floor cells."""
-    floor_cells = [(x, y) for y in range(G.GRID) for x in range(G.GRID)
-                   if G._is_floor(G._at(tiles, x, y))]
+    floor_cells = [(x, y) for y in range(grid) for x in range(grid)
+                   if is_floor(at(tiles, x, y, grid))]
     if not floor_cells:
         return 0.0
     narrow = 0
     for x, y in floor_cells:
         count = sum(1 for dy in (-1, 0, 1) for dx in (-1, 0, 1)
-                    if G._is_floor(G._at(tiles, x + dx, y + dy)))
+                    if is_floor(at(tiles, x + dx, y + dy, grid)))
         if count <= 5:
             narrow += 1
     return narrow / len(floor_cells)
 
-def longest_straight_run(tiles: list[int]) -> int:
+def longest_straight_run(tiles: list[int], is_floor=G._is_floor, grid: int = G.GRID) -> int:
     """Longest unobstructed floor run along any row or column; doors break
     a run just like walls do."""
     longest = 0
     for horizontal in (True, False):
-        for fixed in range(G.GRID):
+        for fixed in range(grid):
             run = 0
-            for moving in range(G.GRID):
+            for moving in range(grid):
                 x, y = (moving, fixed) if horizontal else (fixed, moving)
-                if G._is_floor(G._at(tiles, x, y)):
+                if is_floor(at(tiles, x, y, grid)):
                     run += 1
                     longest = max(longest, run)
                 else:
@@ -268,12 +325,13 @@ def longest_straight_run(tiles: list[int]) -> int:
     return longest
 
 def enemy_stats(tiles: list[int], things: list[int],
-                start: tuple[int, int] | None) -> dict[str, float | int | None]:
-    positions = [(index % G.GRID, index // G.GRID, thing)
+                start: tuple[int, int] | None, is_floor=G._is_floor,
+                grid: int = G.GRID) -> dict[str, float | int | None]:
+    positions = [(index % grid, index // grid, thing)
                  for index, thing in enumerate(things) if thing in G.ENEMY_CODES]
     quartiles = [0, 0, 0, 0]
     if start is not None and positions:
-        dist = bfs_distances(tiles, start)
+        dist = bfs_distances(tiles, start, is_floor, grid)
         depths = [dist[p[:2]] for p in positions if p[:2] in dist]
         max_depth = max(depths, default=0) or 1
         for depth in depths:
@@ -288,20 +346,22 @@ def enemy_stats(tiles: list[int], things: list[int],
 
 def compute_metrics(tiles: list[int], things: list[int],
                     start: tuple[int, int] | None = None,
-                    exit_stand: tuple[int, int] | None = None) -> dict[str, object]:
-    start = start if start is not None else find_start(things)
-    exit_stand = exit_stand if exit_stand is not None else find_exit_stand(tiles)
-    metrics = door_graph(tiles)
-    metrics["corridor_share"] = corridor_share(tiles)
-    metrics["longest_straight_run"] = longest_straight_run(tiles)
+                    exit_stand: tuple[int, int] | None = None,
+                    is_floor=G._is_floor, grid: int = G.GRID) -> dict[str, object]:
+    start = start if start is not None else find_start(things, grid)
+    exit_stand = (exit_stand if exit_stand is not None
+                  else find_exit_stand(tiles, is_floor, grid))
+    metrics = door_graph(tiles, is_floor, grid)
+    metrics["corridor_share"] = corridor_share(tiles, is_floor, grid)
+    metrics["longest_straight_run"] = longest_straight_run(tiles, is_floor, grid)
     tortuosity = None
     if start is not None and exit_stand is not None:
         manhattan = abs(start[0] - exit_stand[0]) + abs(start[1] - exit_stand[1])
-        walked = bfs_distances(tiles, start).get(exit_stand)
+        walked = bfs_distances(tiles, start, is_floor, grid).get(exit_stand)
         if manhattan and walked is not None:
             tortuosity = walked / manhattan
     metrics["tortuosity"] = tortuosity
-    metrics.update(enemy_stats(tiles, things, start))
+    metrics.update(enemy_stats(tiles, things, start, is_floor, grid))
     return metrics
 
 # --------------------------------------------------------------------------- printing
@@ -325,8 +385,9 @@ LEGEND = ("  legend  S start  E elevator  + door  P pushwall  k key  ! enemy"
           "  * treasure  o solid decor  i light  , open decor")
 
 
-def print_human(tiles: list[int], things: list[int], metrics: dict[str, object]) -> None:
-    for line in render(tiles, things):
+def print_human(tiles: list[int], things: list[int], metrics: dict[str, object],
+                is_floor=G._is_floor, grid: int = G.GRID) -> None:
+    for line in render(tiles, things, is_floor, grid):
         print(line)
     print()
     print(LEGEND)
@@ -341,26 +402,37 @@ def print_human(tiles: list[int], things: list[int], metrics: dict[str, object])
 
 def inspect_single(tiles: list[int], things: list[int], as_json: bool,
                    start: tuple[int, int] | None = None,
-                   exit_stand: tuple[int, int] | None = None) -> None:
-    metrics = compute_metrics(tiles, things, start, exit_stand)
+                   exit_stand: tuple[int, int] | None = None,
+                   is_floor=G._is_floor, grid: int = G.GRID) -> None:
+    metrics = compute_metrics(tiles, things, start, exit_stand, is_floor, grid)
     if as_json:
         print(json.dumps(metrics, indent=2, sort_keys=True))
     else:
-        print_human(tiles, things, metrics)
+        print_human(tiles, things, metrics, is_floor, grid)
 
 def compare_corpus(directory: Path) -> int:
-    wads = sorted(directory.rglob("*.wad"))
+    """Summarise every authored map under a directory, inside .pk3 or loose.
+
+    The corpus is packaged, so an rglob for *.wad alone finds nothing at all --
+    the failure this mode used to report as an empty corpus."""
+    from corpus_io import iter_corpus_maps
+
     rows = []
-    for wad in wads:
+    for entry in iter_corpus_maps(str(directory / "*" / "*.pk3")):
+        rows.append(compute_metrics(entry.tiles, entry.things, None, None,
+                                    corpus_is_floor, entry.width))
+    loose = sorted(directory.rglob("*.wad"))
+    for wad in loose:
         parsed = parse_wad(wad.read_bytes())
         if parsed is None:
             continue
-        tiles, things = parsed
-        rows.append(compute_metrics(tiles, things))
+        tiles, things, width, _ = parsed
+        rows.append(compute_metrics(tiles, things, None, None, corpus_is_floor, width))
     if not rows:
-        print(f"no readable *.wad files under {directory}", file=sys.stderr)
+        print(f"no readable maps in *.pk3 or *.wad under {directory}", file=sys.stderr)
         return 1
-    print(f"Compared {len(rows)} maps under {directory} ({len(wads)} *.wad files found):")
+    print(f"Compared {len(rows)} maps under {directory} "
+          f"({len(loose)} loose *.wad files found):")
     for key, label in HUMAN_LABELS:
         values = [row[key] for row in rows if row[key] is not None]
         if not values:
@@ -414,16 +486,16 @@ def main(argv: list[str] | None = None) -> int:
         if not args.wad.is_file():
             print(f"error: {args.wad} does not exist", file=sys.stderr)
             return 2
-        tiles, things = load_wad_file(args.wad)
-        inspect_single(tiles, things, args.json)
+        tiles, things, width, _ = load_wad_file(args.wad)
+        inspect_single(tiles, things, args.json, is_floor=corpus_is_floor, grid=width)
         return 0
     if args.pk3:
         if not args.pk3.is_file():
             print(f"error: {args.pk3} does not exist", file=sys.stderr)
             return 2
         floor = args.floor if args.floor is not None else 1
-        tiles, things = load_pk3(args.pk3, floor)
-        inspect_single(tiles, things, args.json)
+        tiles, things, width, _ = load_pk3(args.pk3, floor)
+        inspect_single(tiles, things, args.json, grid=width)
         return 0
     if args.seed is None or args.floor is None:
         print("error: --seed and --floor must both be given for floor generation",

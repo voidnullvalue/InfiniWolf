@@ -330,7 +330,8 @@ def validate_map(level: GeneratedMap) -> None:
         allowed_shapes = {"rectangle", "mirrored-notch", "stepped-cross",
                           "single-chamfer", "l-shaped", "shallow-t",
                           "paired-side-bays", "paired-end-bays",
-                          "offset-side-bay", "swastika-profile"}
+                          "offset-side-bay", "apse", "octagon",
+                          "island-block", "ring-hall", "swastika-profile"}
         if any(shape not in allowed_shapes and not shape.startswith("boss-")
                for shape in level.room_shapes):
             raise ValueError("unknown shaped-room family")

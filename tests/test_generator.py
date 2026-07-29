@@ -1152,10 +1152,18 @@ class GeneratorTests(unittest.TestCase):
         floor_ten = _plan_floor(random.Random(710), int(Intensity.NORMAL), 10)
         self.assertEqual(len(floor_ten.specs), 24)
 
+        # Ordinary rooms used to be squares drawn from a single 6-9 range, and
+        # this asserted that band on both axes. That was a proxy for the real
+        # constraint -- keeping routine fights inside the manual's 3-12 tile
+        # effective band -- and the proxy cost the floor its proportions:
+        # measured room aspect was 1.22 where id's own 60 maps and the 227-map
+        # fan corpus independently both report 1.40. A room is now drawn as a
+        # major and a minor span, so what has to stay in the close-quarters band
+        # is the minor axis; the major is what gives the floor its variety.
         for seed in range(64):
             width, height = generator._room_size(random.Random(seed), "standard", 5)
-            self.assertIn(width, range(6, 10))
-            self.assertIn(height, range(6, 10))
+            self.assertIn(min(width, height), range(6, 10))
+            self.assertIn(max(width, height), range(6, 13))
 
     def test_authored_corridor_rooms_are_three_tiles_wide(self):
         """Authored hallway nodes use a three-tile minor axis so their
@@ -2386,13 +2394,35 @@ class GeneratorTests(unittest.TestCase):
                     beside_static = any(
                         _at(level.things, x + dx, y + dy) in generator.STATIC_BLOCKING
                         for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)))
-                    self.assertTrue(near_wall or on_axis or beside_static,
+                    # Ceiling fixtures are laid on a 3-4 tile lattice, which is
+                    # how the authored corpus lights a large hall -- stride 4 by
+                    # length 3 is its modal run. In a 14-wide room that lattice
+                    # legitimately sits clear of both the walls and the centre
+                    # axis, so a partner at exactly one stride reads as
+                    # composition. Only rooms narrower than about ten tiles used
+                    # to exist, which is the sole reason the first three
+                    # predicates covered every case; a lone item still fails.
+                    on_lattice = any(
+                        _at(level.things, x + dx * stride, y + dy * stride) == thing
+                        for stride in (3, 4)
+                        for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)))
+                    self.assertTrue(near_wall or on_axis or beside_static or on_lattice,
                                     f"floating open decor at {(x, y)} "
                                     f"seed {seed} floor {floor}")
 
     def test_reachability_still_holds_with_jail_and_zoned_decor(self):
+        """Validation survives the cellblock treatment, and cellblocks occur.
+
+        The sample is 20 seeds rather than 6 because a jail needs a blue-stone
+        group, a clean five-tile wall run, a 35% draw and then to survive the
+        minority cap -- measured at roughly one floor in ten. Over 18 floors this
+        expected two and drew zero about one run in seven, so it was a coin flip
+        dressed as an invariant: an unrelated change to the geometry stream could
+        fail it while the cellblock machinery worked perfectly. Sixty floors
+        misses under one run in five hundred.
+        """
         saw_jail = False
-        for seed in range(6):
+        for seed in range(20):
             for number in (2, 5, 8):
                 level = _generate_with_retries(CampaignConfig(seed=seed), number)
                 validate_map(level)

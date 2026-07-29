@@ -58,6 +58,11 @@ from .ledger import reserve as ledger_reserve
 SHAPE_MULTIPLIERS = (0.0, 0.65, 0.82, 1.00, 1.10, 1.20)
 SHAPE_TARGETS = (0.0, 0.15, 0.25, 0.40, 0.48, 0.55)
 
+# Ceiling for a single room span, used by the odd-parity nudge to decide whether
+# to round a face up or down. It has to stay at or above the largest span
+# _room_size can draw, or the nudge silently shrinks the biggest rooms.
+MAX_ROOM_SPAN = 25
+
 
 @dataclass(frozen=True, slots=True)
 class ShapeBudget:
@@ -98,16 +103,21 @@ def realize_room_shapes(tiles: list[int], rooms: list[Room], specs: list[RoomSpe
     if rare_motif_enabled and rare_profile is None:
         raise ValueError("scheduled rare motif could not be realized")
     notch_budget = max(1, round(shape_budget * 0.30))
+    grand_anchors = frozenset(
+        index for index, (room, spec) in enumerate(zip(rooms, specs))
+        if spec.tier == "anchor" and room.w * room.h >= 270)
+    shape_exclusions = utility_shapes | grand_anchors
     notch_anchors = _carve_notches(
         tiles, rooms, rng,
         chance=min(1.0, floor_variant.notch_chance * shape_scale),
-        max_rooms=notch_budget, excluded=utility_shapes)
+        max_rooms=notch_budget, excluded=shape_exclusions)
     authored_shape_count = (1 if rare_profile is not None else 0) + (1 if number == 9 else 0)
     profile_anchors, profile_shapes = _carve_symmetric_profiles(
         tiles, rooms, rng,
         chance=min(1.0, shape_scale),
         max_rooms=max(0, shape_budget - len(notch_anchors) - authored_shape_count),
-        excluded=frozenset(notch_anchors) | utility_shapes)
+        excluded=frozenset(notch_anchors) | shape_exclusions,
+        realized_notches=len(notch_anchors))
     notch_anchors.update(profile_anchors)
     realized_shapes = ["rectangle"] * len(rooms)
     for room_index in notch_anchors:
@@ -146,11 +156,26 @@ def _room_size(rng: random.Random, tier: str, number: int = 0) -> tuple[int, int
         weights = [4 if value % 2 else 1 for value in values]
         return rng.choices(values, weights=weights, k=1)[0]
 
+    def oriented(major: int, minor: int) -> tuple[int, int]:
+        return (major, minor) if rng.random() < 0.5 else (minor, major)
+
     bump = 2 if number == 10 else 0
     if tier == "anchor":
         if number == 9:
             return preferred(14, 18), preferred(14, 18)
-        return preferred(10 + bump, 14 + bump), preferred(10 + bump, 14 + bump)
+        # Drawing both axes from one range made every anchor square, which is
+        # why the floor's largest space was 222 cells against 514 in id's own
+        # maps and 939 across the fan corpus. Total walkable area is already
+        # right (1120 cells against id's 1098); what was wrong is how it gets
+        # divided, so the anchor grows along one axis instead of the floor
+        # growing overall.
+        # Sized against placement pressure as well as the corpus. A 60x60 window
+        # with two tiles of rock between every pair of rooms will not swallow an
+        # anchor much past this: at 15-25 by 11-19 the floor's largest space did
+        # match id, but half of all generation attempts failed to place the
+        # critical rooms at all, against almost none before.
+        return oriented(preferred(14 + bump, 22 + bump),
+                        preferred(10 + bump, 16 + bump))
     if tier == "motif":
         return 15, 15
     if tier == "closet":
@@ -160,13 +185,17 @@ def _room_size(rng: random.Random, tier: str, number: int = 0) -> tuple[int, int
         # room. Its authored major span is three tiles wide; ordinary carved
         # connectors remain one tile wide. Even-width corridors are never the
         # default product of the room-size grammar.
-        major, minor = preferred(8 + bump, 14 + bump), 3
-        return (major, minor) if rng.random() < 0.5 else (minor, major)
+        return oriented(preferred(10 + bump, 18 + bump), 3)
     if tier == "hall":
-        major = preferred(9 + bump, 14 + bump)
-        minor = preferred(5 + bump, 8 + bump)
-        return (major, minor) if rng.random() < 0.5 else (minor, major)
-    return preferred(6 + bump, 10 + bump), preferred(6 + bump, 10 + bump)
+        return oriented(preferred(11 + bump, 17 + bump),
+                        preferred(6 + bump, 9 + bump))
+    # Ordinary rooms were square for the same reason anchors were, and they are
+    # the bulk of the floor: median room aspect measured 1.22 where both corpora
+    # independently report 1.40. Separate major and minor ranges fix the shape.
+    # The minor floor is 6 rather than 5 on purpose -- _carve_symmetric_profiles
+    # skips any room narrower than 6, so a 5-wide room can never be anything but
+    # a rectangle, and drawing them pushed shape_monotony from 4 floors to 28.
+    return oriented(preferred(7 + bump, 13 + bump), preferred(6 + bump, 9 + bump))
 
 
 def _place_planned_rooms(rng: random.Random, plan: FloorPlan, number: int = 0) -> PlacedPlan:
@@ -178,6 +207,8 @@ def _place_planned_rooms(rng: random.Random, plan: FloorPlan, number: int = 0) -
     spine_count = next(index for index, spec in enumerate(plan.specs)
                        if spec.role == terminus) + 1
     sizes = [_room_size(rng, spec.tier, number) for spec in plan.specs]
+    anchor_spec_index = next(index for index, spec in enumerate(plan.specs)
+                             if spec.tier == "anchor")
     for index, spec in enumerate(plan.specs):
         if spec.motif == "hallway-arm":
             sizes[index] = ((7, 3) if rng.random() < 0.5 else (3, 7))
@@ -222,6 +253,7 @@ def _place_planned_rooms(rng: random.Random, plan: FloorPlan, number: int = 0) -
     start = Room(sx, sy, w, h)
     rooms.append(start); kept.append(0); room_by_spec[0] = start
     protected_elevator_rock: set[tuple[int, int]] = set()
+    reserved_anchor: Room | None = None
 
     def elevator_envelopes(room: Room) -> list[set[tuple[int, int]]]:
         envelopes = []
@@ -259,13 +291,50 @@ def _place_planned_rooms(rng: random.Random, plan: FloorPlan, number: int = 0) -
             y = parent.y + parent.h + gap if dy > 0 else parent.y - rh - gap
         return Room(x, y, rw, rh)
 
-    def legal(room: Room) -> bool:
+    def footprint_clear(room: Room) -> bool:
+        # The three-tile margin is load-bearing, not slack. Widening it to two
+        # reclaims 7% of the plane and costs far more than it returns: the exit
+        # elevator needs a rock-backed wall behind its host room, and a room
+        # sitting two tiles from the edge has nowhere to put one. That single
+        # change took "no post-climax room has a rock-backed horizontal elevator
+        # wall" from never firing to a third of all rejected attempts. The
+        # reclaimed area was not wanted anyway -- measured against id's own maps
+        # the floor was already the right size.
         return (3 <= room.x and 3 <= room.y and room.x + room.w < 61
                 and room.y + room.h < 61
                 and not any((x, y) in protected_elevator_rock
                             for y in range(room.y, room.y + room.h)
                             for x in range(room.x, room.x + room.w))
                 and not any(_overlaps(room, other) for other in rooms))
+
+    def legal(room: Room) -> bool:
+        return (footprint_clear(room)
+                and (reserved_anchor is None
+                     or not _overlaps(room, reserved_anchor)))
+
+    # The anchor is the one deliberately large destination on every floor, but
+    # planning puts it near the end of the mandatory chain. Reserving it here
+    # keeps smaller spine beats from consuming its only contiguous footprint.
+    # It remains in spec order and is not painted early; until its turn, legal()
+    # treats the reservation exactly like an already placed room.
+    aw, ah = sizes[anchor_spec_index]
+    target_x = GRID // 2 + (10 if heading[0] > 0 else -10)
+    target_y = GRID // 2 + (8 if start.center[1] < GRID // 2 else -8)
+    anchor_candidates: list[tuple[int, int, int, Room]] = []
+    for ay in range(3, 61 - ah):
+        for ax in range(3, 61 - aw):
+            candidate = Room(ax, ay, aw, ah)
+            if not footprint_clear(candidate):
+                continue
+            anchor_candidates.append((
+                abs(candidate.center[0] - target_x)
+                + abs(candidate.center[1] - target_y),
+                -abs(candidate.center[0] - start.center[0])
+                - abs(candidate.center[1] - start.center[1]),
+                ay * GRID + ax, candidate))
+    if not anchor_candidates:
+        raise ValueError("could not reserve anchor footprint")
+    *_, reserved_anchor = min(anchor_candidates, key=lambda item: item[:3])
 
     def supports_exit_elevator(room: Room) -> bool:
         return any(
@@ -274,6 +343,10 @@ def _place_planned_rooms(rng: random.Random, plan: FloorPlan, number: int = 0) -
                         for other in rooms)
             for cells in elevator_envelopes(room))
 
+    # Three deep rooms, not every room past the anchor: reserving a lift shell
+    # for all of them starves the floor of rock, and measurement showed the
+    # largest room collapsing from 0.23 of the floor to 0.14 while the failure
+    # rate went up rather than down. Three is where the two pressures balance.
     grouped = {index for group in plan.size_groups for index in group}
     order = list(range(1, spine_count))
     pending = set(range(spine_count, len(plan.specs)))
@@ -283,8 +356,13 @@ def _place_planned_rooms(rng: random.Random, plan: FloorPlan, number: int = 0) -
             0 if plan.specs[item].motif in {
                 "hallway-arm", "hallway-destination"} else
             1 if plan.specs[item].motif == "swastika" else
-            2 if plan.specs[parents[item]].role == "hub" else
-            3 if item in grouped else 4 if plan.specs[item].role == "ring" else 5,
+            # A ring room is the floor's only planned reconvergence, so it is
+            # load-bearing in a way filler is not. Placing it after the size
+            # groups meant it was the first thing crowded out, and a dropped
+            # ring is a floor with no loop.
+            2 if plan.specs[parents[item]].role == "hub"
+            or plan.specs[item].role == "ring" else
+            3 if item in grouped else 5,
             item))
         order.append(index); pending.remove(index)
     for index in order:
@@ -292,7 +370,8 @@ def _place_planned_rooms(rng: random.Random, plan: FloorPlan, number: int = 0) -
         while parent_index in dropped:
             parent_index = parents[parent_index]
         parent = room_by_spec[parent_index]
-        room = forced_rooms.pop(index, None)
+        room = (reserved_anchor if index == anchor_spec_index
+                else forced_rooms.pop(index, None))
         if room is not None:
             # Hallway destinations are reserved atomically with their arm;
             # no optional room can consume the terminal footprint between
@@ -430,6 +509,30 @@ def _place_planned_rooms(rng: random.Random, plan: FloorPlan, number: int = 0) -
                 weights = tuple(grammar * skeleton
                                 for grammar, skeleton
                                 in zip(grammar_bias, skeleton_bias))
+                if index < anchor_spec_index:
+                    # Steer the forward-grown half of the chain toward the
+                    # reserved mass. This is a bounded preference rather than
+                    # a forced direction: turns remain available when another
+                    # room or the reservation itself blocks the direct course.
+                    distance = (
+                        abs(parent.center[0] - reserved_anchor.center[0])
+                        + abs(parent.center[1] - reserved_anchor.center[1]))
+                    guided = []
+                    for weight, candidate_side in zip(weights, sides):
+                        step = (parent.w + sizes[index][0]) // 2 + 2
+                        if candidate_side[1]:
+                            step = (parent.h + sizes[index][1]) // 2 + 2
+                        projected = (
+                            parent.center[0] + candidate_side[0] * step,
+                            parent.center[1] + candidate_side[1] * step)
+                        remaining = (
+                            abs(projected[0] - reserved_anchor.center[0])
+                            + abs(projected[1] - reserved_anchor.center[1]))
+                        progress = distance - remaining
+                        factor = 4.0 if progress >= 5 else (
+                            2.0 if progress > 0 else 0.35)
+                        guided.append(weight * factor)
+                    weights = tuple(guided)
                 side = rng.choices(sides, weights=weights, k=1)[0]
                 gap = (rng.randrange(1, 3) if plan.progression_grammar == "clustered-chain"
                        else rng.randrange(1, 4))
@@ -474,9 +577,9 @@ def _place_planned_rooms(rng: random.Random, plan: FloorPlan, number: int = 0) -
             if attempt < 44:
                 rw, rh = candidate_size
                 if side[0] and rh % 2 == 0:
-                    candidate_size = (rw, rh + (1 if rh < 17 else -1))
+                    candidate_size = (rw, rh + (1 if rh < MAX_ROOM_SPAN else -1))
                 elif side[1] and rw % 2 == 0:
-                    candidate_size = (rw + (1 if rw < 17 else -1), rh)
+                    candidate_size = (rw + (1 if rw < MAX_ROOM_SPAN else -1), rh)
             # Human mappers align rooms; jitter is the fallback once these
             # center and edge-flush placements have had a chance.
             jitters = (_snap_offsets(parent, *candidate_size, side, rng)
@@ -596,13 +699,24 @@ def _place_planned_rooms(rng: random.Random, plan: FloorPlan, number: int = 0) -
             dropped.add(index)
             continue
         rooms.append(room); kept.append(index); room_by_spec[index] = room
-        if plan.specs[index].role == "exit":
+        # The planned exit gets its lift shell reserved, but select_exit_host is
+        # free to end the floor at any post-climax room the route can reach, and
+        # when it picks a different one that room has no rock left -- the whole
+        # attempt is then thrown away for "no post-climax room has a rock-backed
+        # horizontal elevator wall". Reserving a shell for the late spine rooms
+        # too, where the route can actually terminate, keeps a usable host in
+        # hand whichever one wins. Only the planned exit insists on getting one.
+        deep_spine = (index < spine_count and index >= spine_count - 3
+                      and plan.specs[index].tier not in {"closet", "corridor"})
+        if plan.specs[index].role == "exit" or deep_spine:
             clear_envelopes = [
                 cells for cells in elevator_envelopes(room)
                 if not (cells & protected_elevator_rock)
                 and not any(any(_inside_room([other], *cell) for cell in cells)
                             for other in rooms[:-1])]
             if not clear_envelopes:
+                if plan.specs[index].role != "exit":
+                    continue
                 raise ValueError("planned exit room lacks a horizontal elevator envelope")
             # Prefer the side pointing away from its parent; either legal
             # envelope remains an acceptable native shaft fallback.
@@ -626,16 +740,25 @@ def _place_planned_rooms(rng: random.Random, plan: FloorPlan, number: int = 0) -
             a = reparented[b]
         elif a in reparented and b == planned_parents[a]:
             b = reparented[a]
-        if ((a in dropped or b in dropped)
-                and (plan.specs[a].motif in {"ring", "courtyard", "service", "ladder"}
-                     or plan.specs[b].motif in {"ring", "courtyard", "service", "ladder"})):
+        # A reconvergence edge whose ring room could not be placed used to be
+        # deleted outright, which turned the floor into a pure tree: measured
+        # over nine instrumented floors this alone accounted for four of them
+        # having no cycle at all. Reattaching to the survivor keeps the loop the
+        # plan asked for. Both endpoints gone is a different matter -- there is
+        # no reconvergence left to preserve.
+        if a in dropped and b in dropped:
             continue
         a, b = survivor(a), survivor(b)
         edge = (remap[a], remap[b])
         if edge[0] != edge[1] and edge not in edges and edge[::-1] not in edges:
             edges.append(edge)
-    loop_edges = [(remap[a], remap[b]) for a, b in plan.loop_edges
-                  if a not in dropped and b not in dropped]
+    loop_edges = []
+    for a, b in plan.loop_edges:
+        if a in dropped and b in dropped:
+            continue
+        edge = (remap[survivor(a)], remap[survivor(b)])
+        if edge[0] != edge[1] and edge not in loop_edges:
+            loop_edges.append(edge)
     return PlacedPlan(rooms, kept, edges, loop_edges)
 
 
@@ -685,7 +808,7 @@ def _carve_notches(tiles: list[int], rooms: list[Room], rng: random.Random,
 def _carve_symmetric_profiles(
         tiles: list[int], rooms: list[Room], rng: random.Random,
         chance: float = 0.24, max_rooms: int = 0,
-        excluded: frozenset[int] = frozenset()
+        excluded: frozenset[int] = frozenset(), realized_notches: int = 0
         ) -> tuple[dict[int, tuple[tuple[int, int], ...]], dict[int, str]]:
     """Carve a restrained set of non-rectangular, reflection-symmetric rooms.
 
@@ -695,8 +818,8 @@ def _carve_symmetric_profiles(
     """
     anchors: dict[int, tuple[tuple[int, int], ...]] = {}
     shapes: dict[int, str] = {}
-    family_counts: Counter[str] = Counter()
-    family_cap = max(1, math.ceil(max_rooms * 0.35)) if max_rooms else 0
+    family_counts: Counter[str] = Counter(
+        {"mirrored-notch": realized_notches} if realized_notches else ())
 
     for room_index, room in enumerate(rooms):
         if len(shapes) >= max_rooms:
@@ -734,7 +857,7 @@ def _carve_symmetric_profiles(
         candidates.append(("single-chamfer", chamfer,
                            ((ox + 2 * sx, oy + 2 * sy),)))
 
-        if room.w >= 9 and room.h >= 9:
+        if room.w >= 7 and room.h >= 7:
             cut_w = min(3, room.w // 3)
             cut_h = min(3, room.h // 3)
             x0 = room.x + room.w - cut_w if right else room.x
@@ -759,8 +882,17 @@ def _carve_symmetric_profiles(
                                ((room.x + 2, anchor_y),
                                 (room.x + room.w - 3, anchor_y))))
 
+            # Inset one end except for a three-wide ceremonial alcove.
+            apse_bottom = rng.randrange(2) == 1
+            apse_y = room.y + room.h - 1 if apse_bottom else room.y
+            alcove = range(cx - 1, cx + 2)
+            apse_cells = {(x, apse_y)
+                          for x in range(room.x, room.x + room.w)
+                          if x not in alcove}
+            candidates.append(("apse", apse_cells, ((cx, apse_y),)))
+
         # Matching mid-wall shoulders create an hourglass/paired-bay plan.
-        if room.w >= 10:
+        if room.w >= 7:
             band = (range(cy - 1, cy + 2) if room.h % 2 else
                     range(room.y + room.h // 2 - 1,
                           room.y + room.h // 2 + 1))
@@ -779,7 +911,7 @@ def _carve_symmetric_profiles(
             candidates.append(("offset-side-bay", offset_cells,
                                ((room.x + room.w - 3 if side_right else room.x + 2,
                                  band[len(band) // 2]),)))
-        if room.h >= 10:
+        if room.h >= 7:
             band = (range(cx - 1, cx + 2) if room.w % 2 else
                     range(room.x + room.w // 2 - 1,
                           room.x + room.w // 2 + 1))
@@ -792,13 +924,53 @@ def _carve_symmetric_profiles(
                                      for y in (room.y + 2,
                                                room.y + room.h - 3))))
 
+        if room.w >= 9 and room.h >= 9:
+            # A second chamfer step makes a true eight-sided chamber rather
+            # than the shallower stepped-cross silhouette.
+            octagon_cells: set[tuple[int, int]] = set()
+            octagon_anchors: list[tuple[int, int]] = []
+            for right, bottom in ((False, False), (True, False),
+                                  (False, True), (True, True)):
+                ox = room.x + room.w - 1 if right else room.x
+                oy = room.y + room.h - 1 if bottom else room.y
+                sx = -1 if right else 1
+                sy = -1 if bottom else 1
+                octagon_cells.update(
+                    (ox + dx * sx, oy + dy * sy)
+                    for dx in range(3) for dy in range(3 - dx))
+                octagon_anchors.append((ox + 3 * sx, oy + 3 * sy))
+            candidates.append(("octagon", octagon_cells,
+                               tuple(octagon_anchors)))
+
+            # Offset by two cells on both axes so the 3x3 island never cuts
+            # the protected central cross, even at the minimum 9x9 size.
+            island_cx = cx + (-2 if rng.randrange(2) else 2)
+            island_cy = cy + (-2 if rng.randrange(2) else 2)
+            island_cells = {
+                (x, y)
+                for y in range(island_cy - 1, island_cy + 2)
+                for x in range(island_cx - 1, island_cx + 2)
+            }
+            island_anchors = (
+                (island_cx, island_cy - 2),
+                (island_cx + 2, island_cy),
+                (island_cx, island_cy + 2),
+                (island_cx - 2, island_cy),
+            )
+            candidates.append(("island-block", island_cells, island_anchors))
+
         rng.shuffle(candidates)
+        realized_count = sum(family_counts.values()) + 1
+        family_cap = max(1, math.ceil(realized_count * 0.35))
         for family, walls, room_anchors in candidates:
             if family_counts[family] >= family_cap:
                 continue
             if (not all(_is_floor(_at(tiles, *cell)) for cell in walls)
                     or not all(_is_floor(_at(tiles, *cell))
                                and cell not in walls for cell in room_anchors)):
+                continue
+            if family == "island-block" and not _wall_island_has_open_flanks(
+                    tiles, walls):
                 continue
             # Keep a broad central cross open; profiles are silhouettes, not
             # accidental one-tile choke generators.
@@ -876,6 +1048,119 @@ def _carve_swastika_profile(tiles: list[int], room: Room, rng: random.Random
     return handedness, endpoints
 
 
+RING_HALL_CHANCE = 0.14      # roughly one floor in seven carries one
+RING_HALL_MIN_SPAN = 13      # below this the walkway and core cannot both read
+RING_HALL_WALK = 3           # walkway width, matching an authored hallway
+
+
+def plan_ring_hall(tiles: list[int], rooms: list[Room], specs: list[RoomSpec],
+                   rng: random.Random, *, number: int, shape_scale: float,
+                   protected: set[tuple[int, int]],
+                   exit_index: int) -> int | None:
+    """Hollow the floor's largest room into a corridor circling a solid core.
+
+    Deliberately carved after the exit elevator has been chosen and its rock
+    reserved, not alongside the other silhouettes. The lift needs five by five
+    of solid rock beside a *route-eligible* post-climax room, which is not
+    knowable while shapes are being cut -- carving there took that failure from
+    never firing to a third of every rejected attempt, and a guard that merely
+    checked some room could still host a lift did not help, because the room
+    that kept its rock was not one the route could end at.
+
+    Kept off floors 9 and 10, whose boss arena and reward expedition own their
+    geometry, and off the exit host itself.
+    """
+    if number in (9, 10) or rng.random() >= RING_HALL_CHANCE * shape_scale:
+        return None
+    eligible = sorted(
+        (index for index, (room, spec) in enumerate(zip(rooms, specs))
+         if index != exit_index
+         and spec.role not in {"start", "arrival", "exit", "victory", "recovery"}
+         and spec.tier not in {"closet", "corridor", "motif"}
+         and not (spec.tier == "anchor" and room.w * room.h >= 270)
+         and min(room.w, room.h) >= RING_HALL_MIN_SPAN),
+        key=lambda index: -(rooms[index].w * rooms[index].h))
+    for index in eligible[:1]:
+        room = rooms[index]
+        core = [(x, y)
+                for y in range(room.y + RING_HALL_WALK, room.y + room.h - RING_HALL_WALK)
+                for x in range(room.x + RING_HALL_WALK, room.x + room.w - RING_HALL_WALK)]
+        if any(cell in protected for cell in core):
+            continue
+        if _carve_ring_hall(tiles, room) is not None:
+            return index
+    return None
+
+
+def _has_elevator_rock(tiles: list[int], room: Room) -> bool:
+    """Whether an east/west elevator shaft could still be cut beside this room.
+
+    Mirrors _place_elevator's footprint test (five deep by five wide of solid
+    rock, framed inside the map border) without importing progression and
+    creating a cycle. Only an approximation of that function's full contract,
+    and only used to reject a shape that would leave the floor with nowhere to
+    put its exit -- never to choose the exit itself.
+    """
+    for wy in range(room.y + 1, room.y + room.h - 1):
+        for wx, dx in ((room.x + room.w, 1), (room.x - 1, -1)):
+            if not _is_floor(_at(tiles, wx - dx, wy)):
+                continue
+            if all(1 <= x < GRID - 1 and 1 <= y < GRID - 1
+                   and _at(tiles, x, y) == WALL
+                   for depth in range(5) for side in range(-2, 3)
+                   for x, y in ((wx + dx * depth, wy + side),)):
+                return True
+    return False
+
+
+def _carve_ring_hall(tiles: list[int], room: Room) -> tuple[tuple[int, int], ...] | None:
+    """Turn a large room into a donut: a ring corridor around a solid core.
+
+    Wolf3D maps use this constantly and the generator had no way to produce one.
+    A "ring" here previously meant only a reconvergence in the room graph -- a
+    cycle you walk between rooms -- never a single space you can circle inside.
+
+    The core is solid rather than an enclosed void because a sealed room the
+    player can see into but never enter reads as a bug rather than as
+    architecture, and because a solid block keeps the walkway one connected
+    component with no articulation point anywhere on it.
+
+    Returns anchor cells on the four runs, or None when the room cannot host it.
+    """
+    if room.w < RING_HALL_MIN_SPAN or room.h < RING_HALL_MIN_SPAN:
+        return None
+    core_x = room.x + RING_HALL_WALK
+    core_y = room.y + RING_HALL_WALK
+    core_w = room.w - 2 * RING_HALL_WALK
+    core_h = room.h - 2 * RING_HALL_WALK
+    if core_w < 3 or core_h < 3:
+        return None
+    core = [(x, y) for y in range(core_y, core_y + core_h)
+            for x in range(core_x, core_x + core_w)]
+    if not all(_is_floor(_at(tiles, *cell)) for cell in core):
+        return None
+    for cell in core:
+        _set(tiles, *cell, WALL)
+    mid_x = room.x + room.w // 2
+    mid_y = room.y + room.h // 2
+    return ((mid_x, room.y + 1), (mid_x, room.y + room.h - 2),
+            (room.x + 1, mid_y), (room.x + room.w - 2, mid_y))
+
+
+def _wall_island_has_open_flanks(
+        tiles: list[int], cells: set[tuple[int, int]]
+        | tuple[tuple[int, int], ...]) -> bool:
+    """Return whether solid cells leave every exposed cardinal flank open."""
+    cell_set = set(cells)
+    return all(
+        _is_floor(_at(tiles, x, y))
+        and all(
+            neighbour in cell_set or _is_floor(_at(tiles, *neighbour))
+            for neighbour in ((x + 1, y), (x - 1, y),
+                              (x, y + 1), (x, y - 1)))
+        for x, y in cell_set)
+
+
 def _add_pillars(tiles: list[int], room: Room, rng: random.Random,
                  chance: float = 0.4) -> None:
     if room.w < 7 or room.h < 7 or rng.random() >= chance:
@@ -895,10 +1180,7 @@ def _add_pillars(tiles: list[int], room: Room, rng: random.Random,
     for cells in patterns:
         # Four open flanks make each wall-plane column an island, never a
         # barrier; checking late also rejects spots touched by a notch.
-        if all(_is_floor(_at(tiles, x, y)) and
-               all(_is_floor(_at(tiles, x + dx, y + dy))
-                   for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)))
-               for x, y in cells):
+        if _wall_island_has_open_flanks(tiles, cells):
             for x, y in cells:
                 _set(tiles, x, y, WALL)
             return
@@ -1271,6 +1553,89 @@ def _widen_corridors(tiles: list[int], rooms: list[Room], paths: list[list[tuple
                      protected: set[tuple[int, int]] | None = None) -> None:
     """Symmetrically widen eligible straight corridor runs."""
     protected = set() if protected is None else protected
+
+    # A tail-sized anchor is the floor's grand spatial mass. Join its nearby
+    # planned neighbours with broad galleries before ordinary corridor
+    # widening: the rooms keep their calibrated rectangles and two-rock
+    # separation, while the shared three-wide threshold reads as one hall
+    # rather than three boxes divided by token doors. This is deterministic so
+    # selecting a grand layout does not shift later geometry RNG draws.
+    if rooms:
+        grand_index = max(range(len(rooms)),
+                          key=lambda index: rooms[index].w * rooms[index].h)
+        grand = rooms[grand_index]
+        if grand.w * grand.h >= 270:
+            galleries = []
+            for path_index, path in enumerate(paths):
+                if not path or any(not _is_floor(_at(tiles, *cell)) for cell in path):
+                    continue
+                touching = [
+                    index for index, room in enumerate(rooms)
+                    if any(_inside_room([room], *cell)
+                           or _adjacent_to_room([room], *cell)
+                           for cell in path)]
+                touching = tuple(dict.fromkeys(touching))
+                if len(touching) != 2:
+                    continue
+                if len({y for _, y in path}) == 1:
+                    offsets = ((0, -1), (0, 1))
+                elif len({x for x, _ in path}) == 1:
+                    offsets = ((-1, 0), (1, 0))
+                else:
+                    continue
+                wings = {(x + dx, y + dy) for x, y in path
+                         for dx, dy in offsets}
+                allowed = set(touching)
+                if any(cell in protected for cell in wings):
+                    continue
+                if any(_at(tiles, *cell) != WALL
+                       and not any(_inside_room([rooms[index]], *cell)
+                                   for index in allowed)
+                       for cell in wings):
+                    continue
+                if any(any(index not in allowed
+                           and (_inside_room([room], *cell)
+                                or _adjacent_to_room([room], *cell))
+                           for index, room in enumerate(rooms))
+                       for cell in wings):
+                    continue
+                galleries.append((path_index, touching, wings))
+
+            # Room order preserves the mandatory spine before optional rooms;
+            # the two rooms immediately after the anchor are its relief/exit
+            # sequence. Grow preferentially into later optional branches, and
+            # never continue a gallery through another critical-route room.
+            optional_start = grand_index + 3
+            merged = {grand_index}
+            used_paths = set()
+            while len(merged) < 7:
+                choices = []
+                for path_index, endpoints, wings in galleries:
+                    if path_index in used_paths:
+                        continue
+                    inside = [index for index in endpoints if index in merged]
+                    outside = [index for index in endpoints if index not in merged]
+                    if len(inside) != 1 or len(outside) != 1:
+                        continue
+                    neighbour = outside[0]
+                    if (neighbour == 0
+                            or min(rooms[neighbour].w, rooms[neighbour].h) < 6):
+                        continue
+                    if inside[0] != grand_index and neighbour < optional_start:
+                        continue
+                    choices.append((
+                        0 if neighbour >= optional_start else 1,
+                        -(rooms[neighbour].w * rooms[neighbour].h),
+                        len(paths[path_index]), path_index, neighbour, wings))
+                if not choices:
+                    break
+                *_, path_index, neighbour, wings = min(choices)
+                for cell in wings:
+                    if _at(tiles, *cell) == WALL:
+                        _set(tiles, *cell, FLOOR)
+                used_paths.add(path_index)
+                merged.add(neighbour)
+
     for path in paths:
         if len(path) < 6 or rng.random() > widen_chance:
             continue
@@ -1530,9 +1895,22 @@ def _limit_theme_merge_size(tiles: list[int], rooms: list[Room], rng: random.Ran
     return placed
 
 
+def _is_mostly_room(rooms: list[Room], component: set[tuple[int, int]]) -> bool:
+    """Whether a floor component is a room rather than fused corridor spill.
+
+    The split pass exists for corridors that ran flush into each other and
+    silently merged several rooms' floor into one acoustic blob. A large room is
+    not that: it is one space, deliberately, and its candidate filter excludes
+    in-room cells anyway, so the pass can only ever door off the corridors hanging
+    from it -- spending door budget to no acoustic purpose. Sound zones are floor
+    components, so a big room *lowers* the zone count rather than threatening it."""
+    inside = sum(_inside_room(rooms, x, y) for x, y in component)
+    return inside > 0.6 * len(component)
+
+
 def _split_oversized_zones(tiles: list[int], rooms: list[Room], rng: random.Random,
                            reserved: set[tuple[int, int]],
-                           cap: int = 110, min_piece: int = 12) -> int:
+                           cap: int = 200, min_piece: int = 12) -> int:
     """Corridors carved for unrelated room-to-room connections often end up
     flush against each other -- crossing, running alongside, or just
     touching -- at points no edge's own path ever scanned as a door
@@ -1557,7 +1935,8 @@ def _split_oversized_zones(tiles: list[int], rooms: list[Room], rng: random.Rand
         if len(components) >= ZONE_MAX - FLOOR + 1:
             break
         component = next((c for c in components
-                          if len(c) > cap and frozenset(c) not in stuck), None)
+                          if len(c) > cap and frozenset(c) not in stuck
+                          and not _is_mostly_room(rooms, c)), None)
         if component is None:
             break
         candidates = [(x, y) for x, y in component
@@ -1592,6 +1971,125 @@ def _split_oversized_zones(tiles: list[int], rooms: list[Room], rng: random.Rand
                 break
         if not split:
             stuck.add(frozenset(component))
+    return placed
+
+
+def _close_door_graph_loops(tiles: list[int], rooms: list[Room],
+                            reserved: set[tuple[int, int]],
+                            loop_edges: list[tuple[int, int]] | None = None,
+                            budget: int = 1, min_separation: int = 3) -> int:
+    """Door a wall seam that reconnects two already-linked parts of the floor.
+
+    The exact inverse of _split_oversized_zones: that one hunts chokepoints that
+    cut an oversized component apart, this one hunts wall cells that would join
+    two distinct components which the door graph *already* connects -- so the new
+    doorway adds a cycle rather than adding reachability.
+
+    Planning asks for a reconvergence on nearly every floor and routing usually
+    carves it, but the loop's second doorway is easily lost: the candidate trips
+    the perpendicular-junction rule, or the ring fuses into one component and the
+    redundant-door sweep then removes what is left. Measured, that left 44% of
+    floors with no cycle at all against 0.92 cycles per map in id's own sixty.
+
+    Deliberately free of randomness. It runs late, and drawing here would shift
+    the geometry stream for every pass that follows.
+    """
+    placed = 0
+    for _ in range(budget):
+        components = _floor_components(tiles)
+        owner = {cell: index for index, component in enumerate(components)
+                 for cell in component}
+        links: dict[int, set[int]] = {index: set() for index in range(len(components))}
+        door_zones: set[tuple[int, int]] = set()
+        for index, tile in enumerate(tiles):
+            if tile not in DOORS:
+                continue
+            x, y = index % GRID, index // GRID
+            door_zones.add((x, y))
+            sides = {owner[cell] for cell in ((x + 1, y), (x - 1, y),
+                                              (x, y + 1), (x, y - 1))
+                     if cell in owner}
+            for a in sides:
+                for b in sides:
+                    if a != b:
+                        links[a].add(b)
+
+        def hops(source: int) -> dict[int, int]:
+            seen = {source: 0}
+            queue = deque([source])
+            while queue:
+                node = queue.popleft()
+                for nxt in links[node]:
+                    if nxt not in seen:
+                        seen[nxt] = seen[node] + 1
+                        queue.append(nxt)
+            return seen
+
+        # A loop is a second way around, and a second way around a locked door
+        # is a way to skip it. Reuse _limit_theme_merge_size's gate guard rather
+        # than inventing a second one: without it this pass produced floors
+        # where the gold lock was no longer individually necessary, which
+        # validate_map then rejected -- turning a quality fix into a retry tax.
+        anchor = rooms[0].center if rooms else None
+        open_before = _reachable(tiles, anchor, locked_open=True) if anchor else set()
+        locked_before = _reachable(tiles, anchor, locked_open=False) if anchor else set()
+        pushwalls = {(x + 1, y) for x, y in reserved
+                     if (_at(tiles, x + 1, y) == WALL
+                         and _is_floor(_at(tiles, x, y))
+                         and all(_is_floor(_at(tiles, x + step, y)) for step in (2, 3))
+                         and _at(tiles, x + 1, y - 1) == WALL
+                         and _at(tiles, x + 1, y + 1) == WALL)}
+        lock_sides = {(x + dx, y + dy)
+                      for index, tile in enumerate(tiles) if tile in (DOOR_GOLD_EW, 93)
+                      for x, y in ((index % GRID, index // GRID),)
+                      for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1))}
+
+        def preserves_gates(cell: tuple[int, int], axis: int) -> bool:
+            if anchor is None:
+                return True
+            _set(tiles, *cell, axis)
+            open_after = _reachable(tiles, anchor, locked_open=True)
+            locked_after = _reachable(tiles, anchor, locked_open=False)
+            opens_secret = any((wall[0] + 1, wall[1]) not in open_before
+                               and (wall[0] + 1, wall[1]) in open_after
+                               for wall in pushwalls)
+            crosses_lock = bool(lock_sides & (locked_after - locked_before))
+            _set(tiles, *cell, WALL)
+            return not opens_secret and not crosses_lock
+
+        wanted = {tuple(sorted(edge)) for edge in (loop_edges or ())}
+        best: tuple[tuple[int, int, int, int], tuple[int, int], int] | None = None
+        for y in range(1, GRID - 1):
+            for x in range(1, GRID - 1):
+                if _at(tiles, x, y) != WALL or (x, y) in reserved:
+                    continue
+                axis = _door_axis(tiles, x, y)
+                if axis is None or not _far_from_doors((x, y), door_zones):
+                    continue
+                if _door_would_create_perpendicular_junction(tiles, x, y, axis):
+                    continue
+                step = (1, 0) if axis == DOOR_EW else (0, 1)
+                first = owner.get((x - step[0], y - step[1]))
+                second = owner.get((x + step[0], y + step[1]))
+                if first is None or second is None or first == second:
+                    continue
+                reach = hops(first)
+                separation = reach.get(second)
+                # Not already connected means this would be a bridge, not a
+                # loop; too close together means a two-room shortcut that
+                # shaves the route instead of offering a real way around.
+                if separation is None or separation < min_separation:
+                    continue
+                pair = tuple(sorted((first, second)))
+                rank = (0 if pair in wanted else 1, -separation, y, x)
+                if (best is None or rank < best[0]) and preserves_gates((x, y), axis):
+                    best = (rank, (x, y), axis)
+        if best is None:
+            break
+        (_, cell, axis) = best
+        _set(tiles, *cell, axis)
+        ledger_reserve(reserved, [cell], "geometry", "loop-closing-door")
+        placed += 1
     return placed
 
 
@@ -1904,7 +2402,7 @@ def plan_authored_sightlines(tiles: list[int], things: list[int],
 def _break_long_sightlines(tiles: list[int], things: list[int], rooms: list[Room],
                            reserved: set[tuple[int, int]], rng: random.Random,
                            start: tuple[int, int],
-                           max_run: int = 21,
+                           max_run: int = 30,
                            allow_doors: bool = True,
                            walls_for_redundant_doors: bool = False,
                            authored: frozenset[tuple[int, int]] = frozenset()) -> int:

@@ -12,9 +12,10 @@ break with a plausible-looking refactor of the comparison key:
 """
 import unittest
 
+from infiniwolf.campaign import _candidate_score
 from infiniwolf.config import CampaignConfig, GenerationQuality
 from infiniwolf.generator import _best_candidate
-from infiniwolf.model import GeneratedMap
+from infiniwolf.model import GeneratedMap, Room
 
 
 def fake(number, critique, rooms=4, things=40):
@@ -23,7 +24,7 @@ def fake(number, critique, rooms=4, things=40):
         number=number, tiles=[], things=[1] * things, start=(0, 0),
         exit_stand=(1, 1), secret_rewards=[], seed=number,
         critique=tuple(critique),
-        rooms=tuple(),
+        rooms=tuple(Room(1, 1, 4, 4) for _ in range(rooms)),
         room_concepts=tuple(f"concept-{i}" for i in range(rooms)),
         layout_signature=(f"sig-{number}",),
         enemy_tiers=(1, 1, 1))
@@ -50,9 +51,22 @@ class SelectionTests(unittest.TestCase):
 
     def test_fewer_flags_wins_when_none_are_clean(self):
         one = fake(5, ("no_loop",))
-        three = fake(5, ("no_loop", "corridor_heavy", "motif_imbalance"))
+        three = fake(5, ("no_loop", "secret_monotony", "shape_monotony"))
         chosen = _best_candidate([three, one], [], [], self.config)
         self.assertEqual(chosen.critique, ("no_loop",))
+
+    def test_severe_defect_loses_even_with_higher_contrast(self):
+        """Severity breaks the flat one-flag tie before campaign novelty."""
+        previous = fake(1, (), rooms=4, things=40)
+        diagnostic = fake(2, ("secret_monotony",), rooms=4, things=40)
+        severe = fake(2, ("no_loop",), rooms=12, things=120)
+        self.assertGreater(
+            _candidate_score(severe, [previous], self.config),
+            _candidate_score(diagnostic, [previous], self.config),
+            "fixture must give the structurally worse map more contrast")
+        chosen = _best_candidate(
+            [severe, diagnostic], [], [previous], self.config)
+        self.assertIs(chosen, diagnostic)
 
     def test_contrast_breaks_ties_between_equally_clean_candidates(self):
         """With flags equal, the accepted-floor history decides.

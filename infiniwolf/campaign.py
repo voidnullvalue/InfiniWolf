@@ -531,6 +531,16 @@ def _candidate_score(level: GeneratedMap, previous: list[GeneratedMap],
     return score
 
 
+_CANDIDATE_SCORE_SCALE = 32.0
+
+
+def _campaign_contrast(level: GeneratedMap, previous: list[GeneratedMap],
+                       config: CampaignConfig) -> float:
+    """Normalize the unchanged campaign score monotonically into [0, 1]."""
+    score = _candidate_score(level, previous, config)
+    return 0.5 + math.atan(score / _CANDIDATE_SCORE_SCALE) / math.pi
+
+
 def validate_campaign_budgets(levels: list[GeneratedMap], schedule: CampaignSchedule) -> None:
     """Enforce the campaign schedule against the maps that actually realized."""
     realized_vine_floors = {

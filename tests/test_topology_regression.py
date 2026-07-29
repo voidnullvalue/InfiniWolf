@@ -241,18 +241,23 @@ class TopologyRegressionTests(unittest.TestCase):
                                     f"seed={seed!r}: floor 10 secret budget regressed")
 
     def test_no_unbounded_sightlines(self):
-        """Report ceiling: no straight unobstructed run should exceed 21
-        tiles. A run this long with no door on it means two spaces were
-        fused with no separating architecture at all, not just a lane the
-        sightline-breaker declined to touch."""
+        """Report ceiling: no straight unobstructed run should exceed 30 tiles.
+
+        The invariant being protected is that two spaces never fuse with no
+        separating architecture at all -- not that long lanes are forbidden. The
+        original 30-below figure of 21 came from the manual's pistol falloff
+        range rather than from map data, and measurement since put id's own 60
+        maps at a median run of 27 and a p90 of 48, with the 227-map fan corpus
+        agreeing. A cap under the corpus median was rejecting the very geometry
+        it was meant to imitate."""
         for seed in REGRESSION_SEEDS:
             config = CampaignConfig(seed=seed)
             for floor in (2, 5, 8):
                 level = _generate_with_retries(config, floor)
                 longest = _longest_straight_run(level.tiles)
                 self.assertLessEqual(
-                    longest, 21,
-                    f"seed={seed!r} floor={floor}: longest straight run {longest} > 21")
+                    longest, 30,
+                    f"seed={seed!r} floor={floor}: longest straight run {longest} > 30")
 
     def test_door_bounded_rooms_are_not_gigantic_blobs(self):
         """A silently-fused corridor also shows up as one door-bounded floor

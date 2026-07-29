@@ -42,7 +42,7 @@ sys.path.insert(0, str(ROOT / "tools"))
 
 from infiniwolf import wl6 as T
 from infiniwolf.config import CampaignConfig
-from inspect_map import parse_wad
+from corpus_io import iter_corpus_maps
 
 GRID = T.GRID
 # Wolf3D area codes start at 106; every value at or above it is walkable floor
@@ -101,22 +101,16 @@ def measure(tiles: list[int], things: list[int]) -> dict:
 
 def load_corpus(pattern: str) -> list[tuple[str, dict]]:
     out = []
-    for path in sorted(glob.glob(pattern)):
-        if "infiniwolf" in path:
-            continue  # never measure our own output as if it were authored
-        mod = Path(path).parent.name
-        with zipfile.ZipFile(path) as package:
-            for name in package.namelist():
-                if not name.lower().endswith(".wad"):
-                    continue
-                parsed = parse_wad(package.read(name))
-                if parsed is None:
-                    continue
-                # Match the miner's floor: a map with almost no decoration is
-                # not evidence about decoration style.
-                if sum(1 for v in parsed[1] if v in DECOR) < 5:
-                    continue
-                out.append((f"{mod}/{name}", measure(*parsed)))
+    for entry in iter_corpus_maps(pattern):
+        # measure() indexes on a fixed 64-tile stride, so a differently sized
+        # map would be read as garbage rather than merely being unsupported.
+        if entry.width != GRID:
+            continue
+        # Match the miner's floor: a map with almost no decoration is
+        # not evidence about decoration style.
+        if sum(1 for v in entry.things if v in DECOR) < 5:
+            continue
+        out.append((entry.label, measure(entry.tiles, entry.things)))
     return out
 
 

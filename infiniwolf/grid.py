@@ -132,6 +132,26 @@ def _inside_room(rooms: list[Room], x: int, y: int) -> bool:
     return any(room.x <= x < room.x + room.w and room.y <= y < room.y + room.h
                for room in rooms)
 
+def _room_probe(tiles: list[int], room: Room) -> tuple[int, int]:
+    """A floor cell inside a room, for callers that key a lookup off it.
+
+    Almost every room's centre is floor and this returns it unchanged. A
+    ring-hall's centre is its solid core, though, and several passes index
+    component maps directly by `room.center` -- an unguarded dict lookup that
+    would raise rather than degrade. Spiralling out from the centre keeps the
+    chosen cell as central as the shape allows.
+    """
+    if _is_floor(_at(tiles, *room.center)):
+        return room.center
+    cx, cy = room.center
+    for radius in range(1, max(room.w, room.h)):
+        for y in range(max(room.y, cy - radius), min(room.y + room.h, cy + radius + 1)):
+            for x in range(max(room.x, cx - radius), min(room.x + room.w, cx + radius + 1)):
+                if _is_floor(_at(tiles, x, y)):
+                    return x, y
+    return room.center
+
+
 def _door_zone(tiles: list[int], cell: tuple[int, int]) -> set[tuple[int, int]]:
     """The door-bounded floor region containing cell -- one 'room' as the
     player experiences it, since every zone boundary is a door tile."""

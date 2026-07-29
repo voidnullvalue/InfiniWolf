@@ -18,7 +18,123 @@ import random
 
 from .campaign import (CIRCULATION_MODES, CIRCULATION_SKELETONS,
                        HALLWAY_FIRST_SKELETONS, PROGRESSION_GRAMMARS)
-from .model import FloorPlan, FloorVariant, RoomSpec
+from .model import FloorPlan, FloorVariant, RoomSpec, SetPiecePlan
+from .vignettes import VIGNETTE_REQUEST_FAMILIES
+
+_PRIMARY_SET_PIECE_FAMILIES = (
+    ("checkpoint-administration",
+     ("checkpoint", "administrative-office", "records-office"),
+     ((0, 1), (1, 2)), "checkpoint", "records-office"),
+    ("command-and-control",
+     ("security-desk", "communications", "war-room"),
+     ((0, 1), (1, 2)), "security-desk", "war-room"),
+    ("barracks-support",
+     ("checkpoint", "barracks", "mess-hall", "armory"),
+     ((0, 1), (1, 2), (2, 3)), "checkpoint", "armory"),
+    ("storage-machinery-route",
+     ("receiving", "bulk-storage", "machinery-control", "dispatch"),
+     ((0, 1), (1, 2), (2, 3)), "receiving", "dispatch"),
+    ("prison-processing",
+     ("processing-desk", "guardroom", "cell-block", "cell-block", "exercise-yard"),
+     ((0, 1), (1, 2), (2, 3), (3, 4)), "processing-desk", "exercise-yard"),
+    ("administrative-wing",
+     ("checkpoint", "clerks-office", "records-office", "briefing-room", "command-office"),
+     ((0, 1), (1, 2), (2, 3), (3, 4)), "checkpoint", "command-office"),
+)
+
+_SECONDARY_SOLOS = (
+    ("wayfinding-checkpoint", ("checkpoint",), (), "checkpoint", "checkpoint"),
+    ("supply-depot", ("supply-cache",), (), "supply-cache", "supply-cache"),
+    ("memorial-bay", ("memorial",), (), "memorial", "memorial"),
+    ("records-annex", ("records-office",), (), "records-office", "records-office"),
+)
+
+
+def _set_piece_tag(family: str, room_role: str) -> str:
+    return f"setpiece:{family}:{room_role}"
+
+
+def _program_tier(room_role: str) -> str:
+    if room_role in {
+            "armory", "bulk-storage", "cell-block", "parts-store",
+            "records-office", "supply-cache"}:
+        return "closet"
+    if room_role in {"briefing-room", "machinery-control", "mess-hall"}:
+        return "hall"
+    return "standard"
+
+
+def _reserve_set_pieces(rng: random.Random, specs: list[RoomSpec],
+                        edges: list[tuple[int, int]], middle_beats: list[int],
+                        complexity: int, target: int,
+                        reserved_after: int) -> tuple[SetPiecePlan, ...]:
+    """Allocate authored programs before topology motifs and generic rooms."""
+    capacity = target - len(specs) - reserved_after - 1  # one loop room
+    if capacity < 2:
+        raise ValueError("ordinary floor lacks room budget for a primary set piece")
+
+    secondary_count = 2 if complexity >= 3 else 1
+    secondary_additions = min(secondary_count, max(0, capacity - 2))
+    primary_additions = min(4, capacity - secondary_additions)
+    primary_size = primary_additions + 1
+    primary_pool = [item for item in _PRIMARY_SET_PIECE_FAMILIES
+                    if len(item[1]) == primary_size]
+    primary = rng.choice(primary_pool)
+
+    primary_windows = [tuple(middle_beats[start:start + 3])
+                       for start in range(len(middle_beats) - 2)]
+    if not primary_windows:
+        raise ValueError("ordinary floor lacks a three-room primary core")
+    primary_hosts = rng.choice(primary_windows)
+    secondary_hosts = [index for index in middle_beats
+                       if index not in primary_hosts]
+    rng.shuffle(secondary_hosts)
+    secondary_hosts.sort(key=lambda index: specs[index].tier == "corridor")
+    plans: list[SetPiecePlan] = []
+
+    def allocate(template, scale: str,
+                 existing_hosts: tuple[int, ...]) -> SetPiecePlan:
+        family, room_roles, local_edges, entry_role, exit_role = template
+        mapped = list(existing_hosts)
+        for host, room_role in zip(mapped, room_roles):
+            host_spec = specs[host]
+            specs[host] = RoomSpec(host_spec.role, host_spec.tier,
+                                   host_spec.district,
+                                   _set_piece_tag(family, room_role))
+        if mapped:
+            district = specs[mapped[0]].district
+        else:
+            district = specs[middle_beats[0]].district
+        for room_role in room_roles[len(mapped):]:
+            node = len(specs)
+            specs.append(RoomSpec("branch", _program_tier(room_role),
+                                  district,
+                                  _set_piece_tag(family, room_role)))
+            mapped.append(node)
+        required = tuple((mapped[first], mapped[second])
+                         for first, second in local_edges)
+        known_edges = {frozenset(edge) for edge in edges}
+        for edge in required:
+            if frozenset(edge) not in known_edges:
+                edges.append(edge)
+        return SetPiecePlan(family, scale, tuple(mapped), tuple(room_roles),
+                            required, entry_role, exit_role)
+
+    plans.append(allocate(primary, "primary", primary_hosts))
+    used_families = {primary[0]}
+    for index in range(secondary_count):
+        if index < secondary_additions:
+            pool = [item for item in VIGNETTE_REQUEST_FAMILIES
+                    if item[0] not in used_families]
+        else:
+            pool = [item for item in _SECONDARY_SOLOS
+                    if item[0] not in used_families]
+        template = rng.choice(pool)
+        host = secondary_hosts.pop()
+        plans.append(allocate(template, "secondary",
+                              (host,)))
+        used_families.add(template[0])
+    return tuple(plans)
 
 
 def _plan_floor(rng: random.Random, complexity: int, number: int,
@@ -176,7 +292,15 @@ def _plan_floor(rng: random.Random, complexity: int, number: int,
         "offset-boulevard": 1,
     }.get(skeleton, 0)
     reserved_arm_rooms = arm_count * 2
+    middle_beats = list(range(1, 1 + beat_count))
+    set_pieces: tuple[SetPiecePlan, ...] = ()
+    if number not in (9, 10):
+        set_pieces = _reserve_set_pieces(
+            rng, specs, edges, middle_beats, complexity, target,
+            reserved_arm_rooms)
     budget = min(3, 1 + (complexity >= 3) + (rng.random() < variant.extra_motif_chance))
+    if number not in (9, 10):
+        budget = 1
     if skeleton in HALLWAY_FIRST_SKELETONS:
         # The hallway scaffold and its occupied arms spend the macro-layout
         # budget on this floor; stacking extra hub/wing/gallery families over
@@ -235,6 +359,9 @@ def _plan_floor(rng: random.Random, complexity: int, number: int,
     ring_rooms = max(right - left - 1, rng.randrange(1, 3))
     if primary_loop in ("courtyard-circuit", "nested-room-loop", "bounded-perimeter"):
         ring_rooms = min(3, ring_rooms + 1)
+    if number not in (9, 10):
+        ring_rooms = min(ring_rooms,
+                         target - len(specs) - reserved_arm_rooms)
     for _ in range(ring_rooms):
         node = len(specs)
         tier = "hall" if primary_loop == "courtyard-circuit" else "standard"
@@ -243,7 +370,6 @@ def _plan_floor(rng: random.Random, complexity: int, number: int,
         parent = node
     edges.append((parent, right)); loops.append((parent, right))
 
-    middle_beats = list(range(1, 1 + beat_count))
     if "hub" in motifs:
         if number in (9, 10):
             # Special floors own a fixed dramatic anchor on the mandatory
@@ -319,7 +445,9 @@ def _plan_floor(rng: random.Random, complexity: int, number: int,
         critical.update((branch, destination))
 
     filler_tips: list[int] = []
-    while len(specs) < target:
+    # Only the budget left after authored programs becomes generic utility space.
+    generic_count = target - len(specs)
+    for _ in range(generic_count):
         suite_tips = [tip for tip in filler_tips
                       if district_circulation[specs[tip].district]
                       in ("suite", "tunnel-cluster")]
@@ -347,4 +475,4 @@ def _plan_floor(rng: random.Random, complexity: int, number: int,
         raise ValueError("floor plan must have exactly one anchor")
     return FloorPlan(specs, edges, loops, tuple(motifs), frozenset(critical), tuple(groups),
                      skeleton, tuple(district_circulation), special_family,
-                     progression_grammar, tuple(motif_realizations))
+                     progression_grammar, tuple(motif_realizations), set_pieces)

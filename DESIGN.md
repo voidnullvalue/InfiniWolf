@@ -256,16 +256,24 @@ Read directly from the original Wolf3D source (`wolfhack`/`wolf3d.txt` and `WL_D
 
 Player gunfire is strong at close range, degrades fast, and becomes unreliable past **21 tiles**. This drives:
 
-- The **`max_run = 21`** sightline cap in `_break_long_sightlines`.
-- The **routine-fight range 3–12 tiles** target; room sizing (6–9 baseline, halls 9–13 major axis) is chosen so most rooms fall inside this band.
+- The **near-door officer downgrade** (below), and the paired cover pillar `_break_long_sightlines` inserts into the worst lanes.
+- The **routine-fight range 3–12 tiles** target; the minor axis of ordinary rooms (6–8) keeps most encounters inside this band.
+
+**Correction (measured).** The `max_run` sightline cap was originally set to 21 by reading the falloff figure as a limit on *architecture*. That does not follow, and measurement contradicts it: id Software's own 60 maps run a median longest straight run of **27 with a p90 of 48**, and the 227-map fan corpus independently agrees at 27/49. A cap below the corpus median was rejecting exactly the geometry it was meant to imitate. The falloff number is an argument for putting **cover** in a long lane, not for forbidding the lane, so the pass still runs and still places its paired pillars — but at `max_run = 30`, and the `long_sightline` critique flag moved from 21 to 46, just under both corpora's p90.
 - The **near-door officer downgrade** (`near_door(x, y, radius=3)` in `_place_population`) — the manual explicitly warns against rushing straight through doors, and a point-blank officer at the door is the worst version of that trap.
 - The **"necessary items are not hidden" rule** (from the manual). Enforced by `_reachable(..., locked_open=False)` and by placing keys in reachable off-route rooms, never behind pushwalls. A key may be tucked away from the direct door line, but its measured detour and progression state remain explicit and solvable. Secrets are always optional surplus.
 
-### 9.3 Real-map corpus (254 maps, 6277 rooms)
+### 9.3 Real-map corpus (227 fan maps + id's own 60)
 
-`tools/inspect_map.py` is the reproducible analysis tool. `--compare DIR` walks every `.wad` under a directory, parses each map's WDC3.1 PWAD container (the same container `_wad_bytes` emits), floods door-bounded rooms with the same "zone" definition `_assign_sound_zones` uses, and prints a summary table you can diff against generated output.
+`tools/structure_stats.py` is the reproducible structural tool and `tools/decor_stats.py` the decoration one; both share the corpus walker in `tools/corpus_io.py`. `tools/inspect_map.py --compare DIR` inspects a single map or summarises a directory.
 
-The corpus itself was **254 real, playable Wolf3D-family maps** already present on this machine (`ecwolf/mods/installed/…`), spanning:
+**Two corrections worth recording, because both changed conclusions.**
+
+*The comparison was not running.* `--compare` globbed loose `*.wad`, and every authored map on this machine lives inside a `.pk3` zip — so it measured zero maps and printed an error, for as long as this section has claimed it was the reproducible check. Decoration was measured and tuned into parity; structure never was, and drifted unwatched. The real readable inventory is **227 maps** (218 at 64×64, 9 larger), not 254: `multiwolf3d` ships no `.wad` files at all, and `rtotenhaus_enh`'s nine were being silently discarded by a 64×64-only parser guard.
+
+*The fan corpus is not the design authority.* `tools/gamemaps.py` now decodes `GAMEMAPS.WL6` (Carmack + RLEW), so id's own 60 maps can be measured as a **separate third column** rather than blended in — `totengraeber` and `wolfoverdrive` alone are 44% of the fan corpus, and they build big. That distinction overturned a headline number: against the fan corpus generated floors looked a third too small at 1120 walkable cells against 1738, and against id's own maps they are **already right** (1098). What both corpora agree on is not scale but **division** — id spends its ~1100 cells on 15 rooms with a 514-cell largest; the generator was spending them on 21 rooms with a 222-cell largest. The response was to redistribute rather than inflate, and any metric below is quoted only where the two corpora independently agree.
+
+The fan corpus spans:
 
 - The id-numbered `classics_*` conversions — Spear of Destiny and its two official mission packs — in native WL6 tile numbering.
 - Well-regarded independent total conversions: `totengraeber`, `rtotenhaus_enh`, `wolfoverdrive`, `pthollenteufel`.
@@ -275,21 +283,30 @@ Each was chosen because it uses ECWolf's default tile numbering (walls low, door
 To reproduce the comparison against a fresh generator build:
 
 ```sh
-python3 tools/inspect_map.py --compare /path/to/ecwolf/mods/installed
+python3 tools/structure_stats.py --corpus --id-corpus /path/to/ecwolf/data --generated
+python3 tools/structure_stats.py --gate
 python3 tools/inspect_map.py --seed castle --floor 1 --complexity 3
 ```
 
-The numbers that shipped into the generator, and the corpus figures that produced them:
+The numbers that shipped into the generator. `id` is GAMEMAPS.WL6, `fan` the 227 packaged maps, and `gen` the measured result over 84 floors spanning 12 seeds:
 
-| Signal from the corpus | Corpus value | Generator response |
-|------------------------|-------------:|--------------------|
-| Rooms that are a plain rectangle | 18.1% | Normal generation now targets 40% shaped rooms rather than forcing a rectangular majority. Seven bounded shape families broaden silhouettes while a 60% ceiling protects navigation and combat space. |
-| Rooms with an isolated interior pillar/column | 13.8% (median 2 — a mirrored pair) | `_add_pillars` uses a low, variant-controlled rate and prefers symmetric structural pairs, guarded so they cannot become articulation points. |
-| Median room aspect ratio | 1.40 : 1 | `hall` destinations and true `corridor` nodes broaden the aspect distribution while ordinary rooms retain useful combat space. |
-| Bilateral symmetry rate on rooms ≥25 tiles | 44–46% (not ~100%) | Individual notch and pillar compositions are mirrored, but the complete room graph is not globally mirrored. This keeps spaces legible without making every seed predictable. |
-| Rooms per map (mean) | 24.7 | The compact Wolf3D grid targets `min(24, 14 + 2·complexity)` rooms; floor 10 adds up to four planned expedition rooms within the same 24-room cap. Local same-district filler recovery raises Normal realization from roughly 16.3 to 18.1 rooms while retaining the elevator-safe rock shell. |
-| Doors per map (mean) | 27.2 | Doors emerge from finalized graph connections and choke analysis, with a 56-door safety budget. |
-| Door-graph cycles per map (mean) | 1.1–1.54 | Each progression grammar chooses a local reconvergence family; routing bounds prevent it from growing into an accidental perimeter ring or shortcutting mandatory progression. |
+| Signal | id | fan | gen | Generator response |
+|--------|---:|----:|----:|--------------------|
+| Median room aspect ratio | 1.40 | 1.40 | **1.40** | The root cause of a measured 1.22 was that `standard` and `anchor` tiers drew *both* axes from one range, so they were square by construction. Each now draws a separate major and minor span and picks an orientation. |
+| Largest room's share of floor | 0.221 | 0.157 | **0.225** | The anchor tier is sized from a deliberately wide range: the floor's largest space is a tail statistic, so an anchor that is reliably medium-large matches the median without ever producing a great hall. |
+| — same, p90 | 0.423 | 0.461 | 0.295 | Still short. Closing it needs the 2–3 distinct spatial masses per floor that remain unbuilt, not a larger anchor. |
+| Largest single room (cells) | 514 | 939 | **443** | As above. |
+| Door-graph cycles per map | 0.92 | 1.47 | **0.98** | Three separate leaks: a dropped ring room deleted its reconvergence edge outright instead of reattaching to the survivor; ring rooms were placed after filler and so were crowded out first; and the loop's second door was often lost. `_close_door_graph_loops` now doors a wall seam joining two components the door graph already connects — the exact inverse of `_split_oversized_zones`, and free of randomness because it runs late. |
+| Longest straight run (p90) | 48 | 49 | 26 | Raised from a 21-tile cap to 30 (see §9.2). 30 is now the binding constraint, held there because the same measurement guards against two spaces fusing with no separating architecture. |
+| Walkable floor cells | 1098 | 1738 | 1327 | **Deliberately not a growth target.** See the correction above: the generator was already id-sized, and the fan figure is two mods' house style. |
+| Doors per map | 19 | 27 | 20 | Doors emerge from finalized graph connections and choke analysis, with a 56-door safety budget. |
+| Ring halls (a corridor circling a solid core) | — | — | 13% of floors | Wolf3D uses this shape constantly and the generator could not produce one: "ring" here had only ever meant a *reconvergence in the room graph*, a cycle walked between rooms, never a single space you can circle inside. `_carve_ring_hall` hollows a walkway around a solid block on roughly one floor in seven, off floors 9 and 10 so it cannot collide with the boss arena or the reward expedition. The core is solid rather than a sealed void because a room the player can see into but never enter reads as a bug, and because a solid block leaves the walkway one component with no articulation point. |
+| Rooms that are a plain rectangle | 15.0% | 19.0%¹ | 9.5% | 40% of rooms are budgeted for shaping. The budget was already fully spent; what was broken were the size gates — `paired-side-bays` required `w >= 10` while ordinary rooms drew from {6,7,8,9}, so three families made up 79% of all shaped rooms. Gates dropped to 7, and `apse`, `octagon` and `island-block` added: top-three concentration is now 45%. |
+| Rooms with an isolated interior pillar/column | 13.8% (median 2 — a mirrored pair) | | | `_add_pillars` uses a low, variant-controlled rate and prefers symmetric structural pairs, guarded so they cannot become articulation points. |
+| Bilateral symmetry rate on rooms ≥25 tiles | 44–46% (not ~100%) | | | Individual notch and pillar compositions are mirrored, but the complete room graph is not globally mirrored. |
+| Rooms per map | 15 | 23 | 20 | `min(24, 14 + 2·complexity)` planned, with local same-district filler recovery. |
+
+¹ 19.0%, not the 18.1% previously recorded here. Wolf3D's `AMBUSHTILE` is code 106 and the engine walks it, but `grid._is_floor` starts at 108 because the generator never emits one — so 200 of the 218 corpus maps had a scatter of walkable cells read as wall, punching phantom pillars into authored rooms. The corpus readers now use a `>= 106` predicate; the generator's own is untouched.
 
 ### 9.4 Community level-design guides
 

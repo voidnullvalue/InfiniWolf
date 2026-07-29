@@ -230,6 +230,31 @@ class VignettePlan:
 
 
 @dataclass(frozen=True, slots=True)
+class SetPiecePlan:
+    """A concept-first space program allocated onto the abstract room graph.
+
+    ``rooms`` and ``room_roles`` are parallel: the former are real indices in
+    ``FloorPlan.specs`` and the latter say what those spaces are for. Required
+    edges likewise use realized plan indices, so tests and later passes can
+    distinguish a promised adjacency from a thematic suggestion.
+
+    Geometry, visibility, encounter, reward, and landmark contracts are
+    deliberately absent. No current consumer can enforce them before room
+    placement, and recording such fields here would make unfulfilled promises.
+    The ``setpiece:<family>:<role>`` RoomSpec motif is the current hand-off to
+    placement and semantics; richer contracts belong in a follow-up with an
+    explicit consumer.
+    """
+    family: str
+    scale: str                       # "primary" or "secondary"
+    rooms: tuple[int, ...]
+    room_roles: tuple[str, ...]
+    required_edges: tuple[tuple[int, int], ...]
+    entry_role: str
+    exit_role: str
+
+
+@dataclass(frozen=True, slots=True)
 class RealizedVignette:
     """Audit record proving all cross-system components landed."""
     family: str
@@ -261,6 +286,7 @@ class FloorPlan:
     special_family: str = "standard"
     progression_grammar: str = "axial-journey"
     motif_realizations: tuple[str, ...] = ()
+    set_pieces: tuple[SetPiecePlan, ...] = ()
 
 
 @dataclass(slots=True)

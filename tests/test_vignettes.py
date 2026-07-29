@@ -4,7 +4,8 @@ import unittest
 from infiniwolf.config import CampaignConfig
 from infiniwolf.generator import generate_map
 from infiniwolf.model import Room, RoomIdentity
-from infiniwolf.vignettes import plan_vignettes
+from infiniwolf.vignettes import (VIGNETTE_REQUEST_FAMILIES,
+                                  plan_vignettes)
 
 
 def identity(concept):
@@ -20,10 +21,21 @@ class VignetteTests(unittest.TestCase):
         self.assertEqual(first, second)
         self.assertEqual((), plan_vignettes("vignette-contract", 9, rooms, identities, [(0, 1)], ()))
 
+    def test_request_families_can_reserve_adjacency_before_geometry(self):
+        for family, roles, edges, entry, exit_role in VIGNETTE_REQUEST_FAMILIES:
+            with self.subTest(family=family):
+                self.assertEqual(len(roles), 2)
+                self.assertEqual(edges, ((0, 1),))
+                self.assertIn(entry, roles)
+                self.assertIn(exit_role, roles)
+        self.assertEqual(
+            {row[0] for row in VIGNETTE_REQUEST_FAMILIES},
+            {row[0] for row in __import__("infiniwolf.vignettes", fromlist=["_FAMILIES"])._FAMILIES})
+
     def test_realized_vignette_records_all_three_subsystems(self):
         # This is an intentionally fixed integration seed, not a probabilistic
         # assertion: campaign intent itself is a deterministic schedule.
-        level = generate_map(CampaignConfig(seed="0"), 4)
+        level = generate_map(CampaignConfig(seed="0"), 4, 0)
         self.assertTrue(level.vignette_plans)
         self.assertTrue(level.realized_vignettes)
         realized = level.realized_vignettes[0]

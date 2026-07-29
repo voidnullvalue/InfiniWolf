@@ -23,7 +23,7 @@ from collections import Counter, deque
 from itertools import combinations
 import random
 
-from .grid import _at, _floor_components, _is_floor, _set
+from .grid import _at, _floor_components, _is_floor, _room_probe, _set
 from .model import (FloorVariant, KeyObjective, LandmarkPlan, Room,
                     RoomIdentity, RoomSpec)
 from .room_policy import base_theme
@@ -33,7 +33,8 @@ from .wl6 import (DAMAGED_WALL_CONCEPTS, DECOR_WALLS, DOORS,
                   WALL_LANDMARK_CONCEPTS, WALL_THEMES)
 
 
-def _room_identities(rooms: list[Room], specs: list[RoomSpec], districts: list[int],
+def _room_identities(tiles: list[int],
+                     rooms: list[Room], specs: list[RoomSpec], districts: list[int],
                      edges: list[tuple[int, int]], variant: FloorVariant,
                      jail_rooms: frozenset[int],
                      component_of: dict[tuple[int, int], int],
@@ -58,7 +59,7 @@ def _room_identities(rooms: list[Room], specs: list[RoomSpec], districts: list[i
                    spec.role if spec.role in
                    ("arrival", "staging", "victory", "premium-vault", "recovery") else
                    "jail" if index in jail_rooms else "")
-        wall_base = group_theme[component_of[room.center]][0]
+        wall_base = group_theme[component_of[_room_probe(tiles, room)]][0]
         resolved.append((theme, special, wall_base))
 
     # A kitchen is a deliberate floor-level set piece, not the default
@@ -218,7 +219,7 @@ def _assign_area_themes(tiles: list[int], rooms: list[Room], districts: list[int
     groups = sorted(set(component_of.values()))
     votes: dict[int, dict[int, int]] = {group: {} for group in groups}
     for room, district in zip(rooms, districts):
-        group = component_of[room.center]
+        group = component_of[_room_probe(tiles, room)]
         votes[group][district] = votes[group].get(district, 0) + 1
     assigned = {group: min(district for district, count in tally.items()
                            if count == max(tally.values()))
@@ -282,10 +283,10 @@ def _select_jail_rooms(rooms: list[Room], districts: list[int],
                        ) -> frozenset[int]:
     """Pick blue-stone rooms with a long enough unpainted wall for cells."""
     blue_rooms = [ridx for ridx, room in enumerate(rooms)
-                  if group_theme[component_of[room.center]][0] == 8]
+                  if group_theme[component_of[_room_probe(tiles, room)]][0] == 8]
     selected = []
     for ridx, room in enumerate(rooms):
-        base = group_theme[component_of[room.center]][0]
+        base = group_theme[component_of[_room_probe(tiles, room)]][0]
         if base != 8:
             continue
         sides = (
@@ -338,7 +339,7 @@ def _apply_wall_theme(tiles: list[int], things: list[int], rooms: list[Room],
         if group is not None:
             tiles[index] = group_theme[group][0]
     for ridx, (room, district) in enumerate(zip(rooms, districts)):
-        base, accents = group_theme[component_of[room.center]]
+        base, accents = group_theme[component_of[_room_probe(tiles, room)]]
         sides = (
             [(x, room.y - 1) for x in range(room.x - 1, room.x + room.w + 1)],
             [(x, room.y + room.h) for x in range(room.x - 1, room.x + room.w + 1)],

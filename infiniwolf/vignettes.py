@@ -4,6 +4,23 @@ from __future__ import annotations
 import hashlib
 from .model import Room, RoomIdentity, VignettePlan
 
+# Request-side families are consumed by planning before geometry exists. Their
+# local edge indices become concrete FloorPlan edges in SetPiecePlan records.
+VIGNETTE_REQUEST_FAMILIES = (
+    ("guardpost-supply", ("checkpoint", "supply-cache"), ((0, 1),),
+     "checkpoint", "supply-cache"),
+    ("barracks-mess", ("barracks", "mess-hall"), ((0, 1),),
+     "barracks", "mess-hall"),
+    ("prison-processing", ("processing-desk", "holding-cell"), ((0, 1),),
+     "processing-desk", "holding-cell"),
+    ("officer-suite", ("officers-office", "briefing-room"), ((0, 1),),
+     "officers-office", "briefing-room"),
+    ("crypt-ossuary", ("crypt", "ossuary"), ((0, 1),),
+     "crypt", "ossuary"),
+    ("workshop-service", ("workshop", "parts-store"), ((0, 1),),
+     "workshop", "parts-store"),
+)
+
 _FAMILIES = (
     ("guardpost-supply", {"guardpost", "checkpoint"}, {"supply-cache", "storage", "armory"}, "strongpoint", "supply-cache", "corner-stash"),
     ("barracks-mess", {"barracks", "ready-room"}, {"mess-kitchen", "dining-hall", "lounge"}, "visible-sentry", "recovery", "banquet-row"),
