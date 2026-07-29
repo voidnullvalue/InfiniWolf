@@ -665,6 +665,35 @@ def _place_planned_rooms(rng: random.Random, plan: FloorPlan, number: int = 0) -
             # can become deeper than the authored exit and makes progression
             # feel accidental, so drop it before the long-range fallbacks.
             if index not in plan.critical and index >= spine_count:
+                # Before conceding the room entirely, try it smaller against the
+                # same parent. Room spans grew when the size grammar was
+                # rebalanced toward the corpus, and that quietly cost
+                # realization -- 18.1 rooms per floor fell to 16.5, taking each
+                # dropped room's concept, encounter and pickup with it. A filler
+                # that will not fit at its drawn size often fits a tile or two
+                # narrower, and a smaller side room beats a missing one. Stays
+                # local to the parent, so the "no long scattered corridor" rule
+                # above still holds.
+                rw, rh = sizes[index]
+                for shrink in (1, 2, 3, 4):
+                    trial = (max(4, rw - shrink), max(4, rh - shrink))
+                    if trial == (rw, rh):
+                        break
+                    for side in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                        for gap in (1, 2, 3):
+                            for jitter in _snap_offsets(parent, *trial, side, rng):
+                                candidate = adjacent(parent, trial, side, gap, jitter)
+                                if legal(candidate):
+                                    room = candidate
+                                    break
+                            if room is not None:
+                                break
+                        if room is not None:
+                            break
+                    if room is not None:
+                        sizes[index] = trial
+                        break
+            if room is None and index not in plan.critical and index >= spine_count:
                 dropped.add(index)
                 continue
             # A crowded beat may need a second ring beyond its first wings;
@@ -693,6 +722,26 @@ def _place_planned_rooms(rng: random.Random, plan: FloorPlan, number: int = 0) -
                                  or supports_exit_elevator(candidate))):
                         room = candidate
                         break
+        if room is None and reserved_anchor is not None and index != anchor_spec_index:
+            # The anchor's footprint is held clear from the start so the floor's
+            # one grand space is not squeezed out by beats placed before it. That
+            # reservation is a preference, not a contract: when a mandatory room
+            # has nowhere left to go, a slightly smaller anchor beats discarding
+            # the whole floor, which throws away planning, every placement so far
+            # and all routing. Release it and let this room compete for the space.
+            #
+            # Only reached on a path that previously raised, so any floor that
+            # already generated is bit-for-bit unaffected.
+            reserved_anchor = None
+            rw, rh = sizes[index]
+            for _ in range(200):
+                candidate = Room(rng.randrange(3, 61 - rw),
+                                 rng.randrange(3, 61 - rh), rw, rh)
+                if (legal(candidate)
+                        and (plan.specs[index].role != "exit"
+                             or supports_exit_elevator(candidate))):
+                    room = candidate
+                    break
         if room is None:
             if index in plan.critical or index < spine_count:
                 raise ValueError("could not realize critical planned room")
@@ -892,7 +941,11 @@ def _carve_symmetric_profiles(
             candidates.append(("apse", apse_cells, ((cx, apse_y),)))
 
         # Matching mid-wall shoulders create an hourglass/paired-bay plan.
-        if room.w >= 7:
+        # Nine, not seven: the two bays occupy two columns each, so at w=7 they
+        # consume four of seven and what is left is a three-wide waist -- the
+        # room stops reading as a hall with alcoves and starts reading as a
+        # capital H. Nine leaves a five-wide centre, which still reads as a room.
+        if room.w >= 9:
             band = (range(cy - 1, cy + 2) if room.h % 2 else
                     range(room.y + room.h // 2 - 1,
                           room.y + room.h // 2 + 1))
@@ -911,7 +964,7 @@ def _carve_symmetric_profiles(
             candidates.append(("offset-side-bay", offset_cells,
                                ((room.x + room.w - 3 if side_right else room.x + 2,
                                  band[len(band) // 2]),)))
-        if room.h >= 7:
+        if room.h >= 9:
             band = (range(cx - 1, cx + 2) if room.w % 2 else
                     range(room.x + room.w // 2 - 1,
                           room.x + room.w // 2 + 1))

@@ -25,6 +25,7 @@ from infiniwolf.generator import (BOSSES, DECOR_WALLS, DOGS, ELEVATOR_TILE, FAKE
                                    _place_planned_rooms, _plan_floor, _snap_offsets,
                                    _room_predecessor)
 from infiniwolf.generator import FLOOR, FLOOR_TEN_STONE_THEME, ZONE_MAX
+from infiniwolf.grid import _room_probe
 
 
 def _generate_with_retries(config: CampaignConfig, floor: int, attempts: int = 50,
@@ -1877,8 +1878,13 @@ class GeneratorTests(unittest.TestCase):
                 (component_of, group_theme)
                 for tiles, component_of, group_theme in captured
                 if tiles is level.tiles)
-            blue_rooms = sum(group_theme[component_of[room.center]][0] == 8
-                             for room in level.rooms)
+            # A ring hall's centre is its solid core, so keying the component map
+            # off room.center raises rather than degrading. _room_probe is what
+            # semantics.py uses for exactly this reason; the test has to agree
+            # with production or it fails on a legitimate floor.
+            blue_rooms = sum(
+                group_theme[component_of[_room_probe(level.tiles, room)]][0] == 8
+                for room in level.rooms)
             if blue_rooms > 1:
                 self.assertLess(len(level.jail_rooms) * 2, blue_rooms)
 
