@@ -525,20 +525,6 @@ Those increase variety, but InfiniWolf already has substantial variety. Human-ma
 3. Rank human-likeness and experience before campaign contrast.
 4. Introduce local deterministic mutations: move a room, reroute an edge, resize an anchor, alter a doorway, or replace an encounter.
 
-## Stage 4: close the human-evaluation loop
-
-Create a blind pairwise-rating tool showing either maps or short play sessions. Ask testers:
-
-- Which map feels more deliberately designed?
-- Which is easier to navigate without being trivial?
-- Which has better combat?
-- Which has more memorable spaces?
-- Which would you replay?
-
-Collect the seed, current metrics, and preference. Fit a small interpretable preference model—logistic regression or Bradley–Terry is sufficient—to determine which metrics actually predict human judgment.
-
-That feedback loop is the realistic path from statistically similar to human maps to players being unable to reliably identify which maps were generated.
-
 # The single best next project — **DONE (2.1.0)**
 
 > The set-piece half landed in 2.1.0; the staged-search half has not started, and the

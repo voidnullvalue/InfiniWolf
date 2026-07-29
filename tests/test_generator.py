@@ -56,9 +56,24 @@ class StreamIsolationTests(unittest.TestCase):
         config = CampaignConfig(seed=20260727)
         # No sky-vista request: its recesses are an explicitly visual decoration
         # effect, while this asserts the structural tile plane remains fixed.
-        base = generate_map(config, 4, 0, sky_vista_enabled=False)
+        #
+        # The attempt index has to be searched rather than pinned at 0. Roughly a
+        # fifth of attempts are rejected by validation, so a fixed attempt makes
+        # this assert "attempt 0 of this seed happens to be valid" on top of the
+        # isolation contract it is actually about -- and an unrelated geometry
+        # change then breaks it while isolation is perfectly intact. Both calls
+        # use the SAME attempt, which is what keeps the comparison meaningful.
+        for attempt in range(50):
+            try:
+                base = generate_map(config, 4, attempt, sky_vista_enabled=False)
+                break
+            except ValueError:
+                continue
+        else:
+            self.fail("no valid attempt for the isolation seed")
         advanced = generate_map(
-            config, 4, 0, sky_vista_enabled=False, stream_advance={"decorations": 37})
+            config, 4, attempt, sky_vista_enabled=False,
+            stream_advance={"decorations": 37})
         self.assertEqual(base.tiles, advanced.tiles)
         # These are the non-decoration things and their owner metadata: secrets,
         # doors/keys, actors, authored pickups, progression, and geometry.

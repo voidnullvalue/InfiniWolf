@@ -25,8 +25,8 @@ from itertools import combinations
 import random
 
 from .grid import _at, _floor_components, _is_floor, _room_probe, _set
-from .model import (FloorVariant, KeyObjective, LandmarkPlan, Room,
-                    RoomIdentity, RoomSpec)
+from .model import (SET_PIECE_CONTRACTS, FloorVariant, KeyObjective,
+                    LandmarkPlan, Room, RoomIdentity, RoomSpec, SetPiecePlan)
 from .room_policy import base_theme
 from .wl6 import (DAMAGED_WALL_CONCEPTS, DECOR_WALLS, DOORS,
                   FLOOR_TEN_STONE_THEME, GRID, JAIL_CANDIDATE_PROBABILITY,
@@ -44,11 +44,102 @@ class _SemanticIdentities(list):
 
     def __init__(self, values, landmark_room: int,
                  monumentality: tuple[float, ...],
-                 damage_gradient: tuple[float, ...]):
+                 damage_gradient: tuple[float, ...],
+                 set_piece_contracts):
         super().__init__(values)
         self.landmark_room = landmark_room
         self.monumentality = monumentality
         self.damage_gradient = damage_gradient
+        self.set_piece_contracts = set_piece_contracts
+
+
+@dataclass(frozen=True, slots=True)
+class _VisibilityIntent:
+    family: str
+    observer_role: str
+    subject_role: str
+    observer_room: int
+    subject_room: int
+
+    @property
+    def reason(self) -> str:
+        return (f"setpiece-visibility:{self.family}:"
+                f"{self.observer_role}->{self.subject_role}")
+
+
+@dataclass(frozen=True, slots=True)
+class _SetPieceSemanticContracts:
+    visibility: tuple[_VisibilityIntent, ...] = ()
+    landmark_rooms: frozenset[int] = frozenset()
+
+
+def _set_piece_semantic_contracts(
+        specs: list[RoomSpec],
+        set_pieces: tuple[SetPiecePlan, ...] = (),
+) -> _SetPieceSemanticContracts:
+    """Resolve advisory role contracts onto the rooms that survived placement.
+
+    ``PlacedPlan`` compacts room indices after dropping optional rooms. The motif
+    tag is therefore the authoritative reverse lookup at this point; direct
+    ``rooms_for_role`` results are retained when they still address the matching
+    realized spec. The fallback contract table is needed by the historical
+    generator call site, which hands semantics the tagged specs but not the
+    enclosing ``FloorPlan``.
+    """
+    tagged: dict[tuple[str, str], list[int]] = {}
+    family_order: list[str] = []
+    for index, spec in enumerate(specs):
+        parts = spec.motif.split(":", 2)
+        if len(parts) != 3 or parts[0] != "setpiece":
+            continue
+        family, role = parts[1], parts[2]
+        tagged.setdefault((family, role), []).append(index)
+        if family not in family_order:
+            family_order.append(family)
+
+    def rooms_for(family: str, role: str,
+                  plan: SetPiecePlan | None) -> tuple[int, ...]:
+        tagged_rooms = tagged.get((family, role), ())
+        if plan is None:
+            return tuple(tagged_rooms)
+        direct = tuple(
+            index for index in plan.rooms_for_role(role)
+            if 0 <= index < len(specs)
+            and index in tagged_rooms)
+        return direct + tuple(index for index in tagged_rooms
+                              if index not in direct)
+
+    visibility: list[_VisibilityIntent] = []
+    landmark_rooms: set[int] = set()
+    if set_pieces:
+        sources = []
+        for plan in set_pieces:
+            role_pairs = tuple(plan.roles_for("visibility_contracts").items())
+            sources.append((plan.family, plan, role_pairs,
+                            plan.landmark_contract))
+    else:
+        sources = [
+            (family, None,
+             tuple(SET_PIECE_CONTRACTS.get(family, {}).get("visibility", ())),
+             tuple(SET_PIECE_CONTRACTS.get(family, {}).get("landmark", ())))
+            for family in family_order
+        ]
+
+    for family, plan, role_pairs, landmark_roles in sources:
+        for observer_role, subject_role in role_pairs:
+            for observer in rooms_for(family, observer_role, plan):
+                for subject in rooms_for(family, subject_role, plan):
+                    if observer != subject:
+                        visibility.append(_VisibilityIntent(
+                            family, observer_role, subject_role,
+                            observer, subject))
+        for role in landmark_roles:
+            landmark_rooms.update(rooms_for(family, role, plan))
+    # Repeated roles (the prison program has two cell blocks) can otherwise
+    # repeat an identical resolved request after index compaction.
+    visibility = list(dict.fromkeys(visibility))
+    return _SetPieceSemanticContracts(tuple(visibility),
+                                      frozenset(landmark_rooms))
 
 
 def _room_identities(tiles: list[int],
@@ -59,7 +150,8 @@ def _room_identities(tiles: list[int],
                      group_theme: dict[int, tuple[int, tuple[int, ...]]],
                      exit_room: Room | None, boss_room: Room | None = None,
                      special_family: str = "standard",
-                     key_objectives: tuple[KeyObjective, ...] = ()
+                     key_objectives: tuple[KeyObjective, ...] = (),
+                     set_pieces: tuple[SetPiecePlan, ...] = (),
                      ) -> list[RoomIdentity]:
     """Resolve grammar forward into compatible room concepts.
 
@@ -203,16 +295,17 @@ def _room_identities(tiles: list[int],
     terminus = next((index for index, room in enumerate(rooms)
                      if room == (boss_room or exit_room)), len(rooms) - 1)
     approximate_route = _shortest_room_path(0, terminus, len(rooms), edges)
+    set_piece_contracts = _set_piece_semantic_contracts(specs, set_pieces)
     preliminary = plan_landmarks(
         rooms, specs, [spec.role for spec in specs], edges, districts,
-        approximate_route, tiles=tiles)
+        approximate_route, tiles=tiles, set_pieces=set_pieces)
     landmark_room = next((plan.room_index for plan in preliminary
                           if plan.rank == "primary"), -1)
     monumentality, damage_gradient = _composition_profile(
         edges, districts, landmark_room,
         tuple(identity.concept in DAMAGED_WALL_CONCEPTS for identity in result))
     return _SemanticIdentities(result, landmark_room, monumentality,
-                               damage_gradient)
+                               damage_gradient, set_piece_contracts)
 
 
 def _assign_area_themes(tiles: list[int], rooms: list[Room], districts: list[int],
@@ -367,6 +460,9 @@ def _apply_wall_theme(tiles: list[int], things: list[int], rooms: list[Room],
     landmark_cells: dict[int, list[tuple[int, int]]] = {}
     composed = isinstance(identities, _SemanticIdentities)
     landmark_room = identities.landmark_room if composed else -1
+    set_piece_contracts = (
+        identities.set_piece_contracts if composed
+        else _SetPieceSemanticContracts())
     monumentality = (identities.monumentality if composed else
                      tuple(0.0 for _ in rooms))
     damage_gradient = (identities.damage_gradient if composed else
@@ -469,10 +565,12 @@ def _apply_wall_theme(tiles: list[int], things: list[int], rooms: list[Room],
         if identity is None:
             place_landmark = (bool(eligible_landmarks)
                               and rng.random() < (0.30 if formal else 0.12))
-        elif ridx == landmark_room:
+        elif (ridx == landmark_room
+              or ridx in set_piece_contracts.landmark_rooms):
             # When the material/concept contract supports an accent, the planned
-            # destination culminates the sequence instead of having to win one
-            # more unrelated per-room roll.
+            # destination -- or a set-piece role promised the same treatment --
+            # culminates the sequence instead of having to win one more
+            # unrelated per-room roll.
             place_landmark = bool(eligible_landmarks)
         else:
             emphasis = monumentality[ridx] if ridx < len(monumentality) else 0.0
@@ -547,7 +645,7 @@ def _apply_wall_theme(tiles: list[int], things: list[int], rooms: list[Room],
                             if interior:
                                 _set(things, *rng.choice(interior),
                                      rng.choice((42, 64, 65, 66)))
-    _remember_landmark_tiles(rooms, tiles)
+    _remember_landmark_tiles(rooms, tiles, set_piece_contracts)
     return landmark_cells
 
 
@@ -633,9 +731,12 @@ class LandmarkVisibility:
 _LANDMARK_TILE_CONTEXTS = OrderedDict()
 
 
-def _remember_landmark_tiles(rooms: list[Room], tiles: list[int]) -> None:
+def _remember_landmark_tiles(
+        rooms: list[Room], tiles: list[int],
+        set_piece_contracts: _SetPieceSemanticContracts = _SetPieceSemanticContracts(),
+) -> None:
     key = id(rooms)
-    _LANDMARK_TILE_CONTEXTS[key] = (rooms, tiles)
+    _LANDMARK_TILE_CONTEXTS[key] = (rooms, tiles, set_piece_contracts)
     _LANDMARK_TILE_CONTEXTS.move_to_end(key)
     while len(_LANDMARK_TILE_CONTEXTS) > 12:
         _LANDMARK_TILE_CONTEXTS.popitem(last=False)
@@ -811,7 +912,8 @@ def _has_loop_return(index: int, neighbours: dict[int, set[int]]) -> bool:
 
 def plan_landmarks(rooms: list[Room], specs: list[RoomSpec], roles: list[str],
                    edges: list[tuple[int, int]], districts: list[int],
-                   critical_route, *, tiles: list[int] | None = None
+                   critical_route, *, tiles: list[int] | None = None,
+                   set_pieces: tuple[SetPiecePlan, ...] = (),
                    ) -> tuple[LandmarkPlan, ...]:
     """Nominate landmarks by navigational usefulness, deterministically.
 
@@ -821,10 +923,13 @@ def plan_landmarks(rooms: list[Room], specs: list[RoomSpec], roles: list[str],
     """
     if not rooms:
         return ()
+    set_piece_contracts = _set_piece_semantic_contracts(specs, set_pieces)
     if tiles is None:
         context = _LANDMARK_TILE_CONTEXTS.get(id(rooms))
         if context is not None and context[0] is rooms:
             tiles = context[1]
+            if not set_pieces:
+                set_piece_contracts = context[2]
 
     degree = {index: 0 for index in range(len(rooms))}
     neighbours = {index: set() for index in range(len(rooms))}
@@ -892,23 +997,42 @@ def plan_landmarks(rooms: list[Room], specs: list[RoomSpec], roles: list[str],
         purpose = max(contributions, key=lambda name: (contributions[name], name))
         scored.append((usefulness, index, purpose, crosses, branch_destination))
 
-    if not scored:
+    contracted_primary = None
+    for intent in set_piece_contracts.visibility:
+        views = visible_by_room.get(intent.subject_room, ())
+        if any(view.observer_room == intent.observer_room for view in views):
+            contracted_primary = intent
+            break
+
+    if not scored and contracted_primary is None:
         return ()
     scored.sort(key=lambda item: (-item[0], item[1]))
-    primary_score, primary_index, primary_reason, _, _ = scored[0]
+    if contracted_primary is not None:
+        primary_index = contracted_primary.subject_room
+        record = next((item for item in scored if item[1] == primary_index),
+                      None)
+        primary_score = record[0] if record is not None else 0.0
+        primary_reason = contracted_primary.reason
+    else:
+        primary_score, primary_index, primary_reason, _, _ = scored[0]
 
     def approach_of(index: int) -> int:
         on_route = [other for other in neighbours[index] if other in route_order]
         return (min(on_route, key=route_order.get) if on_route else
                 min(neighbours[index]) if neighbours[index] else -1)
 
+    primary_approach = (
+        contracted_primary.observer_room
+        if contracted_primary is not None else approach_of(primary_index))
     plans = [LandmarkPlan(primary_index, "primary", primary_reason,
-                          round(primary_score, 3), approach_of(primary_index))]
+                          round(primary_score, 3), primary_approach)]
     claimed = {primary_index} | neighbours[primary_index]
     # District transitions and destinations immediately beyond a choice are the
     # semantic jobs of secondaries. Fill any remaining budget by usefulness.
-    secondary_order = sorted(scored[1:], key=lambda item: (
-        0 if item[3] else 1 if item[4] else 2, -item[0], item[1]))
+    secondary_order = sorted(
+        (item for item in scored if item[1] != primary_index),
+        key=lambda item: (
+            0 if item[3] else 1 if item[4] else 2, -item[0], item[1]))
     for score, index, reason, transition, branch_destination in secondary_order:
         if len(plans) > _MAX_SECONDARY:
             break

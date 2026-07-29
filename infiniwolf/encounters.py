@@ -26,13 +26,57 @@ import random
 from .config import CampaignConfig
 from .grid import _at, _floor_distances, _is_floor, _reachable, _set
 from .model import (EncounterPlacement, GuardGallery, GuardRecess, KeyObjective,
-                    PatrolRoute, RoomSpec,
+                    PatrolRoute, RoomSpec, SetPiecePlan,
                     Room, RoomIdentity, SpritePlacement)
+from .planning import _SET_PIECE_CONTRACTS
 from .wl6 import (ACTOR_BUDGET_SCALE, ACTOR_SPACING, DOG_FOOD, DOOR_EW, DOOR_NS,
                   DOORS, ENEMY_FAMILIES, FAKE_HITLER, FLOOR, GHOSTS, GRID,
                   GUARDS, NOVELTY_SPAWN_CHANCE, PATROL_POINT_CODES,
                   PATROLS_BY_FAMILY, WALL)
 from .ledger import reserve as ledger_reserve
+
+
+_ENCOUNTER_CONTRACT_INTENTS = frozenset({
+    "guarded", "ambush", "patrolled", "overlook", "light", "objective",
+})
+
+
+def _encounter_contracts_by_room(
+        identities: list[RoomIdentity],
+        set_pieces: tuple[SetPiecePlan, ...] = (),
+        realized_plan_indices: tuple[int, ...] = (),
+) -> dict[int, str]:
+    """Resolve advisory role contracts onto realized room indices."""
+    resolved: dict[int, str] = {}
+    if set_pieces:
+        realized = ({plan_index: room_index
+                     for room_index, plan_index
+                     in enumerate(realized_plan_indices)}
+                    if realized_plan_indices else
+                    {index: index for index in range(len(identities))})
+        for set_piece in set_pieces:
+            for role, intent in set_piece.roles_for(
+                    "encounter_contract").items():
+                if intent not in _ENCOUNTER_CONTRACT_INTENTS:
+                    continue
+                for plan_index in set_piece.rooms_for_role(role):
+                    room_index = realized.get(plan_index)
+                    if room_index is not None and room_index < len(identities):
+                        resolved.setdefault(room_index, intent)
+        return resolved
+
+    # RoomIdentity is the current encounter boundary. The motif reverse-maps a
+    # surviving named role without treating an ordinary concept as contracted.
+    for room_index, identity in enumerate(identities):
+        parts = identity.motif.split(":", 2)
+        if len(parts) != 3 or parts[0] != "setpiece":
+            continue
+        _, family, role = parts
+        pairs = _SET_PIECE_CONTRACTS.get(family, {}).get("encounter", ())
+        intent = dict(pairs).get(role)
+        if intent in _ENCOUNTER_CONTRACT_INTENTS:
+            resolved.setdefault(room_index, intent)
+    return resolved
 
 
 def _carve_guard_recesses(tiles: list[int], things: list[int], rooms: list[Room],
@@ -107,7 +151,9 @@ def _carve_guard_recesses(tiles: list[int], things: list[int], rooms: list[Room]
 def _place_guard_gallery(tiles: list[int], things: list[int], rooms: list[Room],
                          identities: list[RoomIdentity], room_shapes: list[str],
                          reserved: set[tuple[int, int]], rng: random.Random,
-                         start: tuple[int, int], eligible_rooms: frozenset[int]
+                         start: tuple[int, int], eligible_rooms: frozenset[int],
+                         set_pieces: tuple[SetPiecePlan, ...] = (),
+                         realized_plan_indices: tuple[int, ...] = (),
                          ) -> tuple[GuardGallery, ...]:
     """Partition one optional symmetric room into a rare firing gallery.
 
@@ -119,13 +165,19 @@ def _place_guard_gallery(tiles: list[int], things: list[int], rooms: list[Room],
     """
     suitable_concepts = {"war-room", "trophy-hall", "gallery", "courtyard",
                          "guardpost", "checkpoint"}
+    contract_intents = _encounter_contracts_by_room(
+        identities, set_pieces, realized_plan_indices)
+    overlook_rooms = {index for index, intent in contract_intents.items()
+                      if intent == "overlook"}
     candidates = [index for index in eligible_rooms
                   if index and room_shapes[index] == "rectangle"
-                  and identities[index].concept in suitable_concepts
+                  and (identities[index].concept in suitable_concepts
+                       or index in overlook_rooms)
                   and min(rooms[index].w, rooms[index].h) >= 7
                   and max(rooms[index].w, rooms[index].h) >= 9]
     rng.shuffle(candidates)
     candidates.sort(key=lambda index: (
+        index not in overlook_rooms,
         identities[index].concept not in {"war-room", "trophy-hall", "gallery"},
         abs(rooms[index].w * rooms[index].h - 80)))
     for room_index in candidates:
@@ -327,7 +379,9 @@ def _place_population(config: CampaignConfig, number: int, rooms: list[Room],
                       guard_recesses: tuple[GuardRecess, ...] = (),
                       key_objectives: tuple[KeyObjective, ...] = (),
                       encounter_out: list[EncounterPlacement] | None = None,
-                      vignette_treatments: dict[int, str] | None = None
+                      vignette_treatments: dict[int, str] | None = None,
+                      set_pieces: tuple[SetPiecePlan, ...] = (),
+                      realized_plan_indices: tuple[int, ...] = (),
                       ) -> tuple[int, int, int]:
     """Plan coherent room encounters, then realize their actor slots.
 
@@ -603,6 +657,8 @@ def _place_population(config: CampaignConfig, number: int, rooms: list[Room],
         critical_route, frozenset(key_hosts), boss_room_index)
     recess_by_room = {recess.room_index: recess for recess in guard_recesses}
     vignette_treatments = vignette_treatments or {}
+    contract_intents = _encounter_contracts_by_room(
+        identities, set_pieces, realized_plan_indices)
 
     budgets: dict[int, int] = {}
     for ridx, room in enumerate(rooms[1:], 1):
@@ -614,6 +670,12 @@ def _place_population(config: CampaignConfig, number: int, rooms: list[Room],
             budget = 0
         elif room == boss_room:
             budget = 0 if rng.random() < 0.55 else min(2, budget)
+        elif (contract_intents.get(ridx) == "light"
+              and ridx not in recess_by_room and ridx not in key_hosts):
+            budget = 0
+        elif contract_intents.get(ridx) in {
+                "guarded", "ambush", "patrolled", "objective"}:
+            budget = max(1, budget)
         budgets[ridx] = budget
 
     # Plan routes globally until the requested moving share is met. A route
@@ -625,6 +687,8 @@ def _place_population(config: CampaignConfig, number: int, rooms: list[Room],
     patrol_capacity = sum(min(budget, max_routes_per_room)
                           for budget in budgets.values())
     patrol_target = min(patrol_capacity, round(estimated_actors * patrol_chance))
+    contracted_patrol_rooms = {index for index, intent in contract_intents.items()
+                               if intent == "patrolled"}
     patrol_rooms = [index for index, budget in budgets.items()
                     if budget and index not in calm_rooms and rooms[index] != boss_room
                     and index not in recess_by_room and index not in key_hosts]
@@ -652,12 +716,14 @@ def _place_population(config: CampaignConfig, number: int, rooms: list[Room],
     }
     rng.shuffle(patrol_rooms)
     patrol_rooms.sort(key=lambda index: (
+        index not in contracted_patrol_rooms,
         index not in response_candidates,
         identities[index].tier not in ("corridor", "hall"),
         -depth_of(rooms[index])))
     planned_patrols: dict[int, list[PatrolRoute]] = {}
     for ridx in patrol_rooms:
-        if sum(len(routes) for routes in planned_patrols.values()) >= patrol_target:
+        if (ridx not in contracted_patrol_rooms
+                and sum(len(routes) for routes in planned_patrols.values()) >= patrol_target):
             break
         routes = _patrol_routes(rooms[ridx])
         if max_routes_per_room > 1:
@@ -675,7 +741,8 @@ def _place_population(config: CampaignConfig, number: int, rooms: list[Room],
                 _set(things, *cell, PATROL_POINT_CODES[direction])
             ledger_reserve(reserved, route.cells, "encounters",
                            "patrol-route")
-            if sum(len(routes) for routes in planned_patrols.values()) >= patrol_target:
+            if (ridx not in contracted_patrol_rooms
+                    and sum(len(routes) for routes in planned_patrols.values()) >= patrol_target):
                 break
 
     # Compose the room-local templates into sequences. Each grammar is only
@@ -787,6 +854,8 @@ def _place_population(config: CampaignConfig, number: int, rooms: list[Room],
                       if (x, y) not in reserved and _at(things, x, y) == 0
                       and _is_floor(_at(tiles, x, y))
                       and abs(x - start[0]) + abs(y - start[1]) >= 6]
+        visible_candidates = [cell for cell in candidates
+                              if any(_line_visible(entry, cell) for entry in entries)]
         hidden_candidates = [cell for cell in candidates
                              if not any(_line_visible(entry, cell) for entry in entries)]
         critical_position = critical_positions.get(ridx)
@@ -818,6 +887,16 @@ def _place_population(config: CampaignConfig, number: int, rooms: list[Room],
             template = choices[0]
         if ridx in sequence_templates:
             template = sequence_templates[ridx]
+        contract_intent = contract_intents.get(ridx)
+        if ridx not in recess_by_room:
+            if contract_intent == "guarded" and budget and visible_candidates:
+                template = "visible-sentry"
+            elif contract_intent == "ambush" and budget and hidden_candidates:
+                template = "blind-corner-ambush"
+            elif contract_intent == "patrolled" and ridx in planned_patrols:
+                template = "patrol"
+            elif contract_intent == "objective" and budget and candidates:
+                template = "objective-guard"
         if template == "blind-corner-ambush" and critical_position is not None:
             ambush_positions.add(critical_position)
 
@@ -879,6 +958,8 @@ def _place_population(config: CampaignConfig, number: int, rooms: list[Room],
             if template == "objective-guard":
                 objectives = [objective.cell for objective in key_objectives
                               if objective.host_room == ridx]
+                if not objectives and contract_intent == "objective":
+                    objectives = [room.center]
                 objective_distance = min((abs(x - ox) + abs(y - oy)
                                           for ox, oy in objectives), default=distance)
                 return (abs(objective_distance - 3), not visible, -distance, y, x)
@@ -925,6 +1006,7 @@ def _place_population(config: CampaignConfig, number: int, rooms: list[Room],
         novelty_rooms = ([rooms[index] for index in sorted(optional_rooms)]
                          if optional_rooms else rooms)
         candidates = [(x, y) for room in novelty_rooms
+                      if contract_intents.get(rooms.index(room)) != "light"
                       for y in range(room.y + 1, room.y + room.h - 1)
                       for x in range(room.x + 1, room.x + room.w - 1)
                       if (x, y) not in reserved and _at(things, x, y) == 0

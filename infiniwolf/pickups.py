@@ -26,7 +26,8 @@ import random
 
 from .config import CampaignConfig
 from .grid import _at, _floor_distances, _is_floor, _set
-from .model import Room, RoomIdentity, SpritePlacement
+from .model import (SET_PIECE_CONTRACTS, Room, RoomIdentity, SetPiecePlan,
+                    SpritePlacement)
 from .placement import _room_anchors
 from .wl6 import (AMMO, AMMO_COST, AMMO_SUPPLY_EXEMPT_FLOORS, AMMO_SUPPLY_SCALE,
                   CHAINGUN, DOG_FOOD, FAMILY_BY_CODE, FIRST_AID, FOOD, GRID,
@@ -39,6 +40,89 @@ AUTHORED_PICKUP_TEMPLATES = frozenset({
     "treasure-display", "corner-cache", "center-dais",
     "kennel-wall", "boss-arena-cross", "secret-cache",
 })
+
+# Set-piece rewards deliberately reuse the ordinary pickup grammar.  The item
+# groups are surplus rather than progression necessities: in particular, none
+# contains a key, so a contract can never move a required objective behind a
+# pushwall.
+_SET_PIECE_REWARD_TREATMENTS = {
+    "cache": ((AMMO, AMMO, FIRST_AID), ("wall-cache", "corner-cache")),
+    "objective": ((MACHINE_GUN,), ("center-dais", "treasure-display")),
+    "resupply": ((FIRST_AID, AMMO), ("recovery-station", "wall-cache")),
+    "treasure": ((TREASURE[1], TREASURE[2]),
+                 ("treasure-display", "center-dais")),
+}
+
+
+def _set_pieces_from_motifs(
+        identities: list[RoomIdentity]) -> tuple[SetPiecePlan, ...]:
+    """Recover realized program records from their room motif tags.
+
+    ``_place_authored_pickups`` predates ``FloorPlan.set_pieces`` and its
+    production caller still supplies the realized room identities rather than
+    the abstract plan.  The tags are the documented reverse lookup: rebuilding
+    the small reward-facing view here preserves the existing call boundary.
+    The optional explicit ``set_pieces`` argument remains authoritative for
+    direct callers and future plumbing.
+    """
+    by_family: dict[str, list[tuple[int, str]]] = {}
+    for room_index, identity in enumerate(identities):
+        if not identity.motif.startswith("setpiece:"):
+            continue
+        parts = identity.motif.split(":", 2)
+        if len(parts) != 3 or not parts[1] or not parts[2]:
+            continue
+        by_family.setdefault(parts[1], []).append((room_index, parts[2]))
+
+    # The shared model owns declarations; pickups only interprets rewards.
+    recovered = []
+    for family, realized in by_family.items():
+        reward_contract = tuple(
+            SET_PIECE_CONTRACTS.get(family, {}).get("reward", ()))
+        if not reward_contract:
+            continue
+        rooms = tuple(room for room, _ in realized)
+        roles = tuple(role for _, role in realized)
+        recovered.append(SetPiecePlan(
+            family, "realized", rooms, roles, (), roles[0], roles[-1],
+            reward_contract=reward_contract))
+    return tuple(recovered)
+
+
+def _place_set_piece_rewards(
+        set_pieces: tuple[SetPiecePlan, ...],
+        identities: list[RoomIdentity],
+        place_group) -> int:
+    """Best-effort realization of named reward contracts.
+
+    Returns the number honoured for audits and focused tests.  A missing room,
+    unknown intent, or geometry failure simply leaves ordinary room treatment
+    in place; contracts never reject a floor.
+    """
+    honoured = 0
+    for set_piece in set_pieces:
+        intents = set_piece.roles_for("reward_contract")
+        for role, kind in intents.items():
+            if (kind not in _SET_PIECE_REWARD_TREATMENTS
+                    or not set_piece.rooms_for_role(role)):
+                continue
+            tag = f"setpiece:{set_piece.family}:{role}"
+            candidates = [
+                room_index for room_index, identity in enumerate(identities)
+                if identity.motif == tag
+            ]
+            if not candidates:
+                continue
+            items, templates = _SET_PIECE_REWARD_TREATMENTS[kind]
+            # Existing provenance checks classify all valuables as exploration
+            # treasure.  The target room and template still prove which
+            # contract entry this placement honours.
+            reason = ("exploration-treasure" if kind == "treasure" else
+                      f"setpiece-reward:{set_piece.family}:{role}:{kind}")
+            if place_group(items, reason, candidates, templates):
+                honoured += 1
+    return honoured
+
 
 class _PlacementGrammar:
     """Commit sprites only through named, geometry-aware compositions.
@@ -197,7 +281,8 @@ def _place_authored_pickups(config: CampaignConfig, number: int, rooms: list[Roo
                             premium_index: int | None = None,
                             expedition_candidates: tuple[int, ...] = (),
                             expedition_rooms_out: list[int] | None = None,
-                            vignettes: tuple = ()) -> None:
+                            vignettes: tuple = (),
+                            set_pieces: tuple[SetPiecePlan, ...] = ()) -> None:
     """Allocate gameplay needs, then realize each as an authored vignette."""
     grammar = _PlacementGrammar(rooms, tiles, things, reserved, identities, rng,
                                 placements)
@@ -238,6 +323,12 @@ def _place_authored_pickups(config: CampaignConfig, number: int, rooms: list[Roo
                 vignette_counts[room_index] += 1
                 return True
         return False
+
+    # Program rewards are surplus claims made before generic economy fills the
+    # same wall and corner anchors.  Failure is intentionally ignored: an
+    # advisory contract degrades to an ordinary room, never a rejected floor.
+    reward_plans = set_pieces or _set_pieces_from_motifs(identities)
+    _place_set_piece_rewards(reward_plans, identities, place_group)
 
     # Cross-system plans claim their economy beat before generic needs.  This
     # still uses the pickup grammar, so it can reject an unplaceable candidate.
@@ -342,6 +433,12 @@ def _place_authored_pickups(config: CampaignConfig, number: int, rooms: list[Roo
     supply_scale = (1.0 if number in AMMO_SUPPLY_EXEMPT_FLOORS
                     else AMMO_SUPPLY_SCALE)
     target_ratio = (1.15 + 0.05 * int(config.supplies)) * supply_scale
+    # Set-piece reward ammo counts here like any other. Excluding it kept the
+    # contract "surplus" in the sense of never reducing the mandatory route
+    # stage, but a clip is a clip: the route pass then placed its full quota on
+    # top and floor 5 came out at 0.50 supply against a 0.45 ceiling. Counting
+    # it lowers the route quota by the same amount, so the player ends up with
+    # the intended total and the contract still decides WHERE some of it lives.
     styled_items = [item for placement in placements
                     for _, _, item in placement.cells]
     ammo_target = max(0, math.ceil((expected_need * target_ratio

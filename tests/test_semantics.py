@@ -11,10 +11,13 @@ import random
 import unittest
 
 from infiniwolf.semantics import (CONCEPT_AFFINITIES, _affinity_with,
-                                  _apply_wall_theme, plan_landmarks)
+                                  _apply_wall_theme, _SemanticIdentities,
+                                  _SetPieceSemanticContracts,
+                                  _set_piece_semantic_contracts,
+                                  plan_landmarks)
 from infiniwolf.grid import _reachable
-from infiniwolf.model import Room
-from infiniwolf.wl6 import FLOOR, GRID, WALL
+from infiniwolf.model import (Room, RoomIdentity, RoomSpec, SetPiecePlan)
+from infiniwolf.wl6 import DOOR_EW, FLOOR, GRID, WALL
 
 
 class AffinityTableTests(unittest.TestCase):
@@ -76,6 +79,145 @@ class WallMaterialInvariantTests(unittest.TestCase):
         _apply_wall_theme(tiles, [0] * (GRID * GRID), [room], [0],
                           component_of, {0: (8, (8,))}, random.Random(1))
         self.assertEqual(_reachable(tiles, room.center, locked_open=True), before)
+
+
+class SetPieceSemanticContractTests(unittest.TestCase):
+    def _set_piece(self):
+        return SetPiecePlan(
+            "checkpoint-administration", "primary", (0, 1),
+            ("checkpoint", "administrative-office"), ((0, 1),),
+            "checkpoint", "administrative-office",
+            visibility_contracts=(("checkpoint", "administrative-office"),),
+            landmark_contract=("administrative-office",))
+
+    def test_role_contracts_reverse_lookup_compacted_room_tags(self):
+        """Dropped plan indices do not turn role names into compact indices."""
+        plan = SetPiecePlan(
+            "checkpoint-administration", "primary", (7, 11),
+            ("checkpoint", "administrative-office"), ((7, 11),),
+            "checkpoint", "administrative-office",
+            visibility_contracts=(("checkpoint", "administrative-office"),),
+            landmark_contract=("administrative-office",))
+        specs = [
+            RoomSpec("beat", "standard", 0,
+                     "setpiece:checkpoint-administration:checkpoint"),
+            RoomSpec("branch", "standard", 0,
+                     "setpiece:checkpoint-administration:administrative-office"),
+        ]
+        contracts = _set_piece_semantic_contracts(specs, (plan,))
+        self.assertEqual(
+            [(item.observer_room, item.subject_room)
+             for item in contracts.visibility], [(0, 1)])
+        self.assertEqual(contracts.landmark_rooms, frozenset({1}))
+
+    def test_visible_contract_becomes_the_authored_primary_with_a_reason(self):
+        rooms = [Room(10, 20, 8, 7), Room(20, 20, 8, 7)]
+        tiles = [WALL] * (GRID * GRID)
+        for room in rooms:
+            for y in range(room.y, room.y + room.h):
+                for x in range(room.x, room.x + room.w):
+                    tiles[y * GRID + x] = FLOOR
+        # A real threshold belongs to the observer and has a clear tile-ray to
+        # the subject probe. Semantics reserves the authored view; it does not
+        # open the two rock cells between these room rectangles.
+        tiles[23 * GRID + 18] = DOOR_EW
+        tiles[23 * GRID + 19] = FLOOR
+        specs = [
+            RoomSpec("beat", "standard", 0,
+                     "setpiece:checkpoint-administration:checkpoint"),
+            RoomSpec("branch", "standard", 0,
+                     "setpiece:checkpoint-administration:administrative-office"),
+        ]
+        plans = plan_landmarks(
+            rooms, specs, [spec.role for spec in specs], [(0, 1)], [0, 0],
+            (0, 1), tiles=tiles, set_pieces=(self._set_piece(),))
+        primary = next(plan for plan in plans if plan.rank == "primary")
+        self.assertEqual((primary.approach_room, primary.room_index), (0, 1))
+        self.assertEqual(
+            primary.purpose,
+            "setpiece-visibility:checkpoint-administration:"
+            "checkpoint->administrative-office")
+        from infiniwolf.geometry import plan_authored_sightlines
+        lines = plan_authored_sightlines(
+            tiles, [0] * len(tiles), rooms, plans)
+        self.assertIn((0, 1), {(line.origin_room, line.target_room)
+                               for line in lines})
+
+    def test_blocked_visibility_contract_degrades_without_carving(self):
+        rooms = [Room(10, 20, 8, 7), Room(20, 20, 8, 7)]
+        tiles = [WALL] * (GRID * GRID)
+        for room in rooms:
+            for y in range(room.y, room.y + room.h):
+                for x in range(room.x, room.x + room.w):
+                    tiles[y * GRID + x] = FLOOR
+        tiles[23 * GRID + 18] = DOOR_EW
+        before = tuple(tiles)
+        specs = [
+            RoomSpec("beat", "standard", 0,
+                     "setpiece:checkpoint-administration:checkpoint"),
+            RoomSpec("branch", "standard", 0,
+                     "setpiece:checkpoint-administration:administrative-office"),
+        ]
+        plans = plan_landmarks(
+            rooms, specs, [spec.role for spec in specs], [(0, 1)], [0, 0],
+            (0, 1), tiles=tiles, set_pieces=(self._set_piece(),))
+        primary = next(plan for plan in plans if plan.rank == "primary")
+        self.assertFalse(primary.purpose.startswith("setpiece-visibility:"))
+        self.assertEqual(tuple(tiles), before)
+
+    def test_contracted_landmark_skips_only_the_probability_gate(self):
+        room = Room(20, 20, 6, 6)
+
+        def wall_plane():
+            tiles = [WALL] * (GRID * GRID)
+            component = {}
+            for y in range(room.y, room.y + room.h):
+                for x in range(room.x, room.x + room.w):
+                    tiles[y * GRID + x] = FLOOR
+                    component[x, y] = 0
+            return tiles, component
+
+        identity = RoomIdentity(
+            "beat", "standard",
+            "setpiece:wayfinding-checkpoint:checkpoint", 0,
+            "garrison", "checkpoint", "guardpost", 1)
+        ordinary_tiles, ordinary_component = wall_plane()
+        ordinary = _apply_wall_theme(
+            ordinary_tiles, [0] * len(ordinary_tiles), [room], [0],
+            ordinary_component, {0: (1, (3,))}, random.Random(0),
+            identities=[identity])
+        self.assertNotIn(0, ordinary, "seed must lose the ordinary room roll")
+
+        contracted_tiles, contracted_component = wall_plane()
+        identities = _SemanticIdentities(
+            [identity], -1, (0.0,), (0.0,),
+            _SetPieceSemanticContracts(landmark_rooms=frozenset({0})))
+        contracted = _apply_wall_theme(
+            contracted_tiles, [0] * len(contracted_tiles), [room], [0],
+            contracted_component, {0: (1, (3,))}, random.Random(0),
+            identities=identities)
+        self.assertIn(0, contracted)
+        self.assertTrue(all(contracted_tiles[y * GRID + x] == 3
+                            for x, y in contracted[0]))
+
+    def test_contracted_landmark_still_requires_a_compatible_concept(self):
+        room = Room(20, 20, 6, 6)
+        tiles = [WALL] * (GRID * GRID)
+        component = {}
+        for y in range(room.y, room.y + room.h):
+            for x in range(room.x, room.x + room.w):
+                tiles[y * GRID + x] = FLOOR
+                component[x, y] = 0
+        identity = RoomIdentity(
+            "beat", "standard", "setpiece:memorial-bay:memorial", 0,
+            "garrison", "courtyard", "grand", 1)
+        identities = _SemanticIdentities(
+            [identity], -1, (0.0,), (0.0,),
+            _SetPieceSemanticContracts(landmark_rooms=frozenset({0})))
+        landmarks = _apply_wall_theme(
+            tiles, [0] * len(tiles), [room], [0], component,
+            {0: (1, (3,))}, random.Random(0), identities=identities)
+        self.assertNotIn(0, landmarks)
 
 
 if __name__ == "__main__":

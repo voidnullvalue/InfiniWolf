@@ -18,7 +18,8 @@ import random
 
 from .campaign import (CIRCULATION_MODES, CIRCULATION_SKELETONS,
                        HALLWAY_FIRST_SKELETONS, PROGRESSION_GRAMMARS)
-from .model import FloorPlan, FloorVariant, RoomSpec, SetPiecePlan
+from .model import (SET_PIECE_CONTRACTS, FloorPlan, FloorVariant, RoomSpec,
+                    SetPiecePlan)
 from .vignettes import VIGNETTE_REQUEST_FAMILIES
 
 _PRIMARY_SET_PIECE_FAMILIES = (
@@ -48,6 +49,14 @@ _SECONDARY_SOLOS = (
     ("memorial-bay", ("memorial",), (), "memorial", "memorial"),
     ("records-annex", ("records-office",), (), "records-office", "records-office"),
 )
+
+
+
+# Compatibility alias. The table moved to model.py so semantics can read it
+# without importing planning -- that import was function-local specifically to
+# dodge a cycle, and dodging it that way still made the graph cyclic. Removed
+# once the last consumer imports it from model directly.
+_SET_PIECE_CONTRACTS = SET_PIECE_CONTRACTS
 
 
 def _set_piece_tag(family: str, room_role: str) -> str:
@@ -117,8 +126,13 @@ def _reserve_set_pieces(rng: random.Random, specs: list[RoomSpec],
         for edge in required:
             if frozenset(edge) not in known_edges:
                 edges.append(edge)
+        contract = SET_PIECE_CONTRACTS.get(family, {})
         return SetPiecePlan(family, scale, tuple(mapped), tuple(room_roles),
-                            required, entry_role, exit_role)
+                            required, entry_role, exit_role,
+                            visibility_contracts=contract.get("visibility", ()),
+                            encounter_contract=contract.get("encounter", ()),
+                            reward_contract=contract.get("reward", ()),
+                            landmark_contract=contract.get("landmark", ()))
 
     plans.append(allocate(primary, "primary", primary_hosts))
     used_families = {primary[0]}

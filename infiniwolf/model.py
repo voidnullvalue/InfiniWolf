@@ -238,12 +238,17 @@ class SetPiecePlan:
     edges likewise use realized plan indices, so tests and later passes can
     distinguish a promised adjacency from a thematic suggestion.
 
-    Geometry, visibility, encounter, reward, and landmark contracts are
-    deliberately absent. No current consumer can enforce them before room
-    placement, and recording such fields here would make unfulfilled promises.
-    The ``setpiece:<family>:<role>`` RoomSpec motif is the current hand-off to
-    placement and semantics; richer contracts belong in a follow-up with an
-    explicit consumer.
+    The contracts below say what a program *means* for the systems that fill it,
+    so a checkpoint is guarded like a checkpoint rather than receiving whatever
+    the generic per-room roll produced. Each is advisory: a contract states an
+    intent and names the pass that owns it, and an unhonoured one degrades the
+    program to ordinary rooms rather than failing the floor. That is the same
+    rule vignettes follow, and it is why these are requests rather than
+    invariants -- room placement can always refuse.
+
+    Each contract is a tuple parallel to nothing: entries name a ROOM ROLE from
+    ``room_roles``, not an index, so a program whose optional rooms were dropped
+    still reads correctly.
     """
     family: str
     scale: str                       # "primary" or "secondary"
@@ -252,6 +257,127 @@ class SetPiecePlan:
     required_edges: tuple[tuple[int, int], ...]
     entry_role: str
     exit_role: str
+    # (observer role, subject role) -- the subject should be visible on entering
+    # the observer. Owned by semantics' sightline planning.
+    visibility_contracts: tuple[tuple[str, str], ...] = ()
+    # (room role, intent) where intent is one of "guarded", "ambush",
+    # "patrolled", "overlook", "light". Owned by encounters.
+    encounter_contract: tuple[tuple[str, str], ...] = ()
+    # (room role, reward kind) where kind is one of "cache", "objective",
+    # "resupply", "treasure". Owned by pickups.
+    reward_contract: tuple[tuple[str, str], ...] = ()
+    # Room roles that should carry a wall landmark. Owned by semantics.
+    landmark_contract: tuple[str, ...] = ()
+
+    def roles_for(self, contract: str) -> dict[str, str]:
+        """Map room role -> intent for one contract, ignoring dropped rooms."""
+        pairs = getattr(self, contract, ())
+        return {role: intent for role, intent in pairs if role in self.room_roles}
+
+    def rooms_for_role(self, role: str) -> tuple[int, ...]:
+        """Realized plan indices carrying a role, empty if it was dropped."""
+        return tuple(room for room, name in zip(self.rooms, self.room_roles)
+                     if name == role)
+
+
+# What each program MEANS for the systems that fill it. Without these a
+# checkpoint was a checkpoint only in name: the generic per-room roll decided
+# whether it was guarded, whether it held anything, and whether it read as a
+# place. Roles are named rather than indexed so a program whose optional rooms
+# were dropped still resolves. Every entry is advisory -- the owning pass may
+# refuse, and the program degrades to ordinary rooms rather than failing.
+SET_PIECE_CONTRACTS = {
+    "checkpoint-administration": {
+        "visibility": (("checkpoint", "administrative-office"),),
+        "encounter": (("checkpoint", "guarded"), ("records-office", "ambush")),
+        "reward": (("records-office", "cache"),),
+        "landmark": ("administrative-office",),
+    },
+    "command-and-control": {
+        "visibility": (("security-desk", "war-room"),),
+        "encounter": (("security-desk", "guarded"), ("war-room", "objective")),
+        "reward": (("war-room", "objective"), ("communications", "resupply")),
+        "landmark": ("war-room",),
+    },
+    "barracks-support": {
+        "visibility": (("checkpoint", "barracks"),),
+        "encounter": (("barracks", "patrolled"), ("armory", "guarded")),
+        "reward": (("armory", "cache"), ("mess-hall", "resupply")),
+        "landmark": ("mess-hall",),
+    },
+    "storage-machinery-route": {
+        "visibility": (("receiving", "bulk-storage"),),
+        "encounter": (("machinery-control", "ambush"), ("dispatch", "guarded")),
+        "reward": (("bulk-storage", "cache"), ("dispatch", "resupply")),
+        "landmark": ("machinery-control",),
+    },
+    "prison-processing": {
+        "visibility": (("processing-desk", "cell-block"),
+                       ("guardroom", "cell-block")),
+        "encounter": (("guardroom", "guarded"), ("exercise-yard", "overlook"),
+                      ("cell-block", "light")),
+        "reward": (("guardroom", "cache"), ("exercise-yard", "treasure")),
+        "landmark": ("cell-block",),
+    },
+    "administrative-wing": {
+        "visibility": (("checkpoint", "clerks-office"),
+                       ("briefing-room", "command-office")),
+        "encounter": (("checkpoint", "guarded"), ("command-office", "objective"),
+                      ("clerks-office", "light")),
+        "reward": (("records-office", "cache"), ("command-office", "treasure")),
+        "landmark": ("command-office",),
+    },
+    "wayfinding-checkpoint": {
+        "visibility": (), "encounter": (("checkpoint", "guarded"),),
+        "reward": (), "landmark": ("checkpoint",),
+    },
+    "supply-depot": {
+        "visibility": (), "encounter": (("supply-cache", "ambush"),),
+        "reward": (("supply-cache", "resupply"),), "landmark": (),
+    },
+    "memorial-bay": {
+        "visibility": (), "encounter": (("memorial", "light"),),
+        "reward": (("memorial", "treasure"),), "landmark": ("memorial",),
+    },
+    "records-annex": {
+        "visibility": (), "encounter": (("records-office", "ambush"),),
+        "reward": (("records-office", "cache"),), "landmark": (),
+    },
+    # The two-room vignette families double as secondary programs, so they get
+    # contracts too -- otherwise roughly two thirds of a floor's set pieces
+    # would carry no intent at all and the whole layer would only bite on the
+    # single primary.
+    "guardpost-supply": {
+        "visibility": (("checkpoint", "supply-cache"),),
+        "encounter": (("checkpoint", "guarded"),),
+        "reward": (("supply-cache", "resupply"),), "landmark": ("checkpoint",),
+    },
+    "barracks-mess": {
+        "visibility": (("mess-hall", "barracks"),),
+        "encounter": (("barracks", "patrolled"),),
+        "reward": (("mess-hall", "resupply"),), "landmark": ("mess-hall",),
+    },
+    "prison-processing-pair": {
+        "visibility": (("processing-desk", "holding-cell"),),
+        "encounter": (("holding-cell", "light"),),
+        "reward": (("holding-cell", "cache"),), "landmark": ("holding-cell",),
+    },
+    "officer-suite": {
+        "visibility": (("briefing-room", "officers-office"),),
+        "encounter": (("officers-office", "ambush"),),
+        "reward": (("officers-office", "treasure"),),
+        "landmark": ("officers-office",),
+    },
+    "crypt-ossuary": {
+        "visibility": (("crypt", "ossuary"),),
+        "encounter": (("ossuary", "ambush"),),
+        "reward": (("ossuary", "treasure"),), "landmark": ("ossuary",),
+    },
+    "workshop-service": {
+        "visibility": (), "encounter": (("workshop", "patrolled"),),
+        "reward": (("parts-store", "cache"),), "landmark": ("workshop",),
+    },
+}
 
 
 @dataclass(frozen=True, slots=True)

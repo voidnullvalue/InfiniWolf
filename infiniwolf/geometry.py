@@ -198,6 +198,22 @@ def _room_size(rng: random.Random, tier: str, number: int = 0) -> tuple[int, int
     return oriented(preferred(7 + bump, 13 + bump), preferred(6 + bump, 9 + bump))
 
 
+def _grand_anchor_selected(rng: random.Random, number: int) -> bool:
+    """Select the rare large-space tail without shifting ordinary geometry.
+
+    A copied state makes this a geometry-stream decision while leaving the
+    caller's stream untouched. Nine floors out of ten therefore keep their
+    previous room draws and placement choices exactly; the selected floor
+    changes only because its anchor footprint is deliberately larger.
+    """
+    if number == 9:
+        # The boss arena has its own authored square proportions and machinery.
+        return False
+    probe = random.Random()
+    probe.setstate(rng.getstate())
+    return probe.random() < 0.10
+
+
 def _place_planned_rooms(rng: random.Random, plan: FloorPlan, number: int = 0) -> PlacedPlan:
     # The spine is the run of rooms up to and including the plan's terminus:
     # the elevator room normally, the boss arena on a floor 9 whose boss ends
@@ -206,9 +222,18 @@ def _place_planned_rooms(rng: random.Random, plan: FloorPlan, number: int = 0) -
                 else "boss-arena")
     spine_count = next(index for index, spec in enumerate(plan.specs)
                        if spec.role == terminus) + 1
+    grand_anchor = _grand_anchor_selected(rng, number)
     sizes = [_room_size(rng, spec.tier, number) for spec in plan.specs]
     anchor_spec_index = next(index for index, spec in enumerate(plan.specs)
                              if spec.tier == "anchor")
+    if grand_anchor:
+        # This is a tail, not a global scale shift. The ordinary anchor tops
+        # out at 21x15 (23x17 on floor ten); one floor in ten instead receives
+        # an id-sized major spatial mass. Preserve the orientation already
+        # drawn from the geometry stream, then let the existing pre-spine
+        # reservation protect the complete footprint before anything grows.
+        rw, rh = sizes[anchor_spec_index]
+        sizes[anchor_spec_index] = ((25, 19) if rw >= rh else (19, 25))
     for index, spec in enumerate(plan.specs):
         if spec.motif == "hallway-arm":
             sizes[index] = ((7, 3) if rng.random() < 0.5 else (3, 7))

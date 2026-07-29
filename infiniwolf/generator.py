@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 from collections import Counter, deque
+import copy
 from dataclasses import dataclass, replace
+import hashlib
 import heapq
 from itertools import combinations
 import json
@@ -147,6 +149,289 @@ class _GeometryCandidate:
     placed: PlacedPlan
     geometry_state: object
     score: tuple[float, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class _MutationCandidate:
+    """A local fork of one Stage-B checkpoint."""
+
+    geometry: _GeometryCandidate
+    level: GeneratedMap | None = None
+    stream_seeds: tuple[tuple[str, int], ...] = ()
+    mutation: str = ""
+
+
+_MUTATION_NAMES = (
+    "move-room",
+    "reroute-edge",
+    "resize-anchor",
+    "alter-doorway",
+    "replace-encounter",
+)
+
+
+def _mutation_seed(config: CampaignConfig, number: int, attempt: int,
+                   name: str, ordinal: int) -> int:
+    """Derive an operator-private seed without consuming a shared stream."""
+    if name not in _MUTATION_NAMES:
+        raise ValueError(f"unknown mutation operator: {name}")
+    subsystem = {
+        "move-room": "geometry",
+        "reroute-edge": "geometry",
+        "resize-anchor": "geometry",
+        "alter-doorway": "progression",
+        "replace-encounter": "encounters",
+    }[name]
+    base = config.subsystem_seed(number, attempt, subsystem)
+    payload = f"infiniwolf:mutation:v1:{base}:{name}:{ordinal}"
+    return int.from_bytes(
+        hashlib.blake2b(payload.encode("ascii"), digest_size=8).digest(),
+        "little")
+
+
+def _copy_placed(placed: PlacedPlan, *,
+                 rooms: list[Room] | None = None,
+                 edges: list[tuple[int, int]] | None = None) -> PlacedPlan:
+    return PlacedPlan(
+        list(placed.rooms) if rooms is None else rooms,
+        list(placed.spec_indices),
+        list(placed.edges) if edges is None else edges,
+        list(placed.loop_edges),
+    )
+
+
+def _room_mutation_is_legal(room: Room, rooms: list[Room], index: int) -> bool:
+    return (
+        3 <= room.x and 3 <= room.y
+        and room.x + room.w < 61 and room.y + room.h < 61
+        and not any(_overlaps(room, other)
+                    for other_index, other in enumerate(rooms)
+                    if other_index != index)
+    )
+
+
+def _with_placed(candidate: _MutationCandidate, placed: PlacedPlan,
+                 mutation: str) -> _MutationCandidate:
+    geometry = replace(candidate.geometry, placed=placed)
+    return _MutationCandidate(
+        geometry, None, candidate.stream_seeds, mutation)
+
+
+def _with_stream(candidate: _MutationCandidate, name: str, seed: int,
+                 mutation: str) -> _MutationCandidate:
+    seeds = dict(candidate.stream_seeds)
+    seeds[name] = seed
+    return _MutationCandidate(
+        candidate.geometry, None, tuple(sorted(seeds.items())), mutation)
+
+
+def _mutate_move_room(candidate: _MutationCandidate,
+                      seed: int) -> _MutationCandidate | None:
+    """Nudge one realized room while retaining its size and graph ownership."""
+    placed = candidate.geometry.placed
+    if len(placed.rooms) < 2:
+        return None
+    rng = random.Random(seed)
+    specs = [candidate.geometry.plan.specs[index]
+             for index in placed.spec_indices]
+    priority = [
+        index for index, spec in enumerate(specs)
+        if spec.role in {"exit", "victory", "recovery"}
+    ]
+    remaining = [index for index in range(1, len(placed.rooms))
+                 if index not in priority]
+    rng.shuffle(priority)
+    rng.shuffle(remaining)
+    offsets = [
+        (distance * dx, distance * dy)
+        for distance in (2, 3, 1)
+        for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1))
+    ]
+    rng.shuffle(offsets)
+    for index in priority + remaining:
+        original = placed.rooms[index]
+        for dx, dy in offsets:
+            moved = replace(original, x=original.x + dx, y=original.y + dy)
+            if _room_mutation_is_legal(moved, placed.rooms, index):
+                rooms = list(placed.rooms)
+                rooms[index] = moved
+                return _with_placed(
+                    candidate, _copy_placed(placed, rooms=rooms), "move-room")
+    return None
+
+
+def _graph_component(count: int, edges: list[tuple[int, int]],
+                     start: int) -> set[int]:
+    links = [set() for _ in range(count)]
+    for first, second in edges:
+        links[first].add(second)
+        links[second].add(first)
+    seen = {start}
+    queue = deque([start])
+    while queue:
+        current = queue.popleft()
+        for neighbor in links[current] - seen:
+            seen.add(neighbor)
+            queue.append(neighbor)
+    return seen
+
+
+def _mutate_reroute_edge(candidate: _MutationCandidate,
+                         seed: int) -> _MutationCandidate | None:
+    """Replace one connection with a different connection across its cut."""
+    placed = candidate.geometry.placed
+    count = len(placed.rooms)
+    if count < 3 or not placed.edges:
+        return None
+    rng = random.Random(seed)
+    edge_indices = list(range(len(placed.edges)))
+    rng.shuffle(edge_indices)
+    existing = {frozenset(edge) for edge in placed.edges}
+    alternatives = []
+    for edge_index in edge_indices:
+        without = [
+            edge for index, edge in enumerate(placed.edges)
+            if index != edge_index
+        ]
+        component = _graph_component(count, without, placed.edges[edge_index][0])
+        other = set(range(count)) - component
+        if not other:
+            component = set(range(count))
+            other = set(range(count))
+        for first in sorted(component):
+            for second in sorted(other):
+                pair = frozenset((first, second))
+                if first == second or pair in existing:
+                    continue
+                a, b = placed.rooms[first], placed.rooms[second]
+                distance = (abs(a.center[0] - b.center[0])
+                            + abs(a.center[1] - b.center[1]))
+                alternatives.append((distance, edge_index, first, second))
+        if alternatives:
+            break
+    if not alternatives:
+        return None
+    alternatives.sort()
+    near = alternatives[:min(6, len(alternatives))]
+    _, edge_index, first, second = rng.choice(near)
+    edges = list(placed.edges)
+    removed = frozenset(edges[edge_index])
+    edges[edge_index] = (first, second)
+    mutated = _copy_placed(placed, edges=edges)
+    mutated.loop_edges = [
+        (first, second) if frozenset(edge) == removed else edge
+        for edge in mutated.loop_edges
+    ]
+    return _with_placed(candidate, mutated, "reroute-edge")
+
+
+def _mutate_resize_anchor(candidate: _MutationCandidate,
+                          seed: int) -> _MutationCandidate | None:
+    """Grow or shrink one face of the realized anchor room."""
+    placed = candidate.geometry.placed
+    anchor = next((
+        index for index, spec_index in enumerate(placed.spec_indices)
+        if candidate.geometry.plan.specs[spec_index].tier == "anchor"
+    ), None)
+    if anchor is None:
+        return None
+    rng = random.Random(seed)
+    original = placed.rooms[anchor]
+    changes = [
+        (-2, 0, 2, 0), (0, -2, 0, 2),
+        (0, 0, 2, 0), (2, 0, -2, 0),
+        (0, 0, 0, 2), (0, 2, 0, -2),
+    ]
+    rng.shuffle(changes)
+    for dx, dy, dw, dh in changes:
+        resized = Room(
+            original.x + dx, original.y + dy,
+            original.w + dw, original.h + dh)
+        if (resized.w >= 10 and resized.h >= 10
+                and _room_mutation_is_legal(resized, placed.rooms, anchor)):
+            rooms = list(placed.rooms)
+            rooms[anchor] = resized
+            return _with_placed(
+                candidate, _copy_placed(placed, rooms=rooms), "resize-anchor")
+    return None
+
+
+def _mutate_alter_doorway(candidate: _MutationCandidate,
+                          seed: int) -> _MutationCandidate | None:
+    """Replay progression from an operator-private doorway stream."""
+    return _with_stream(candidate, "progression", seed, "alter-doorway")
+
+
+def _ordinary_actor(code: int) -> tuple[int, int, bool, int] | None:
+    """Return family index, facing, patrol status and tier for an actor."""
+    for family_index, (_, family, _, _) in enumerate(ENEMY_FAMILIES):
+        for patrol, variants in (
+                (False, family), (True, PATROLS_BY_FAMILY[family])):
+            for tier in range(3):
+                base = code - 36 * tier
+                if base in variants:
+                    return family_index, variants.index(base), patrol, tier
+    return None
+
+
+def _replace_realized_encounter(level: GeneratedMap,
+                                seed: int) -> GeneratedMap | None:
+    rng = random.Random(seed)
+    eligible = [
+        index for index, encounter in enumerate(level.encounters)
+        if encounter.cells
+        and all(_ordinary_actor(code) is not None
+                for _, _, code in encounter.cells)
+    ]
+    if not eligible:
+        return None
+    encounter_index = rng.choice(eligible)
+    original = level.encounters[encounter_index]
+    decoded = [_ordinary_actor(code) for _, _, code in original.cells]
+    current = decoded[0][0]
+    targets = [index for index in range(len(ENEMY_FAMILIES))
+               if index != current]
+    target = rng.choice(targets)
+    target_name, target_family, _, _ = ENEMY_FAMILIES[target]
+    cells = []
+    for (x, y, _), actor in zip(original.cells, decoded):
+        _, facing, patrol, tier = actor
+        variants = (PATROLS_BY_FAMILY[target_family]
+                    if patrol else target_family)
+        cells.append((x, y, variants[facing] + 36 * tier))
+    mutated = copy.deepcopy(level)
+    for x, y, code in cells:
+        _set(mutated.things, x, y, code)
+    encounters = list(mutated.encounters)
+    encounters[encounter_index] = replace(
+        original, cells=tuple(cells), family=target_name)
+    mutated.encounters = tuple(encounters)
+    validate_map(mutated)
+    mutated.critique = _critique(mutated)
+    return mutated
+
+
+def _mutate_replace_encounter(candidate: _MutationCandidate,
+                              seed: int) -> _MutationCandidate | None:
+    """Replace one realized composition, or replay its owning stream."""
+    if candidate.level is None:
+        return _with_stream(
+            candidate, "encounters", seed, "replace-encounter")
+    level = _replace_realized_encounter(candidate.level, seed)
+    if level is None:
+        return None
+    return _MutationCandidate(
+        candidate.geometry, level, candidate.stream_seeds,
+        "replace-encounter")
+
+
+_MUTATION_OPERATORS = {
+    "move-room": _mutate_move_room,
+    "reroute-edge": _mutate_reroute_edge,
+    "resize-anchor": _mutate_resize_anchor,
+    "alter-doorway": _mutate_alter_doorway,
+    "replace-encounter": _mutate_replace_encounter,
+}
 
 
 def _graph_distances(count: int, edges: list[tuple[int, int]],
@@ -430,10 +715,18 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
                  _plan: FloorPlan | None = None,
                  _placed: PlacedPlan | None = None,
                  _geometry_state: object | None = None,
+                 _stream_seeds: dict[str, int] | None = None,
                  ) -> GeneratedMap:
-    streams = {name: random.Random(config.subsystem_seed(number, attempt, name))
-               for name in ("planning", "geometry", "progression", "semantics",
-                            "encounters", "pickups", "decorations", "special_floors")}
+    stream_names = ("planning", "geometry", "progression", "semantics",
+                    "encounters", "pickups", "decorations", "special_floors")
+    overrides = _stream_seeds or {}
+    unknown = set(overrides) - set(stream_names)
+    if unknown:
+        raise ValueError(f"unknown floor stream override: {min(unknown)}")
+    streams = {
+        name: random.Random(overrides.get(
+            name, config.subsystem_seed(number, attempt, name)))
+        for name in stream_names}
     planning_rng = streams["planning"]
     geometry_rng = streams["geometry"]
     progression_rng = streams["progression"]
@@ -803,6 +1096,11 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
         placements=pickup_placements, actor_clearance=actor_clearance,
         progression_number=(secret_source if number == 10 and secret_source else number),
         calm_rooms=calm_rooms, boss_room=boss_room,
+        # Pass the programs explicitly. Both consumers can reverse-map a
+        # setpiece: motif tag when this is absent, but that path re-derives an
+        # intent the plan already stated; the plan is authoritative.
+        set_pieces=plan.set_pieces,
+        realized_plan_indices=tuple(placed.spec_indices),
         optional_rooms=optional_rooms, identities=identities,
         critical_route=tuple(critical_route), guard_recesses=guard_recesses,
         key_objectives=key_objectives, encounter_out=encounters,
@@ -820,7 +1118,8 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
         critical_route, edges, pickup_placements, preboss_index=preboss_index,
         premium_index=premium_index,
         expedition_candidates=tuple(optional_rooms),
-        expedition_rooms_out=expedition_rooms, vignettes=vignette_plans)
+        expedition_rooms_out=expedition_rooms, vignettes=vignette_plans,
+        set_pieces=plan.set_pieces)
     # Shape anchors were reserved soft precisely so decoration can have them
     # back once population and pickups have finished with the room.
     reserved.release(notch_cells, "geometry", "shape-anchor-released")
@@ -948,6 +1247,130 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
 
 
 
+_REPAIR_MUTATION_LIMIT = 2
+
+
+def _empty_mutation_stats() -> dict[str, dict[str, object]]:
+    return {
+        name: {
+            "attempted": 0,
+            "applied": 0,
+            "rescued": 0,
+            "improved": 0,
+            "rescued_reasons": {},
+        }
+        for name in _MUTATION_NAMES
+    }
+
+
+def _repair_mutation_order(reason: str) -> tuple[str, ...]:
+    text = reason.lower()
+    if any(word in text for word in ("actor", "encounter", "patrol", "ambush")):
+        return ("replace-encounter", "alter-doorway")
+    if any(word in text for word in ("key", "lock", "door")):
+        return ("alter-doorway", "reroute-edge", "move-room")
+    if "elevator" in text:
+        return ("move-room", "reroute-edge", "resize-anchor")
+    if any(word in text for word in ("circulation", "corridor", "hallway")):
+        return ("reroute-edge", "move-room", "resize-anchor")
+    if any(word in text for word in ("route", "terminus", "deep host")):
+        return ("reroute-edge", "move-room", "alter-doorway")
+    return ("move-room", "alter-doorway", "replace-encounter")
+
+
+def _realize_mutation(candidate: _MutationCandidate,
+                      config: CampaignConfig, number: int,
+                      options: dict[str, object]) -> GeneratedMap:
+    if candidate.level is not None:
+        validate_map(candidate.level)
+        return candidate.level
+    geometry = candidate.geometry
+    return generate_map(
+        config, number, geometry.attempt, **options,
+        _plan=geometry.plan, _placed=geometry.placed,
+        _geometry_state=geometry.geometry_state,
+        _stream_seeds=dict(candidate.stream_seeds))
+
+
+def _try_repairs(config: CampaignConfig, number: int,
+                 geometry: _GeometryCandidate, options: dict[str, object],
+                 error: ValueError,
+                 stats: dict[str, dict[str, object]],
+                 limit: int = _REPAIR_MUTATION_LIMIT,
+                 ) -> tuple[GeneratedMap | None, _MutationCandidate | None]:
+    """Try only reason-relevant local forks, stopping at the first valid map."""
+    source = _MutationCandidate(geometry)
+    applied = 0
+    reason = str(error)
+    for ordinal, name in enumerate(_repair_mutation_order(reason)):
+        row = stats[name]
+        row["attempted"] += 1
+        seed = _mutation_seed(config, number, geometry.attempt, name, ordinal)
+        mutated = _MUTATION_OPERATORS[name](source, seed)
+        if mutated is None:
+            continue
+        row["applied"] += 1
+        applied += 1
+        try:
+            level = _realize_mutation(mutated, config, number, options)
+        except ValueError:
+            if applied >= limit:
+                break
+            continue
+        row["rescued"] += 1
+        reasons = row["rescued_reasons"]
+        reasons[reason] = reasons.get(reason, 0) + 1
+        return level, replace(mutated, level=level)
+    return None, None
+
+
+def _try_finalist_improvement(
+        candidates: list[GeneratedMap], clean: list[GeneratedMap],
+        sources: dict[int, _MutationCandidate], accepted: list[GeneratedMap],
+        config: CampaignConfig, number: int,
+        stats: dict[str, dict[str, object]],
+        ) -> tuple[GeneratedMap | None, _MutationCandidate | None]:
+    """Give the runner-up one cheap encounter replacement before discarding it."""
+    pool = clean or candidates
+    if len(pool) < 2:
+        return None, None
+    ranked = sorted(
+        pool, key=lambda level: _candidate_ranking(level, accepted, config)[0],
+        reverse=True)
+    finalist = ranked[1]
+    source = replace(sources[id(finalist)], level=finalist)
+    name = "replace-encounter"
+    row = stats[name]
+    row["attempted"] += 1
+    seed = _mutation_seed(
+        config, number, source.geometry.attempt, name, 100)
+    try:
+        mutated = _MUTATION_OPERATORS[name](source, seed)
+    except ValueError:
+        return None, None
+    if mutated is None or mutated.level is None:
+        return None, None
+    row["applied"] += 1
+    if (_candidate_ranking(mutated.level, accepted, config)[0]
+            <= _candidate_ranking(finalist, accepted, config)[0]):
+        return None, None
+    row["improved"] += 1
+    return mutated.level, mutated
+
+
+def _mutation_report(stats: dict[str, dict[str, object]]) -> dict[str, object]:
+    return {
+        name: {
+            "attempted": row["attempted"],
+            "applied": row["applied"],
+            "rescued": row["rescued"],
+            "improved": row["improved"],
+            "rescued_reasons": dict(sorted(row["rescued_reasons"].items())),
+        }
+        for name, row in stats.items()
+    }
+
+
 _SELECTION_TERMS = (
     "severe_defects",
     "live_diagnostics",
@@ -981,7 +1404,8 @@ def _candidate_ranking(level, accepted, config):
     return key, values, report
 
 
-def _selection_record(candidates, clean, accepted, config, winner, mode):
+def _selection_record(candidates, clean, accepted, config, winner, mode,
+                      mutation_stats=None):
     """Build JSON-safe evidence for one completed candidate selection."""
     active = clean or candidates
     active_ids = {id(level) for level in active}
@@ -1024,10 +1448,13 @@ def _selection_record(candidates, clean, accepted, config, winner, mode):
         "runner_up": runner_up["candidate"] if runner_up else None,
         "decisive_term": decisive,
         "candidates": rows,
+        "mutations": (_mutation_report(mutation_stats)
+                      if mutation_stats is not None else {}),
     }
 
 
-def _best_candidate(candidates, clean, accepted, config, selection_trace=None):
+def _best_candidate(candidates, clean, accepted, config, selection_trace=None,
+                    mutation_stats=None):
     """Pick hard-valid candidates by quality, with contrast last.
 
     Keeping the clean sub-pool preserves the stronger invariant that any critique
@@ -1044,7 +1471,8 @@ def _best_candidate(candidates, clean, accepted, config, selection_trace=None):
     winner = max(pool, key=key)
     if selection_trace is not None:
         selection_trace(_selection_record(
-            candidates, clean, accepted, config, winner, "ranked"))
+            candidates, clean, accepted, config, winner, "ranked",
+            mutation_stats))
     return winner
 
 
@@ -1070,6 +1498,8 @@ def generate_campaign(config: CampaignConfig, output: Path,
         last_error = None
         candidates: list[GeneratedMap] = []
         clean: list[GeneratedMap] = []
+        mutation_stats = _empty_mutation_stats()
+        candidate_sources: dict[int, _MutationCandidate] = {}
         options = schedule.floor_options(number)
 
         # Stage A widens the design search without touching geometry.  Every
@@ -1114,6 +1544,7 @@ def generate_campaign(config: CampaignConfig, output: Path,
                     continue
 
             geometry = geometry_queue.pop(0)
+            source = _MutationCandidate(geometry)
             try:
                 candidate = generate_map(
                     config, number, geometry.attempt, **options,
@@ -1121,8 +1552,16 @@ def generate_campaign(config: CampaignConfig, output: Path,
                     _geometry_state=geometry.geometry_state)
             except ValueError as error:
                 last_error = error
-                continue
+                candidate, repaired_source = _try_repairs(
+                    config, number, geometry, options, error,
+                    mutation_stats)
+                if candidate is None or repaired_source is None:
+                    continue
+                source = repaired_source
+            else:
+                source = replace(source, level=candidate)
             candidates.append(candidate)
+            candidate_sources[id(candidate)] = source
             if not candidate.critique:
                 clean.append(candidate)
             if quality is GenerationQuality.FAST and clean:
@@ -1131,11 +1570,20 @@ def generate_campaign(config: CampaignConfig, output: Path,
                 if selection_trace is not None:
                     selection_trace(_selection_record(
                         candidates, clean, levels[:-1], config, winner,
-                        "first-clean"))
+                        "first-clean", mutation_stats))
                 break
             if len(clean) >= pool_size or len(candidates) >= pool_size:
+                improved, improved_source = _try_finalist_improvement(
+                    candidates, clean, candidate_sources, levels,
+                    config, number, mutation_stats)
+                if improved is not None and improved_source is not None:
+                    candidates.append(improved)
+                    candidate_sources[id(improved)] = improved_source
+                    if not improved.critique:
+                        clean.append(improved)
                 winner = _best_candidate(
-                    candidates, clean, levels, config, selection_trace)
+                    candidates, clean, levels, config, selection_trace,
+                    mutation_stats)
                 levels.append(winner)
                 break
 
@@ -1143,7 +1591,8 @@ def generate_campaign(config: CampaignConfig, output: Path,
             if not candidates:
                 raise RuntimeError(f"floor {number} failed generation: {last_error}")
             levels.append(_best_candidate(
-                candidates, clean, levels, config, selection_trace))
+                candidates, clean, levels, config, selection_trace,
+                mutation_stats))
         if progress:
             progress(number, 10)
     validate_campaign_budgets(levels, schedule)
