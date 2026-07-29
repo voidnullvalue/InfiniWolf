@@ -136,16 +136,56 @@ SKY_VISTA_INTERIOR_CHANCE = 0.18
 _FRAMEABLE = frozenset({26, 30, 31, 34, 39, 62})
 
 
+def _blocking_budget(area: int, density: float = 1.0) -> int:
+    """Number of solid compositions a room can support.
+
+    The first two steps preserve the budget originally tuned for ordinary
+    rooms. Beyond that range, each additional 96 floor cells earns another
+    composition instead of a 400-cell hall sharing an 8x8 room's ceiling of
+    two. A composition is normally a mirrored pair, so this grows much more
+    slowly than the final per-cell density target.
+    """
+    base = 1 if area < 64 else 2 + (area - 64) // 96
+    return max(1, round(base * density))
+
+
+def _open_budget(area: int, density: float = 1.0) -> int:
+    """Number of loose accents offered before geometry-led density fill.
+
+    Retain the mined 45/80-cell steps, then add one opportunity per 64 cells.
+    The caller still draws anywhere from zero to this ceiling, and every
+    placement continues through the normal anchoring and spacing rules.
+    """
+    if area < 45:
+        base = 1
+    elif area < 80:
+        base = 2
+    else:
+        base = 3 + (area - 80) // 64
+    return max(1, round(base * density))
+
+
 class _PillarPolicy:
     """The single owner of WhitePillar placement limits and provenance."""
-    _ORDINARY_CONCEPTS = frozenset({"grand", "courtyard", "gallery", "trophy-hall", "war-room", "crypt", "ossuary", "burial-chamber", "corridor"})
+    _ORDINARY_CONCEPTS = frozenset({
+        "grand", "courtyard", "gallery", "trophy-hall", "war-room",
+        "crypt", "ossuary", "burial-chamber", "corridor", "guardpost",
+        "training-room", "workshop",
+    })
     _ARCHITECTURAL = frozenset({"sky-vista", "colonnade", "courtyard-centerpiece", "divider", "pillar-signature", "architectural-frame"})
 
     def __init__(self, tiles: list[int], things: list[int], rooms: list[Room]) -> None:
         floor_cells = sum(1 for tile in tiles if _is_floor(tile))
-        self.map_cap = max(6, round(floor_cells * 0.0134))
+        # The authored rate is 0.0109. Leave narrow sampling headroom without
+        # allowing a pillar-rich theme to exceed the requested 0.012 ceiling.
+        self.map_cap = max(6, round(floor_cells * 0.0115))
         self.map_count = sum(thing == 30 for thing in things)
         self.room_counts = [sum(_at(things, x, y) == 30 for y in range(room.y, room.y + room.h) for x in range(room.x, room.x + room.w)) for room in rooms]
+        # Ordinary rooms retain one mirrored pair. At 80 cells and every 96
+        # cells thereafter, halls may repeat it; this is the missing area scale
+        # after rooms grew past the old tuning range.
+        self.room_caps = [2 + 2 * max(0, (room.w * room.h + 16) // 96)
+                          for room in rooms]
         self.structural_rooms: set[int] = set()
         self.placements: list[PillarPlacement] = []
 
@@ -154,7 +194,10 @@ class _PillarPolicy:
         if not cells:
             return True
         if source not in self._ARCHITECTURAL:
-            if concept not in self._ORDINARY_CONCEPTS or room_index in self.structural_rooms or self.room_counts[room_index] + len(cells) > 2:
+            if (concept not in self._ORDINARY_CONCEPTS
+                    or room_index in self.structural_rooms
+                    or self.room_counts[room_index] + len(cells)
+                    > self.room_caps[room_index]):
                 return False
         return self.map_count + len(cells) <= self.map_cap
 
@@ -294,7 +337,8 @@ def _place_zoned(room: Room,
                               tuple[tuple[int, ...], tuple[int, ...]]],
                  free: set[tuple[int, int]], blocked_cells: set[tuple[int, int]],
                  reserved: set[tuple[int, int]], things: list[int], rng: random.Random,
-                 try_place, blocking_budget: int, place_open=None) -> None:
+                 try_place, blocking_budget: int, place_open=None,
+                 density: float = 1.0) -> None:
     """Cluster two compatible furniture concepts on opposite room halves."""
     cx, cy = room.center
     horizontal = room.w >= room.h
@@ -317,7 +361,10 @@ def _place_zoned(room: Room,
             continue
         item = rng.choice(blocking)
         rng.shuffle(corners)
+        placed = 0
         for cornx, corny in corners:
+            if placed >= budget:
+                break
             # A pair of identical potted plants packed into one corner reads
             # like a placement accident.  Plant concepts still own their
             # intended half of the room, but use one deliberate specimen;
@@ -325,7 +372,7 @@ def _place_zoned(room: Room,
             # opposing sides where a pair reads as composition.
             if item in (31, 34):
                 if (cornx, corny) in free and try_place([(cornx, corny)], item):
-                    break
+                    placed += 1
                 continue
             # Leave a gap between the two members unless they are barrels. A
             # shoulder-to-shoulder pair of anything else reads as a heap, and the
@@ -339,10 +386,10 @@ def _place_zoned(room: Room,
             cluster = [cell for cell in ((cornx, corny), (nx, corny), (cornx, ny))
                        if cell in free][:2]
             if len(cluster) == 2 and try_place(cluster, item):
-                break
+                placed += 1
 
     area = room.w * room.h
-    open_budget = 3 if area >= 80 else 2 if area >= 45 else 1
+    open_budget = _open_budget(area, density)
     open_budgets = ((open_budget + 1) // 2, open_budget // 2)
     for zone_index, ((_, open_items), budget) in enumerate(zip(zones, open_budgets)):
         if not open_items:
@@ -690,9 +737,12 @@ _MATERIAL_AFFINITY: dict[str, frozenset[int]] = {
     "metal": frozenset({67, 24}),
 }
 _MATERIAL_MULTIPLIER = 1.75
-# Authored decoration sits at 0.134 items per floor cell. Fill aims at that and
-# stops; it is a target, not a floor to be saturated toward.
-_TARGET_DECOR_DENSITY = 0.134
+# Authored decoration sits at 0.134 items per floor cell. Corridors and connector
+# repairs account for about 13% of generated floor but carry only sparse rhythm
+# lighting, so room fill must aim slightly above the map-wide rate. At 0.145 the
+# combined room and circulation planes land back on the authored 0.130-0.140
+# band; this remains a target, not a floor to be saturated toward.
+_TARGET_DECOR_DENSITY = 0.145
 # Keep fill spaced so it reads as furnishing rather than a pile. The corpus
 # clusters 18.6% of decorations against a neighbour, so some contact is correct
 # -- barrels are shoulder to shoulder -- but it must not be the default.
@@ -1398,7 +1448,7 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
                         for cell in room_notches:
                             _place_open(cell, accent)
 
-        pair_budget = max(1, round((2 if room.w >= 8 and room.h >= 8 else 1) * density))
+        pair_budget = _blocking_budget(room.w * room.h, density)
         pairs_placed = 0
         room_landmarks = list((landmarks or {}).get(ridx, ()))
         # Structural eligibility only -- no rolls here. Each condition mirrors the
@@ -1805,7 +1855,9 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
             # must not lose its open decoration just because no blocking
             # budget is left for a themed cluster.
             _place_zoned(room, zones, free, blocked_cells, reserved, things, rng,
-                         lambda cells, item: _try_place(cells, item, "zoned"), max(0, pair_budget - pairs_placed), _place_open)
+                         lambda cells, item: _try_place(cells, item, "zoned"),
+                         max(0, pair_budget - pairs_placed), _place_open,
+                         density)
             pairs_placed = pair_budget
         else:
             # --- Pattern: symmetric wall pairs (general fallback) ---
@@ -1848,11 +1900,21 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
                 # rejected pair -- is what produced rooms holding a lamp pair
                 # *and* a plant pair *and* a barrel pair: a grab bag rather than
                 # a composition.
-                pair_item = rng.choice(blocking)
+                # In the mined corpus a one-wide interruption in an open hall is
+                # a pillar 67% of the time, normally mirrored. Generated rooms
+                # seldom contain literal wall slots, so large pillar-eligible
+                # halls express the same rule through repeated wall/travel pairs.
+                # The map and room pillar caps remain the final authority.
+                hall_pillars = (room.w * room.h >= 80 and 30 in blocking
+                                and concept in pillar_policy._ORDINARY_CONCEPTS
+                                and rng.random() < 0.67)
+                pair_item = 30 if hall_pillars else rng.choice(blocking)
+                pair_source = ("large-hall-pair" if hall_pillars
+                               else "generic-fallback")
                 for (ax, ay), (bx, by) in all_pairs:
                     if pairs_placed >= pair_budget:
                         break
-                    if _try_place([(ax, ay), (bx, by)], pair_item, "generic-fallback"):
+                    if _try_place([(ax, ay), (bx, by)], pair_item, pair_source):
                         pairs_placed += 1
 
             # --- Vignette: prisoner remains in a jail corner ---
@@ -1882,10 +1944,9 @@ def _place_decorations(rooms: list[Room], tiles: list[int], things: list[int],
             # within two tiles of a lattice lamp and undid the 3-4 tile rhythm
             # the corpus shows. One pass, one rhythm.
             area = room.w * room.h
-            open_budget = max(1, round((3 if area >= 80 else 2 if area >= 45 else 1)
-                                             * density
-                                             * (0.80 + 0.20 * phase.occupation
-                                                + 0.15 * phase.abandonment)))
+            open_budget = _open_budget(
+                area, density * (0.80 + 0.20 * phase.occupation
+                                 + 0.15 * phase.abandonment))
             count = rng.randrange(0, open_budget + 1)
             floor_clutter = [item for item in open_items if item not in (27, 37)]
             # Two kinds of spot, and they get different rules. Spill deliberately

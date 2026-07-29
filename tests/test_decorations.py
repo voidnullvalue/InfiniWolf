@@ -1,8 +1,17 @@
 """Focused geometry refinements for decoration placement."""
+import random
 import unittest
 
-from infiniwolf.decorations import _phase_item_weight, _phase_motif_overrides, _wall_orientation
-from infiniwolf.model import AestheticPhase
+from infiniwolf.decorations import (
+    _PillarPolicy,
+    _blocking_budget,
+    _open_budget,
+    _phase_item_weight,
+    _phase_motif_overrides,
+    _place_zoned,
+    _wall_orientation,
+)
+from infiniwolf.model import AestheticPhase, Room
 from infiniwolf.grid import _set
 from infiniwolf.wl6 import FLOOR, GRID, WALL
 
@@ -34,6 +43,45 @@ class AestheticPhasePolicyTests(unittest.TestCase):
                            _phase_item_weight(46, abandoned))
         self.assertGreater(_phase_item_weight(61, abandoned),
                            _phase_item_weight(61, occupied))
+
+
+class AreaScaledBudgetTests(unittest.TestCase):
+    def test_budgets_keep_old_small_room_steps_and_continue_with_area(self):
+        self.assertEqual([_blocking_budget(area) for area in (63, 64, 159, 160, 400)],
+                         [1, 2, 2, 3, 5])
+        self.assertEqual([_open_budget(area) for area in (44, 45, 79, 80, 144, 400)],
+                         [1, 2, 2, 3, 4, 8])
+
+    def test_large_zoned_room_can_use_more_than_two_corner_compositions(self):
+        room = Room(10, 10, 20, 20)
+        things = [0] * (GRID * GRID)
+        free = {(x, y)
+                for y in range(room.y + 1, room.y + room.h - 1)
+                for x in range(room.x + 1, room.x + room.w - 1)}
+
+        def place(cells, item):
+            for cell in cells:
+                things[cell[1] * GRID + cell[0]] = item
+                free.discard(cell)
+            return True
+
+        zones = (((31,), ()), ((34,), ()))
+        _place_zoned(room, zones, free, set(), set(), things,
+                     random.Random(0), place,
+                     _blocking_budget(room.w * room.h))
+        self.assertEqual(sum(thing in (31, 34) for thing in things), 4)
+
+    def test_pillar_policy_scales_rooms_but_caps_map_density(self):
+        rooms = [Room(2, 2, 8, 8), Room(20, 2, 10, 8)]
+        tiles = [FLOOR] * 1000 + [WALL] * (GRID * GRID - 1000)
+        policy = _PillarPolicy(tiles, [0] * (GRID * GRID), rooms)
+        self.assertLessEqual(policy.map_cap / 1000, 0.012)
+        pair = [((21, 3), 30), ((28, 3), 30)]
+        second_pair = [((21, 8), 30), ((28, 8), 30)]
+        self.assertTrue(policy.permits(1, "guardpost", pair, "large-hall-pair"))
+        policy.record(1, pair, "large-hall-pair")
+        self.assertTrue(policy.permits(1, "guardpost", second_pair,
+                                       "large-hall-pair"))
 
 
 if __name__ == "__main__":

@@ -8,11 +8,12 @@ a floor with five as identical.
 """
 import unittest
 
+from infiniwolf.encounters import _schedule_pacing_beats
 from infiniwolf.model import (EncounterPlacement, GeneratedMap, Room, SecretDetail,
                               SpritePlacement)
-from infiniwolf.quality import (UNMEASURED, _critique, quality_report,
-                                    weighted_distance)
-from infiniwolf.wl6 import FLOOR, GRID, WALL
+from infiniwolf.quality import (_critique, _encounter_quality, _pacing_quality,
+                               quality_report, weighted_distance)
+from infiniwolf.wl6 import FLOOR, GRID, GUARDS, WALL
 
 
 def level(**kwargs):
@@ -59,7 +60,7 @@ class QualityReportTests(unittest.TestCase):
         "landmark_quality", "corpus_similarity", "campaign_contrast",
     )
 
-    def test_report_is_bounded_and_unmeasured_fields_are_honest(self):
+    def test_report_is_bounded_and_all_fields_are_measured(self):
         sample = level(rooms=(Room(10, 10, 6, 6),),
                        critical_route=(0,), room_concepts=("hall",),
                        room_shapes=("rectangle",), room_districts=(0,))
@@ -68,8 +69,6 @@ class QualityReportTests(unittest.TestCase):
             with self.subTest(metric=name):
                 self.assertGreaterEqual(getattr(report, name), 0.0)
                 self.assertLessEqual(getattr(report, name), 1.0)
-        self.assertEqual(report.encounter_quality, UNMEASURED)
-        self.assertEqual(report.pacing_quality, UNMEASURED)
         self.assertEqual(report.campaign_contrast, 1.0)
         self.assertEqual(report.severe_defects, ("no_loop",))
         self.assertIn("no_loop", report.diagnostics)
@@ -81,6 +80,60 @@ class QualityReportTests(unittest.TestCase):
         first = quality_report(sample, [level()], object())
         second = quality_report(sample, [], {"different": "config"})
         self.assertEqual(first, second)
+
+
+    def test_completed_multi_room_sequence_improves_encounter_evidence(self):
+        rooms = (Room(10, 10, 6, 6), Room(20, 10, 6, 6))
+        tiles = [WALL] * (GRID * GRID)
+        for room_index, room in enumerate(rooms):
+            for y in range(room.y, room.y + room.h):
+                for x in range(room.x, room.x + room.w):
+                    tiles[y * GRID + x] = FLOOR + room_index
+        local = level(
+            rooms=rooms, tiles=tiles,
+            encounters=(EncounterPlacement(
+                "visible-sentry", 0, ((12, 12, GUARDS[0]),)),))
+        sequence = level(
+            rooms=rooms, tiles=tiles, critical_route=(0, 1),
+            encounters=(
+                EncounterPlacement(
+                    "visible-sentry", 0,
+                    ((12, 12, GUARDS[0]),)),
+                EncounterPlacement(
+                    "strongpoint", 1,
+                    ((22, 12, GUARDS[0]), (23, 12, GUARDS[0])),
+                    ((22, 12),)),
+            ))
+        self.assertGreater(_encounter_quality(sequence),
+                           _encounter_quality(local))
+
+    def test_contrasting_route_beats_outscore_repeated_medium_rooms(self):
+        rooms = tuple(Room(2 + index * 9, 20, 7, 7) for index in range(6))
+
+        def with_counts(counts):
+            things = [0] * (GRID * GRID)
+            for room, count in zip(rooms, counts):
+                cells = ((x, y)
+                         for y in range(room.y + 1, room.y + room.h - 1)
+                         for x in range(room.x + 1, room.x + room.w - 1))
+                for cell, _ in zip(cells, range(count)):
+                    things[cell[1] * GRID + cell[0]] = GUARDS[0]
+            return level(rooms=rooms, things=things,
+                         critical_route=tuple(range(len(rooms))))
+
+        repeated_medium = with_counts((3, 3, 3, 3, 3, 3))
+        contrasting = with_counts((0, 2, 4, 1, 6, 0))
+        self.assertGreater(_pacing_quality(contrasting),
+                           _pacing_quality(repeated_medium))
+
+    def test_pacing_scheduler_overrides_objective_and_boss_beats(self):
+        schedule = _schedule_pacing_beats(
+            tuple(range(9)), frozenset({5}), boss_room_index=7)
+        self.assertEqual(schedule[0][0], "orientation")
+        self.assertEqual(schedule[4][0], "recovery")
+        self.assertEqual(schedule[5][0], "objective-pressure")
+        self.assertEqual(schedule[7][0], "climax")
+        self.assertEqual(schedule[8][0], "decompression")
 
 
 class CritiqueFlagTests(unittest.TestCase):

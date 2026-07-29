@@ -2072,9 +2072,22 @@ class GeneratorTests(unittest.TestCase):
             for x in range(room.x, room.x + room.w):
                 tiles[y * GRID + x] = FLOOR
                 component_of[x, y] = 0
-        landmarks = _apply_wall_theme(tiles, [0] * len(tiles), [room], [0], component_of,
-                                      {0: (1, (3,))}, random.Random(0))
-        cells = landmarks[0]
+        # Whether a landmark is hung at all is a per-room probability roll, so a
+        # fixed seed pins the draw order of every pass that runs before it -- and
+        # this test is about the ARRANGEMENT, not the odds. Search seeds for a
+        # floor that placed one, then assert its shape. Pinning Random(0) made
+        # this fail the moment damage treatment moved from independent per-room
+        # rolls to district gradients, which is a deliberate change and not a
+        # regression in landmark hanging.
+        cells = None
+        for seed in range(64):
+            landmarks = _apply_wall_theme(
+                tiles, [0] * len(tiles), [room], [0], component_of,
+                {0: (1, (3,))}, random.Random(seed))
+            if landmarks.get(0):
+                cells = landmarks[0]
+                break
+        self.assertIsNotNone(cells, "no seed in 64 hung a landmark at all")
         # An 18-tile clean run earns the center-plus-mirrored-pair triplet.
         self.assertEqual(len(cells), 3)
         self.assertEqual(len({y for _, y in cells}), 1, "all hang on one wall")
@@ -2522,15 +2535,31 @@ class GeneratorTests(unittest.TestCase):
                 for x in range(room.x, room.x + room.w):
                     tiles[y * GRID + x] = FLOOR
                     component_of[x, y] = group
-        _apply_wall_theme(tiles, [0] * len(tiles), rooms, [0, 1], component_of,
-                          {0: (40, (34, 36)), 1: (40, (34, 36))}, random.Random(0))
-        for room, tile in zip(rooms, (34, 36)):
-            cells = ({(x, room.y - 1) for x in range(room.x - 1, room.x + room.w + 1)}
-                     | {(x, room.y + room.h) for x in range(room.x - 1, room.x + room.w + 1)}
-                     | {(room.x - 1, y) for y in range(room.y, room.y + room.h)}
-                     | {(room.x + room.w, y) for y in range(room.y, room.y + room.h)})
-            wall_ring = [_at(tiles, *cell) for cell in cells]
-            self.assertEqual(wall_ring.count(tile), 1)
+        # The claim is that an insignia panel is a SINGLE landmark accent and
+        # never a room's field material -- so the count must never exceed one,
+        # whatever the draw order, and must reach one on some seed. Asserting
+        # exactly one under a pinned Random(0) confused the claim with the odds
+        # of the landmark roll, and broke when an unrelated pass changed how many
+        # draws precede it.
+        seen = {tile: 0 for tile in (34, 36)}
+        for seed in range(64):
+            trial = [WALL] * (GRID * GRID)
+            for group, room in enumerate(rooms):
+                for y in range(room.y, room.y + room.h):
+                    for x in range(room.x, room.x + room.w):
+                        trial[y * GRID + x] = FLOOR
+            _apply_wall_theme(trial, [0] * len(trial), rooms, [0, 1], component_of,
+                              {0: (40, (34, 36)), 1: (40, (34, 36))}, random.Random(seed))
+            for room, tile in zip(rooms, (34, 36)):
+                cells = ({(x, room.y - 1) for x in range(room.x - 1, room.x + room.w + 1)}
+                         | {(x, room.y + room.h) for x in range(room.x - 1, room.x + room.w + 1)}
+                         | {(room.x - 1, y) for y in range(room.y, room.y + room.h)}
+                         | {(room.x + room.w, y) for y in range(room.y, room.y + room.h)})
+                count = [_at(trial, *cell) for cell in cells].count(tile)
+                self.assertLessEqual(count, 1, "insignia used as room material")
+                seen[tile] = max(seen[tile], count)
+        for tile, best in seen.items():
+            self.assertEqual(best, 1, f"insignia {tile} never hung on any seed")
 
     def test_blue_stone_masonry_is_floor_ten_only(self):
         for number in range(1, 10):

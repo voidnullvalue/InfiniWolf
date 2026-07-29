@@ -8,7 +8,8 @@ from the RNG, adding a decoration roll upstream could silently move the hierarch
 import unittest
 
 from infiniwolf.model import Room, RoomSpec
-from infiniwolf.semantics import _MAX_SECONDARY, plan_landmarks
+from infiniwolf.semantics import (_MAX_SECONDARY, _composition_profile,
+                                  landmark_visibility, plan_landmarks)
 
 
 def spec(role="beat", tier="standard", district=0):
@@ -115,6 +116,70 @@ class LandmarkPlanningTests(unittest.TestCase):
         for plan in plans:
             if plan.approach_room >= 0:
                 self.assertIn(plan.approach_room, neighbours[plan.room_index])
+
+
+class LandmarkUsefulnessTests(unittest.TestCase):
+    def _visible_floor(self):
+        from infiniwolf.wl6 import DOOR_EW, FLOOR, GRID, WALL
+        rooms = [Room(2, 10, 5, 5), Room(10, 8, 7, 9), Room(20, 10, 5, 5)]
+        tiles = [WALL] * (GRID * GRID)
+        for room in rooms:
+            for y in range(room.y, room.y + room.h):
+                for x in range(room.x, room.x + room.w):
+                    tiles[y * GRID + x] = FLOOR
+        for x in range(7, 20):
+            tiles[12 * GRID + x] = FLOOR
+        tiles[12 * GRID + 7] = DOOR_EW
+        tiles[12 * GRID + 18] = DOOR_EW
+        return tiles, rooms
+
+    def test_visibility_graph_records_real_threshold_rays(self):
+        tiles, rooms = self._visible_floor()
+        views = landmark_visibility(tiles, rooms, [(0, 1), (1, 2)],
+                                    [0, 1, 1], landmark_rooms=(1,))
+        thresholds = {view.position for view in views
+                      if view.position_kind == "door-threshold"}
+        self.assertEqual(thresholds, {(7, 12), (18, 12)})
+        self.assertTrue(all(view.landmark_room == 1 for view in views))
+
+    def test_plan_score_is_usefulness_and_changes_with_visibility(self):
+        from infiniwolf.wl6 import WALL
+        tiles, rooms = self._visible_floor()
+        specs = [spec(), spec(tier="anchor"), spec()]
+        roles = ["start", "beat", "exit"]
+        args = (rooms, specs, roles, [(0, 1), (1, 2)], [0, 1, 1], [0, 1, 2])
+        visible = next(plan for plan in plan_landmarks(*args, tiles=tiles)
+                       if plan.rank == "primary")
+        blocked = list(tiles)
+        blocked[12 * 64 + 8] = WALL
+        blocked[12 * 64 + 17] = WALL
+        hidden = next(plan for plan in plan_landmarks(*args, tiles=blocked)
+                      if plan.rank == "primary")
+        self.assertGreater(visible.score, hidden.score)
+
+    def test_secondaries_name_transition_and_branch_jobs(self):
+        rooms, specs, roles, edges, districts, critical = scenario(18, anchor_at=3)
+        districts = [index // 6 for index in range(18)]
+        transition = plan_landmarks(rooms, specs, roles, edges, districts, critical)
+        self.assertIn("district-transition",
+                      {plan.purpose for plan in transition if plan.rank == "secondary"})
+
+        rooms, specs, roles, edges, districts, critical = scenario(10, anchor_at=6)
+        edges.extend(((2, 8), (2, 9)))
+        districts = [0] * 10
+        branch = plan_landmarks(rooms, specs, roles, edges, districts, critical)
+        self.assertIn("branch-destination",
+                      {plan.purpose for plan in branch if plan.rank == "secondary"})
+
+    def test_sequence_profile_rises_toward_landmark_and_fades_from_damage(self):
+        edges = [(0, 1), (1, 2), (2, 3), (3, 4)]
+        monumentality, damage = _composition_profile(
+            edges, [0] * 5, 4, (True, True, True, True, True))
+        self.assertEqual(monumentality[4], 1.0)
+        self.assertGreater(monumentality[3], monumentality[2])
+        # The farthest eligible room becomes this district's damage focus.
+        self.assertEqual(damage[0], 1.0)
+        self.assertGreater(damage[1], damage[2])
 
 
 if __name__ == "__main__":

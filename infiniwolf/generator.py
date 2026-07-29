@@ -129,6 +129,294 @@ class GenerationCancelled(RuntimeError):
     """Raised when a caller cancels before atomic package installation."""
 
 
+@dataclass(frozen=True, slots=True)
+class _AbstractCandidate:
+    """A reproducibly seeded Stage-A building program."""
+
+    attempt: int
+    plan: FloorPlan
+    score: tuple[float, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class _GeometryCandidate:
+    """A Stage-B room placement and the stream state immediately after it."""
+
+    attempt: int
+    plan: FloorPlan
+    placed: PlacedPlan
+    geometry_state: object
+    score: tuple[float, ...]
+
+
+def _graph_distances(count: int, edges: list[tuple[int, int]],
+                     start: int = 0) -> dict[int, int]:
+    links = [set() for _ in range(count)]
+    for first, second in edges:
+        links[first].add(second)
+        links[second].add(first)
+    distances = {start: 0}
+    queue = deque([start])
+    while queue:
+        current = queue.popleft()
+        for neighbor in links[current]:
+            if neighbor not in distances:
+                distances[neighbor] = distances[current] + 1
+                queue.append(neighbor)
+    return distances
+
+
+def _abstract_plan_score(plan: FloorPlan) -> tuple[float, ...]:
+    """Score only decisions present before a tile or room box exists."""
+    count = len(plan.specs)
+    degrees = [sum(index in edge for edge in plan.edges)
+               for index in range(count)]
+    cycle_count = max(0, len(plan.edges) - count + 1)
+    branch_count = sum(degree == 1 for degree in degrees[1:])
+    junction_count = sum(degree >= 3 for degree in degrees)
+    graph_structure = min(
+        1.0, 0.45 * min(1.0, cycle_count / 2.0)
+        + 0.30 * min(1.0, branch_count / max(3.0, count * 0.25))
+        + 0.25 * min(1.0, junction_count / 3.0))
+
+    promised_rooms = {room for item in plan.set_pieces for room in item.rooms}
+    promised_edges = {
+        frozenset(edge) for item in plan.set_pieces
+        for edge in item.required_edges
+    }
+    actual_edges = {frozenset(edge) for edge in plan.edges}
+    primary = sum(item.scale == "primary" for item in plan.set_pieces)
+    secondary = sum(item.scale == "secondary" for item in plan.set_pieces)
+    set_piece_realization = min(
+        1.0, 0.30 * min(1, primary)
+        + 0.20 * min(1.0, secondary / 2.0)
+        + 0.25 * len(promised_rooms) / max(1, count)
+        + 0.25 * len(promised_edges & actual_edges) / max(1, len(promised_edges)))
+
+    roles = [spec.role for spec in plan.specs]
+    terminus = next(
+        (index for index in range(count - 1, -1, -1)
+         if roles[index] in ("exit", "boss-arena")), count - 1)
+    distances = _graph_distances(count, plan.edges)
+    progression_length = min(
+        1.0, distances.get(terminus, 0) / max(1.0, count * 0.55))
+
+    optional = [index for index in range(1, count)
+                if index not in plan.critical]
+    useful_optional = sum(
+        plan.specs[index].motif != "filler"
+        or plan.specs[index].tier in ("hall", "anchor", "motif")
+        for index in optional)
+    branch_utility = useful_optional / len(optional) if optional else 0.0
+
+    tiers = Counter(spec.tier for spec in plan.specs)
+    hierarchy = (
+        0.45 * (tiers["anchor"] == 1)
+        + 0.20 * min(1.0, tiers["hall"] / 2.0)
+        + 0.20 * min(1.0, tiers["corridor"] / 3.0)
+        + 0.15 * min(1.0, tiers["closet"] / 4.0))
+
+    districts = {spec.district for spec in plan.specs}
+    cross_district = sum(
+        plan.specs[first].district != plan.specs[second].district
+        for first, second in plan.edges)
+    district_organization = (
+        0.45 * (2 <= len(districts) <= 3)
+        + 0.30 * (len(plan.district_circulation) == len(districts))
+        + 0.25 * min(1.0, cross_district / max(1, len(districts) - 1)))
+
+    nominal_area = {
+        "corridor": 42, "closet": 36, "standard": 64,
+        "hall": 90, "anchor": 110, "motif": 90,
+    }
+    planned_area = sum(nominal_area.get(spec.tier, 64)
+                       for spec in plan.specs)
+    packing_pressure = max(0.0, 1.0 - abs(planned_area - 1350) / 900.0)
+
+    total = (
+        1.25 * graph_structure
+        + 1.25 * set_piece_realization
+        + 1.35 * progression_length
+        + 0.90 * branch_utility
+        + 0.85 * hierarchy
+        + 0.90 * district_organization
+        + 0.75 * packing_pressure
+    )
+    return (
+        round(total, 6),
+        round(progression_length, 6),
+        round(set_piece_realization, 6),
+        round(graph_structure, 6),
+        round(branch_utility, 6),
+        round(hierarchy, 6),
+        round(district_organization, 6),
+        round(packing_pressure, 6),
+    )
+
+
+def _plan_candidate(config: CampaignConfig, number: int, attempt: int,
+                    *, rare_motif_enabled: bool,
+                    boss: int | None) -> _AbstractCandidate:
+    """Run Stage A from streams derived solely from this candidate attempt."""
+    planning_rng = random.Random(
+        config.subsystem_seed(number, attempt, "planning"))
+    special_rng = random.Random(
+        config.subsystem_seed(number, attempt, "special_floors"))
+    floor_variant = _aardwolf_variant(
+        config, number, _variant_sequence(config)[number - 1])
+    boss_choice = (
+        boss if boss is not None
+        else special_rng.choice(tuple(sorted(KEY_DROP_BOSSES)))
+    ) if number == 9 else None
+    plan = _plan_floor(
+        planning_rng, int(config.layout_complexity), number,
+        variant=floor_variant,
+        skeleton=_circulation_sequence(config)[number - 1],
+        progression_grammar=_progression_sequence(config)[number - 1],
+        rare_motif=rare_motif_enabled,
+        boss_ends_floor=number == 9 and boss_choice in VICTORY_BOSSES)
+    return _AbstractCandidate(attempt, plan, _abstract_plan_score(plan))
+
+
+def _elevator_geometry_feasible(
+        number: int, plan: FloorPlan, placed: PlacedPlan,
+        floor_variant: FloorVariant, boss_choice: int | None) -> bool:
+    """Probe the dominant late failure without mutating the checkpoint."""
+    tiles = [WALL] * (GRID * GRID)
+    rooms = placed.rooms
+    specs = [plan.specs[index] for index in placed.spec_indices]
+    roles = [spec.role for spec in specs]
+    paint_room_floors(tiles, rooms)
+    first_neighbor = next((second if first == 0 else first
+                           for first, second in placed.edges
+                           if 0 in (first, second)), 1)
+    try:
+        arrival = None
+        if number != 1:
+            arrival = _place_arrival_elevator(
+                tiles, rooms[0], rooms[first_neighbor].center,
+                random.Random(0), floor_variant.name,
+                forced_kind="outside-empty")
+        if number == 9 and boss_choice in VICTORY_BOSSES:
+            return True
+        anchor_index = next(index for index, spec in enumerate(specs)
+                            if spec.tier == "anchor")
+        select_exit_host(
+            tiles, rooms, placed.edges,
+            anchor_index=anchor_index,
+            minimum_route_rooms=_minimum_critical_route_rooms(roles),
+            required_post_anchor=next(
+                (index for index, role in enumerate(roles)
+                 if role in ("victory", "recovery")), None),
+            planned_exit_index=(
+                roles.index("exit") if "exit" in roles else -1),
+            boss_locks_exit=(
+                number == 9 and boss_choice in KEY_DROP_BOSSES),
+            arrival=arrival)
+    except (StopIteration, ValueError):
+        return False
+    return True
+
+
+def _placed_geometry_score(number: int, plan: FloorPlan, placed: PlacedPlan,
+                           floor_variant: FloorVariant,
+                           boss_choice: int | None) -> tuple[float, ...]:
+    """Score actual room placement before routing and population."""
+    rooms = placed.rooms
+    specs = [plan.specs[index] for index in placed.spec_indices]
+    areas = [room.w * room.h for room in rooms]
+    occupied_area = sum(areas) / float(GRID * GRID)
+
+    edge_gaps: list[int] = []
+    clean_thresholds = 0
+    long_axes = 0
+    for first, second in placed.edges:
+        left, right = rooms[first], rooms[second]
+        dx = abs(left.center[0] - right.center[0])
+        dy = abs(left.center[1] - right.center[1])
+        edge_gaps.append(max(0, dx - (left.w + right.w) // 2)
+                         + max(0, dy - (left.h + right.h) // 2))
+        y_overlap = (min(left.y + left.h, right.y + right.h)
+                     - max(left.y, right.y))
+        x_overlap = (min(left.x + left.w, right.x + right.w)
+                     - max(left.x, right.x))
+        clean_thresholds += max(x_overlap, y_overlap) >= 3
+        long_axes += ((x_overlap >= 3 and dy >= 14)
+                      or (y_overlap >= 3 and dx >= 14))
+    mean_gap = sum(edge_gaps) / max(1, len(edge_gaps))
+    route_quality = max(0.0, 1.0 - mean_gap / 24.0)
+    door_geometry = clean_thresholds / max(1, len(placed.edges))
+    sightlines = max(
+        0.0, 1.0 - abs(long_axes - 2) / max(2.0, len(rooms) / 3.0))
+
+    anchor_areas = [area for area, spec in zip(areas, specs)
+                    if spec.tier == "anchor"]
+    ordinary = sorted(
+        area for area, spec in zip(areas, specs)
+        if spec.tier in ("standard", "closet", "corridor"))
+    median = ordinary[len(ordinary) // 2] if ordinary else 1
+    hierarchy = (
+        min(1.0, (anchor_areas[0] / max(1, median) - 1.0) / 1.5)
+        if anchor_areas else 0.0)
+
+    min_x = min(room.x for room in rooms)
+    max_x = max(room.x + room.w for room in rooms)
+    min_y = min(room.y for room in rooms)
+    max_y = max(room.y + room.h for room in rooms)
+    footprint = max(1, (max_x - min_x) * (max_y - min_y))
+    fill = sum(areas) / footprint
+    quadrants = {
+        (room.center[0] >= GRID // 2, room.center[1] >= GRID // 2)
+        for room in rooms
+    }
+    composition = (
+        0.55 * min(1.0, fill / 0.48)
+        + 0.45 * len(quadrants) / 4.0)
+
+    feasible = _elevator_geometry_feasible(
+        number, plan, placed, floor_variant, boss_choice)
+    total = (
+        1.25 * min(1.0, occupied_area / 0.30)
+        + 1.35 * route_quality
+        + 0.75 * sightlines
+        + 1.15 * door_geometry
+        + 1.05 * hierarchy
+        + 1.15 * composition
+    )
+    return (
+        float(feasible),
+        round(total, 6),
+        round(route_quality, 6),
+        round(composition, 6),
+        round(door_geometry, 6),
+        round(hierarchy, 6),
+        round(sightlines, 6),
+        round(occupied_area, 6),
+    )
+
+
+def _geometry_candidate(config: CampaignConfig, number: int,
+                        candidate: _AbstractCandidate,
+                        *, boss: int | None) -> _GeometryCandidate:
+    """Run Stage B and retain the exact continuation point for Stage C."""
+    geometry_rng = random.Random(
+        config.subsystem_seed(number, candidate.attempt, "geometry"))
+    placed = _place_planned_rooms(geometry_rng, candidate.plan, number)
+    floor_variant = _aardwolf_variant(
+        config, number, _variant_sequence(config)[number - 1])
+    special_rng = random.Random(
+        config.subsystem_seed(number, candidate.attempt, "special_floors"))
+    boss_choice = (
+        boss if boss is not None
+        else special_rng.choice(tuple(sorted(KEY_DROP_BOSSES)))
+    ) if number == 9 else None
+    score = _placed_geometry_score(
+        number, candidate.plan, placed, floor_variant, boss_choice)
+    return _GeometryCandidate(
+        candidate.attempt, candidate.plan, placed,
+        geometry_rng.getstate(), score)
+
+
 def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
                  secret_exit: bool = False, secret_source: int | None = None,
                  hallway_vine_budget: int = 0,
@@ -139,6 +427,9 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
                  phase: AestheticPhase | None = None,
                  shared_void_enabled: bool = False,
                  stream_advance: dict[str, int] | None = None,
+                 _plan: FloorPlan | None = None,
+                 _placed: PlacedPlan | None = None,
+                 _geometry_state: object | None = None,
                  ) -> GeneratedMap:
     streams = {name: random.Random(config.subsystem_seed(number, attempt, name))
                for name in ("planning", "geometry", "progression", "semantics",
@@ -183,12 +474,19 @@ def generate_map(config: CampaignConfig, number: int, attempt: int = 0,
     # kill is the only way off the floor.
     boss_locks_exit = is_boss and boss_choice in KEY_DROP_BOSSES
     boss_ends_floor = is_boss and boss_choice in VICTORY_BOSSES
-    plan = _plan_floor(planning_rng, complexity, number, variant=floor_variant,
-                       skeleton=circulation_skeleton,
-                       progression_grammar=progression_grammar,
-                       rare_motif=rare_motif_enabled,
-                       boss_ends_floor=boss_ends_floor)
-    placed = _place_planned_rooms(geometry_rng, plan, number)
+    plan = _plan or _plan_floor(
+        planning_rng, complexity, number, variant=floor_variant,
+        skeleton=circulation_skeleton,
+        progression_grammar=progression_grammar,
+        rare_motif=rare_motif_enabled,
+        boss_ends_floor=boss_ends_floor)
+    if _placed is None:
+        placed = _place_planned_rooms(geometry_rng, plan, number)
+    else:
+        if _geometry_state is None:
+            raise ValueError("placed floor checkpoint lacks geometry stream state")
+        placed = _placed
+        geometry_rng.setstate(_geometry_state)
     rooms = placed.rooms
     edges = placed.edges
     specs = [plan.specs[index] for index in placed.spec_indices]
@@ -772,10 +1070,55 @@ def generate_campaign(config: CampaignConfig, output: Path,
         last_error = None
         candidates: list[GeneratedMap] = []
         clean: list[GeneratedMap] = []
+        options = schedule.floor_options(number)
+
+        # Stage A widens the design search without touching geometry.  Every
+        # candidate retains the historic explicit attempt id, so subsystem
+        # streams are independent of the order in which the beam explores it.
+        abstract: list[_AbstractCandidate] = []
         for attempt in range(50):
             try:
-                candidate = generate_map(config, number, attempt,
-                                         **schedule.floor_options(number))
+                abstract.append(_plan_candidate(
+                    config, number, attempt,
+                    rare_motif_enabled=bool(options["rare_motif_enabled"]),
+                    boss=options["boss"]))
+            except ValueError as error:
+                last_error = error
+                continue
+        abstract.sort(
+            key=lambda item: (*item.score, -item.attempt), reverse=True)
+
+        # Stage B keeps twelve plans at a time.  Room placement is checkpointed
+        # together with the geometry RNG state, and the throwaway elevator
+        # probe puts feasible 5x5 rock footprints ahead of doomed layouts.
+        # Further batches are fallback beams only when validation exhausts the
+        # current one; ordinary thorough generation therefore realizes at most
+        # twelve placements and only eight complete valid maps.
+        plan_offset = 0
+        geometry_queue: list[_GeometryCandidate] = []
+        winner = None
+        while geometry_queue or plan_offset < len(abstract):
+            if not geometry_queue:
+                plan_batch = abstract[plan_offset:plan_offset + 12]
+                plan_offset += len(plan_batch)
+                for planned in plan_batch:
+                    try:
+                        geometry_queue.append(_geometry_candidate(
+                            config, number, planned, boss=options["boss"]))
+                    except ValueError as error:
+                        last_error = error
+                geometry_queue.sort(
+                    key=lambda item: (*item.score, -item.attempt),
+                    reverse=True)
+                if not geometry_queue:
+                    continue
+
+            geometry = geometry_queue.pop(0)
+            try:
+                candidate = generate_map(
+                    config, number, geometry.attempt, **options,
+                    _plan=geometry.plan, _placed=geometry.placed,
+                    _geometry_state=geometry.geometry_state)
             except ValueError as error:
                 last_error = error
                 continue
@@ -791,10 +1134,12 @@ def generate_campaign(config: CampaignConfig, output: Path,
                         "first-clean"))
                 break
             if len(clean) >= pool_size or len(candidates) >= pool_size:
-                levels.append(_best_candidate(
-                    candidates, clean, levels, config, selection_trace))
+                winner = _best_candidate(
+                    candidates, clean, levels, config, selection_trace)
+                levels.append(winner)
                 break
-        else:
+
+        if winner is None:
             if not candidates:
                 raise RuntimeError(f"floor {number} failed generation: {last_error}")
             levels.append(_best_candidate(

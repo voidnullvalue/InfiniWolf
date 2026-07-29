@@ -1,4 +1,4 @@
-"""Room-owned combat composition.
+"""Room-owned combat compositions coordinated into cross-room sequences.
 
 Every ordinary actor on a floor belongs to a recorded `EncounterPlacement`: a
 named template, the room that owns it, the squad family, the cells, any reveal
@@ -261,6 +261,55 @@ def _spread_actor_cells(candidates: list[tuple[int, int]], count: int,
         if len(picked) >= count:
             break
     return picked
+
+
+_PACING_PATTERN = (
+    ("orientation", 0.40),
+    ("modest-resistance", 0.80),
+    ("exploration-choice", 0.55),
+    ("memorable-encounter", 1.35),
+    ("recovery", 0.40),
+    ("objective-pressure", 1.20),
+    ("shortcut-recontextualization", 0.70),
+    ("climax", 1.50),
+    ("decompression", 0.40),
+)
+
+
+def _schedule_pacing_beats(
+        critical_route: tuple[int, ...],
+        key_hosts: frozenset[int] = frozenset(),
+        boss_room_index: int = -1,
+) -> dict[int, tuple[str, float]]:
+    """Map the mandatory route onto an explicit sequence of contrasting beats.
+
+    The route can have fewer or more rooms than the nine-beat reference pattern,
+    so positions are sampled across the whole pattern. Duplicate samples on a
+    long route are changed to a lower-intensity connective beat; this is the
+    concrete guard against a run of identical medium rooms.
+    """
+    route = tuple(dict.fromkeys(critical_route))
+    if not route:
+        return {}
+    if len(route) == 1:
+        schedule = {route[0]: _PACING_PATTERN[0]}
+    else:
+        last = len(_PACING_PATTERN) - 1
+        schedule = {}
+        previous = ""
+        for position, room_index in enumerate(route):
+            pattern_index = round(position * last / (len(route) - 1))
+            beat = _PACING_PATTERN[pattern_index]
+            if beat[0] == previous:
+                beat = (_PACING_PATTERN[2] if position % 2
+                        else _PACING_PATTERN[4])
+            schedule[room_index] = beat
+            previous = beat[0]
+    for room_index in key_hosts & schedule.keys():
+        schedule[room_index] = _PACING_PATTERN[5]
+    if boss_room_index in schedule:
+        schedule[boss_room_index] = _PACING_PATTERN[7]
+    return schedule
 
 
 def _place_population(config: CampaignConfig, number: int, rooms: list[Room],
@@ -548,14 +597,19 @@ def _place_population(config: CampaignConfig, number: int, rooms: list[Room],
                           for position, room_index in enumerate(critical_route)}
     key_hosts = {objective.host_room for objective in key_objectives
                  if objective.treatment != "boss-drop"}
+    boss_room_index = (rooms.index(boss_room)
+                       if boss_room is not None and boss_room in rooms else -1)
+    pacing_beats = _schedule_pacing_beats(
+        critical_route, frozenset(key_hosts), boss_room_index)
     recess_by_room = {recess.room_index: recess for recess in guard_recesses}
     vignette_treatments = vignette_treatments or {}
 
     budgets: dict[int, int] = {}
     for ridx, room in enumerate(rooms[1:], 1):
         depth = depth_of(room)
+        beat_scale = pacing_beats.get(ridx, ("depth-ramp", pacing(depth)))[1]
         budget = max(0, round(per_room * ACTOR_BUDGET_SCALE
-                              * (0.4 if room == exit_room else pacing(depth))))
+                              * (0.4 if room == exit_room else beat_scale)))
         if ridx in calm_rooms:
             budget = 0
         elif room == boss_room:
@@ -574,8 +628,31 @@ def _place_population(config: CampaignConfig, number: int, rooms: list[Room],
     patrol_rooms = [index for index, budget in budgets.items()
                     if budget and index not in calm_rooms and rooms[index] != boss_room
                     and index not in recess_by_room and index not in key_hosts]
+    room_zones = {}
+    for index, room in enumerate(rooms):
+        zones = Counter(
+            _at(tiles, x, y)
+            for y in range(room.y, room.y + room.h)
+            for x in range(room.x, room.x + room.w)
+            if _is_floor(_at(tiles, x, y)))
+        room_zones[index] = (min(zones, key=lambda zone: (-zones[zone], zone))
+                             if zones else -1)
+    checkpoint_fronts = [
+        index for index in critical_route
+        if index < len(identities)
+        and identities[index].concept in ("checkpoint", "guardpost")
+    ]
+    response_candidates = {
+        index for front in checkpoint_fronts
+        for index in optional_rooms
+        if index in budgets and budgets[index]
+        and room_zones.get(index) == room_zones.get(front)
+        and (abs(rooms[index].center[0] - rooms[front].center[0])
+             + abs(rooms[index].center[1] - rooms[front].center[1]) <= 24)
+    }
     rng.shuffle(patrol_rooms)
     patrol_rooms.sort(key=lambda index: (
+        index not in response_candidates,
         identities[index].tier not in ("corridor", "hall"),
         -depth_of(rooms[index])))
     planned_patrols: dict[int, list[PatrolRoute]] = {}
@@ -600,6 +677,98 @@ def _place_population(config: CampaignConfig, number: int, rooms: list[Room],
                            "patrol-route")
             if sum(len(routes) for routes in planned_patrols.values()) >= patrol_target:
                 break
+
+    # Compose the room-local templates into sequences. Each grammar is only
+    # claimed when its physical evidence exists; unsupported ideas such as
+    # dynamic counterflow spawning are deliberately absent.
+    sequence_templates: dict[int, str] = {}
+
+    def claim(grammar: str, instance: int,
+              participants: tuple[tuple[int, str], ...]) -> bool:
+        del grammar, instance
+        if (len({room_index for room_index, _ in participants}) < 2
+                or any(not budgets.get(room_index)
+                       or room_index in sequence_templates
+                       or room_index in recess_by_room
+                       or room_index in vignette_treatments
+                       for room_index, _ in participants)):
+            return False
+        for room_index, template in participants:
+            sequence_templates[room_index] = template
+        return True
+
+    route = tuple(index for index in critical_route if index in budgets)
+    # A key on the mandatory route is defended as one approach/guard/retreat
+    # composition. Optional keys lack a known mandatory retreat path here, so
+    # their already-good local objective guard remains unlabelled.
+    for host in sorted(key_hosts, key=lambda index: critical_positions.get(index, 10 ** 9)):
+        position = critical_positions.get(host)
+        if position is None or position <= 0:
+            continue
+        approach = critical_route[position - 1]
+        claim("objective-defense", host,
+              ((approach, "staggered-flank"), (host, "objective-guard")))
+
+    # A posted checkpoint and a nearby off-route patrol in the same acoustic
+    # pocket form an actual alert response rather than two unrelated rooms.
+    for front in checkpoint_fronts:
+        candidates = [
+            index for index in response_candidates
+            if index in planned_patrols
+            and index not in sequence_templates and front not in sequence_templates
+        ]
+        if not candidates:
+            continue
+        response = min(candidates, key=lambda index: (
+            abs(rooms[index].center[0] - rooms[front].center[0])
+            + abs(rooms[index].center[1] - rooms[front].center[1]), index))
+        claim("checkpoint-response", front,
+              ((front, "visible-sentry"), (response, "staggered-flank")))
+
+    # An optional, two-entry room in the direct room's sound zone is evidence
+    # of a real flank loop. Requiring a patrol on the optional leg makes the
+    # crossfire active rather than merely naming graph topology.
+    for direct in route:
+        flankers = [
+            index for index in optional_rooms
+            if index in planned_patrols and len(room_entries.get(rooms[index], ())) >= 2
+            and room_zones.get(index) == room_zones.get(direct)
+            and index not in sequence_templates and direct not in sequence_templates
+        ]
+        if flankers:
+            flanker = min(flankers, key=lambda index: (
+                abs(rooms[index].center[0] - rooms[direct].center[0])
+                + abs(rooms[index].center[1] - rooms[direct].center[1]), index))
+            if claim("crossfire-loop", direct,
+                     ((direct, "visible-sentry"), (flanker, "staggered-flank"))):
+                break
+
+    # A quiet route room followed through a door into a high beat is a layered
+    # breach. Distinct zones prove the doorway really gates the alert chain.
+    for front, rear in zip(route, route[1:]):
+        front_scale = pacing_beats.get(front, ("", pacing(depth_of(rooms[front]))))[1]
+        rear_scale = pacing_beats.get(rear, ("", pacing(depth_of(rooms[rear]))))[1]
+        if (front_scale <= 0.70 and rear_scale >= 1.15
+                and room_zones.get(front) != room_zones.get(rear)
+                and claim("layered-breach", front,
+                          ((front, "visible-sentry"), (rear, "strongpoint")))):
+            break
+
+    # Doorway shuttles are the engine's expressible version of a timed patrol
+    # intersection: the moving actor crosses the expected arrival boundary.
+    for room_index in route:
+        routes_here = planned_patrols.get(room_index, ())
+        if (room_index in sequence_templates
+                or not any(route.kind == "doorway-shuttle"
+                           for route in routes_here)):
+            continue
+        position = critical_positions.get(room_index, 0)
+        if position <= 0:
+            continue
+        approach = critical_route[position - 1]
+        if claim("patrol-intersection", room_index,
+                 ((approach, "visible-sentry"), (room_index, "staggered-flank"))):
+            break
 
     tier_counts = [0, 0, 0]
     encounter_counts: Counter[str] = Counter()
@@ -647,6 +816,8 @@ def _place_population(config: CampaignConfig, number: int, rooms: list[Room],
             choices = ["visible-sentry", "staggered-flank", "strongpoint"]
             choices.sort(key=lambda name: (encounter_counts[name], name == previous_template))
             template = choices[0]
+        if ridx in sequence_templates:
+            template = sequence_templates[ridx]
         if template == "blind-corner-ambush" and critical_position is not None:
             ambush_positions.add(critical_position)
 

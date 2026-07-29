@@ -34,13 +34,13 @@ from itertools import combinations
 
 from .grid import _at, _floor_components, _is_floor
 from .model import GeneratedMap
+from .simulation import simulate_player_experience
 from .wl6 import BOSSES, DOORS, ENEMY_CODES, GRID, _patrol_actor_direction
 
 
 UNMEASURED = 0.0
-# Encounter and pacing references have not been corpus-calibrated yet. A later
-# analysis stage fills these fields in rather than presenting a guessed formula
-# as a measurement.
+# Compatibility name retained for callers that imported the former stub value.
+# Every QualityReport field is measured below; the sentinel is no longer used.
 
 
 @dataclass(frozen=True)
@@ -423,6 +423,204 @@ def _navigational_legibility(level: GeneratedMap) -> float:
     ))
 
 
+def _normalized_diversity(values: list[str]) -> float:
+    """Simpson diversity normalized so all-unique evidence reaches one."""
+    if len(values) < 2:
+        return 0.0
+    counts = Counter(values)
+    raw = 1.0 - sum((count / len(values)) ** 2 for count in counts.values())
+    return raw * len(values) / (len(values) - 1)
+
+
+def _room_sound_zone(level: GeneratedMap, room_index: int) -> int:
+    """Dominant assigned floor zone in a room, or -1 when unavailable."""
+    if (len(level.tiles) != GRID * GRID
+            or not 0 <= room_index < len(level.rooms)):
+        return -1
+    room = level.rooms[room_index]
+    zones = Counter(
+        _at(level.tiles, x, y)
+        for y in range(room.y, room.y + room.h)
+        for x in range(room.x, room.x + room.w)
+        if _is_floor(_at(level.tiles, x, y)))
+    return min(zones, key=lambda zone: (-zones[zone], zone)) if zones else -1
+
+
+def _multi_room_grammars(level: GeneratedMap) -> frozenset[str]:
+    """Recognize only encounter sequences proven by finished-map evidence."""
+    by_room: dict[int, list] = {}
+    for encounter in level.encounters:
+        by_room.setdefault(encounter.room_index, []).append(encounter)
+    templates = {room: {encounter.template for encounter in encounters}
+                 for room, encounters in by_room.items()}
+    route = [index for index in level.critical_route
+             if 0 <= index < len(level.rooms)]
+    route_set = set(route)
+    zones = {index: _room_sound_zone(level, index)
+             for index in range(len(level.rooms))}
+    evidence: set[str] = set()
+
+    for objective in level.key_objectives:
+        if objective.host_room in route:
+            position = route.index(objective.host_room)
+            if (position > 0
+                    and "objective-guard" in templates.get(objective.host_room, ())
+                    and route[position - 1] in by_room):
+                evidence.add("objective-defense")
+
+    patrol_rooms = {
+        room for room, encounters in by_room.items()
+        if any(encounter.patrol_path for encounter in encounters)}
+    for front in route:
+        if (front >= len(level.room_concepts)
+                or level.room_concepts[front] not in ("checkpoint", "guardpost")
+                or "visible-sentry" not in templates.get(front, ())
+                or zones.get(front, -1) < 0):
+            continue
+        if any(response not in route_set
+               and zones.get(response, -1) == zones.get(front, -2)
+               and (abs(level.rooms[response].center[0] - level.rooms[front].center[0])
+                    + abs(level.rooms[response].center[1]
+                          - level.rooms[front].center[1]) <= 24)
+               for response in patrol_rooms):
+            evidence.add("checkpoint-response")
+
+    degree = Counter(index for edge in level.edges for index in edge)
+    for flanker in patrol_rooms - route_set:
+        if (degree[flanker] >= 2
+                and zones.get(flanker, -1) >= 0
+                and "staggered-flank" in templates.get(flanker, ())
+                and any(zones.get(direct, -1) == zones.get(flanker, -2)
+                        and "visible-sentry" in templates.get(direct, ())
+                        for direct in route)):
+            evidence.add("crossfire-loop")
+
+    actor_counts = {room: sum(len(encounter.cells) for encounter in encounters)
+                    for room, encounters in by_room.items()}
+    for front, rear in zip(route, route[1:]):
+        if ("visible-sentry" in templates.get(front, ())
+                and "strongpoint" in templates.get(rear, ())
+                and actor_counts.get(front, 0) < actor_counts.get(rear, 0)
+                and zones.get(front, -1) >= 0
+                and zones.get(rear, -1) >= 0
+                and zones.get(front, -1) != zones.get(rear, -1)):
+            evidence.add("layered-breach")
+
+    for room_index in route:
+        room = level.rooms[room_index]
+        if any(encounter.patrol_kind == "doorway-shuttle"
+               and any(not (room.x <= x < room.x + room.w
+                            and room.y <= y < room.y + room.h)
+                       for x, y in encounter.patrol_path)
+               for encounter in by_room.get(room_index, ())):
+            evidence.add("patrol-intersection")
+    return frozenset(evidence)
+
+
+def _encounter_quality(level: GeneratedMap) -> float:
+    """Measure template variety, tactical evidence and physical sequences.
+
+    This intentionally does not reconstruct unrecorded lethality or line of
+    sight. Reveal slots, patrol paths, templates, graph/route order and assigned
+    sound zones are finished-map evidence and are the only dimensions averaged.
+    """
+    encounters = [encounter for encounter in level.encounters
+                  if encounter.template not in ("novelty", "boss-support")]
+    if not encounters:
+        return 0.0
+    tactics: set[str] = set()
+    for encounter in encounters:
+        actor_cells = {(x, y) for x, y, _ in encounter.cells}
+        hidden = set(encounter.hidden_cells)
+        if actor_cells - hidden:
+            tactics.add("visible")
+        if hidden:
+            tactics.add("hidden")
+        if encounter.patrol_path:
+            tactics.add("moving")
+        if encounter.template in {"strongpoint", "objective-guard",
+                                  "guard-gallery"}:
+            tactics.add("defended-position")
+    grammars = _multi_room_grammars(level)
+    return _mean((
+        _normalized_diversity([encounter.template for encounter in encounters]),
+        len(tactics) / 4.0,
+        _bounded(len(grammars)),
+        _bounded(len(grammars) / 3.0),
+    ))
+
+
+def _route_actor_counts(level: GeneratedMap,
+                        route: list[int]) -> list[int]:
+    """Count actual actors in each route room from the finished things plane."""
+    counts = []
+    valid_plane = len(level.things) == GRID * GRID
+    for room_index in route:
+        if not valid_plane or not 0 <= room_index < len(level.rooms):
+            counts.append(0)
+            continue
+        room = level.rooms[room_index]
+        counts.append(sum(
+            _at(level.things, x, y) in ENEMY_CODES
+            for y in range(room.y, room.y + room.h)
+            for x in range(room.x, room.x + room.w)))
+    return counts
+
+
+def _intensity_class(actor_count: int) -> str:
+    if actor_count == 0:
+        return "calm"
+    if actor_count <= 2:
+        return "light"
+    if actor_count <= 5:
+        return "medium"
+    return "heavy"
+
+
+def _pacing_quality(level: GeneratedMap) -> float:
+    """Measure contrast, medium-repeat avoidance, recovery and scale rhythm.
+
+    Actor counts are the realized combat beats, not a reconstruction of the
+    generator's depth/config inputs. Room areas add one independent physical
+    pacing track. Recovery is included only when a peak exists; no score is
+    invented for a sub-metric that the route cannot exhibit.
+    """
+    route = [index for index in level.critical_route
+             if 0 <= index < len(level.rooms)]
+    if len(route) < 2:
+        return 0.0
+    counts = _route_actor_counts(level, route)
+    classes = [_intensity_class(count) for count in counts]
+    transitions = sum(first != second
+                      for first, second in zip(classes, classes[1:]))
+    medium_repeats = sum(first == second == "medium"
+                         for first, second in zip(classes, classes[1:]))
+    scores = [
+        transitions / (len(classes) - 1),
+        1.0 - medium_repeats / (len(classes) - 1),
+        ((max(counts) - min(counts)) / max(counts)
+         if max(counts) else 0.0),
+    ]
+
+    peaks = [index for index, value in enumerate(counts[:-1])
+             if value == max(counts) and value > 0]
+    if peaks:
+        scores.append(_mean(
+            any(later < counts[index]
+                for later in counts[index + 1:index + 3])
+            for index in peaks))
+
+    areas = [level.rooms[index].w * level.rooms[index].h for index in route]
+    median_area = _median(areas)
+    if median_area:
+        area_classes = [
+            "small" if area < median_area * 0.75 else
+            "large" if area > median_area * 1.35 else "medium"
+            for area in areas]
+        scores.append(_sequence_legibility(area_classes))
+    return _mean(scores)
+
+
 def _secret_quality(level: GeneratedMap) -> float:
     count = max(len(level.secret_variants), len(level.secret_details))
     if not count:
@@ -469,14 +667,26 @@ def quality_report(level: GeneratedMap, previous, config, *,
              else tuple(level.critique))
     live = tuple(flag for flag in flags if flag not in TRIPWIRE_FLAGS)
     severe = tuple(flag for flag in live if flag in SEVERE_FLAGS)
+    experience = simulate_player_experience(level)
+    encounter_evidence = _encounter_quality(level)
+    pacing_evidence = _pacing_quality(level)
     return QualityReport(
         severe_defects=severe,
         diagnostics=live,
         spatial_composition=_bounded(_spatial_composition(level, topology)),
         route_quality=_bounded(_route_quality(level, topology)),
         navigational_legibility=_bounded(_navigational_legibility(level)),
-        encounter_quality=UNMEASURED,
-        pacing_quality=UNMEASURED,
+        # Recorded encounter grammar remains the stronger signal; the walk
+        # deepens it with finished-plane sight, movement and retreat evidence.
+        encounter_quality=_bounded(
+            (2.0 * encounter_evidence
+             + experience.encounter_affordance) / 3.0),
+        # Sequence rhythm likewise remains primary. The simulation contributes
+        # resource strain and exposed recovery time without inventing a new
+        # QualityReport dimension for the selector.
+        pacing_quality=_bounded(
+            (2.0 * pacing_evidence
+             + experience.pacing_sustainability) / 3.0),
         secret_quality=_bounded(_secret_quality(level)),
         landmark_quality=_bounded(_landmark_quality(level)),
         corpus_similarity=_bounded(_corpus_similarity(level, topology)),

@@ -19,7 +19,8 @@ substitutes wall materials and never changes which cells are walkable.
 
 from __future__ import annotations
 
-from collections import Counter, deque
+from collections import Counter, OrderedDict, deque
+from dataclasses import dataclass
 from itertools import combinations
 import random
 
@@ -31,6 +32,23 @@ from .wl6 import (DAMAGED_WALL_CONCEPTS, DECOR_WALLS, DOORS,
                   FLOOR_TEN_STONE_THEME, GRID, JAIL_CANDIDATE_PROBABILITY,
                   MATERIAL_BY_BASE, PURPLE_MIN_FLOOR, WALL,
                   WALL_LANDMARK_CONCEPTS, WALL_THEMES)
+
+
+class _SemanticIdentities(list):
+    """Room identities plus semantics-private room-sequence composition.
+
+    The shared model deliberately keeps ``RoomIdentity`` small. These values are
+    consumed by the wall pass in this module and do not leak a second semantic
+    decision into decoration or encounters.
+    """
+
+    def __init__(self, values, landmark_room: int,
+                 monumentality: tuple[float, ...],
+                 damage_gradient: tuple[float, ...]):
+        super().__init__(values)
+        self.landmark_room = landmark_room
+        self.monumentality = monumentality
+        self.damage_gradient = damage_gradient
 
 
 def _room_identities(tiles: list[int],
@@ -176,7 +194,25 @@ def _room_identities(tiles: list[int],
             rooms, specs, districts, resolved, concepts):
         result.append(RoomIdentity(spec.role, spec.tier, spec.motif, district,
                                    variant.name, concept, theme, wall_base, special))
-    return result
+
+    # The wall pass happens before the public landmark plan, but sequence-level
+    # composition needs a destination now. The shortest start-to-terminus route
+    # is the semantic information available at this stage; the later progression
+    # route normally agrees and the landmark's structural salience dominates any
+    # remaining tie.
+    terminus = next((index for index, room in enumerate(rooms)
+                     if room == (boss_room or exit_room)), len(rooms) - 1)
+    approximate_route = _shortest_room_path(0, terminus, len(rooms), edges)
+    preliminary = plan_landmarks(
+        rooms, specs, [spec.role for spec in specs], edges, districts,
+        approximate_route, tiles=tiles)
+    landmark_room = next((plan.room_index for plan in preliminary
+                          if plan.rank == "primary"), -1)
+    monumentality, damage_gradient = _composition_profile(
+        edges, districts, landmark_room,
+        tuple(identity.concept in DAMAGED_WALL_CONCEPTS for identity in result))
+    return _SemanticIdentities(result, landmark_room, monumentality,
+                               damage_gradient)
 
 
 def _assign_area_themes(tiles: list[int], rooms: list[Room], districts: list[int],
@@ -329,6 +365,14 @@ def _apply_wall_theme(tiles: list[int], things: list[int], rooms: list[Room],
     insignia) so the decoration pass can frame them with furniture instead
     of placing pieces mid-room."""
     landmark_cells: dict[int, list[tuple[int, int]]] = {}
+    composed = isinstance(identities, _SemanticIdentities)
+    landmark_room = identities.landmark_room if composed else -1
+    monumentality = (identities.monumentality if composed else
+                     tuple(0.0 for _ in rooms))
+    damage_gradient = (identities.damage_gradient if composed else
+                       tuple(1.0 for _ in rooms))
+    damage_threshold = ({district: rng.random() for district in sorted(set(districts))}
+                        if composed and atmosphere >= 3 else {})
     for index, tile in enumerate(tiles):
         if tile != WALL:
             continue
@@ -388,14 +432,20 @@ def _apply_wall_theme(tiles: list[int], things: list[int], rooms: list[Room],
         # unrelated tiles. Damage is additionally gated by both atmosphere
         # and semantic room identity.
         surface = base
+        damage_chance = min(0.72, (0.20 + atmosphere * 0.09) * damage_scale)
+        if composed:
+            damaged = (ridx < len(damage_gradient)
+                       and damage_threshold.get(district, 1.0)
+                       < damage_chance * damage_gradient[ridx])
+        else:
+            damaged = rng.random() < damage_chance
         if (damage_variants and atmosphere >= 3
                 and (identity is None or concept in DAMAGED_WALL_CONCEPTS)
                 # damage_scale carries the campaign's aesthetic arc: early floors
                 # come out intact and late ones battered, within a band narrow
                 # enough that the atmosphere setting and room identity still
                 # dominate. Clamped so the arc can never force every wall.
-                and rng.random() < min(0.72, (0.20 + atmosphere * 0.09)
-                                       * damage_scale)):
+                and damaged):
             surface = rng.choice(damage_variants)
         elif plain_variants and (identity is None or rng.random() < 0.58):
             surface = plain_variants[(ridx + district) % len(plain_variants)]
@@ -416,8 +466,18 @@ def _apply_wall_theme(tiles: list[int], things: list[int], rooms: list[Room],
             "officers-quarters", "armory", "jail", "holding-cell",
             "interrogation-room",
         }
-        place_landmark = bool(eligible_landmarks) and (
-            identity is None or rng.random() < (0.30 if formal else 0.12))
+        if identity is None:
+            place_landmark = (bool(eligible_landmarks)
+                              and rng.random() < (0.30 if formal else 0.12))
+        elif ridx == landmark_room:
+            # When the material/concept contract supports an accent, the planned
+            # destination culminates the sequence instead of having to win one
+            # more unrelated per-room roll.
+            place_landmark = bool(eligible_landmarks)
+        else:
+            emphasis = monumentality[ridx] if ridx < len(monumentality) else 0.0
+            chance = (0.30 if formal else 0.12) * (0.55 + 0.75 * emphasis)
+            place_landmark = bool(eligible_landmarks) and rng.random() < chance
 
         # Stained glass is a complete paired composition in prestigious
         # marble rooms, not a general-purpose material or isolated window.
@@ -487,6 +547,7 @@ def _apply_wall_theme(tiles: list[int], things: list[int], rooms: list[Room],
                             if interior:
                                 _set(things, *rng.choice(interior),
                                      rng.choice((42, 64, 65, 66)))
+    _remember_landmark_tiles(rooms, tiles)
     return landmark_cells
 
 
@@ -530,9 +591,9 @@ def _affinity_with(candidate: str, neighbour_concepts) -> int:
                for other in neighbour_concepts)
 
 
-# How much each property contributes to a room's claim on being memorable. Ordered
-# by how strongly it reads in play: sheer size dominates, then whether the space is
-# structurally important, then whether it sits where a player will actually pass.
+# Structural distinctiveness is only one part of usefulness. A huge anchor that
+# can be seen only after entering it is less useful for navigation than a more
+# modest room that repeatedly resolves real choices.
 _LANDMARK_WEIGHTS = {
     "area": 1.0,
     "anchor_tier": 3.0,
@@ -542,31 +603,234 @@ _LANDMARK_WEIGHTS = {
     "special_role": 2.5,
 }
 
-# Ranks below primary. Three is the ceiling on purpose: a floor where everything is
-# emphatic has no hierarchy, which fails for the same reason as a floor with none.
+# Ranks below primary. Three is the ceiling on purpose: a floor where everything
+# is emphatic has no hierarchy, which fails for the same reason as a floor with
+# none.
 _MAX_SECONDARY = 3
+
+
+@dataclass(frozen=True, slots=True)
+class LandmarkVisibility:
+    """One honest tile-ray from a meaningful position to a landmark room.
+
+    ``position_kind`` is either ``door-threshold`` or ``choice-point``. This
+    records geometric visibility only. It intentionally makes no claim that a
+    wall composition remains recognisable when approached from its reverse face;
+    the tile plane has no silhouette/facing identity from which to prove that.
+    """
+
+    landmark_room: int
+    position: tuple[int, int]
+    position_kind: str
+    observer_room: int
+    observer_district: int
+
+
+# ``plan_landmarks`` is constrained to its historical signature at the generator
+# call site. The wall pass sees the same room-list object and remembers the tile
+# plane long enough for the later semantic plan. The small bounded cache prevents
+# failed attempts before planning from retaining a campaign's worth of planes.
+_LANDMARK_TILE_CONTEXTS = OrderedDict()
+
+
+def _remember_landmark_tiles(rooms: list[Room], tiles: list[int]) -> None:
+    key = id(rooms)
+    _LANDMARK_TILE_CONTEXTS[key] = (rooms, tiles)
+    _LANDMARK_TILE_CONTEXTS.move_to_end(key)
+    while len(_LANDMARK_TILE_CONTEXTS) > 12:
+        _LANDMARK_TILE_CONTEXTS.popitem(last=False)
+
+
+def _shortest_room_path(start: int, goal: int, count: int,
+                        edges: list[tuple[int, int]]) -> tuple[int, ...]:
+    if not (0 <= start < count and 0 <= goal < count):
+        return ()
+    neighbours = {index: set() for index in range(count)}
+    for first, second in edges:
+        if first in neighbours and second in neighbours:
+            neighbours[first].add(second)
+            neighbours[second].add(first)
+    previous = {start: -1}
+    queue = deque([start])
+    while queue and goal not in previous:
+        current = queue.popleft()
+        for other in sorted(neighbours[current]):
+            if other not in previous:
+                previous[other] = current
+                queue.append(other)
+    if goal not in previous:
+        return ()
+    path = []
+    current = goal
+    while current >= 0:
+        path.append(current)
+        current = previous[current]
+    return tuple(reversed(path))
+
+
+def _composition_profile(edges: list[tuple[int, int]], districts: list[int],
+                         landmark_room: int,
+                         damage_eligible: tuple[bool, ...]
+                         ) -> tuple[tuple[float, ...], tuple[float, ...]]:
+    """Sequence-level emphasis toward a landmark and district damage foci."""
+    count = len(districts)
+    neighbours = {index: set() for index in range(count)}
+    for first, second in edges:
+        if first in neighbours and second in neighbours:
+            neighbours[first].add(second)
+            neighbours[second].add(first)
+
+    distances = [count + 1] * count
+    if 0 <= landmark_room < count:
+        distances[landmark_room] = 0
+        queue = deque([landmark_room])
+        while queue:
+            current = queue.popleft()
+            for other in neighbours[current]:
+                if distances[other] > distances[current] + 1:
+                    distances[other] = distances[current] + 1
+                    queue.append(other)
+    finite = [distance for distance in distances if distance <= count]
+    furthest = max(finite, default=1) or 1
+    monumentality = tuple(
+        round(max(0.0, 1.0 - distance / furthest), 3)
+        if distance <= count else 0.0
+        for distance in distances)
+
+    damage = [0.0] * count
+    for district in sorted(set(districts)):
+        candidates = [index for index, own in enumerate(districts)
+                      if own == district and index < len(damage_eligible)
+                      and damage_eligible[index]]
+        if not candidates:
+            continue
+        focus = max(candidates, key=lambda index: (
+            distances[index] if distances[index] <= count else count + 1,
+            len(neighbours[index]), -index))
+        local_distance = {focus: 0}
+        queue = deque([focus])
+        while queue:
+            current = queue.popleft()
+            for other in neighbours[current]:
+                if (districts[other] == district
+                        and other not in local_distance):
+                    local_distance[other] = local_distance[current] + 1
+                    queue.append(other)
+        for index, distance in local_distance.items():
+            damage[index] = round(max(0.25, 1.0 - 0.22 * distance), 3)
+    return monumentality, tuple(damage)
+
+
+def _line_visible(tiles: list[int], origin: tuple[int, int],
+                  target: tuple[int, int]) -> bool:
+    """Bresenham tile ray through floor and real doors only."""
+    x0, y0 = origin
+    x1, y1 = target
+    dx, dy = abs(x1 - x0), abs(y1 - y0)
+    sx, sy = (1 if x0 < x1 else -1), (1 if y0 < y1 else -1)
+    error = dx - dy
+    x, y = x0, y0
+    while True:
+        if (x, y) not in (origin, target):
+            tile = _at(tiles, x, y)
+            if not _is_floor(tile) and tile not in DOORS:
+                return False
+        if (x, y) == target:
+            return True
+        twice = 2 * error
+        if twice > -dy:
+            error -= dy
+            x += sx
+        if twice < dx:
+            error += dx
+            y += sy
+
+
+def landmark_visibility(tiles: list[int], rooms: list[Room],
+                        edges: list[tuple[int, int]], districts: list[int],
+                        landmark_rooms=None) -> tuple[LandmarkVisibility, ...]:
+    """Build the threshold/choice-point visibility graph supported by tiles."""
+    if not rooms:
+        return ()
+    targets = tuple(range(len(rooms)) if landmark_rooms is None
+                    else landmark_rooms)
+    neighbours = {index: set() for index in range(len(rooms))}
+    for first, second in edges:
+        if first in neighbours and second in neighbours:
+            neighbours[first].add(second)
+            neighbours[second].add(first)
+    probes = [_room_probe(tiles, room) for room in rooms]
+
+    positions: list[tuple[tuple[int, int], str, int]] = []
+    for offset, tile in enumerate(tiles):
+        if tile not in DOORS:
+            continue
+        position = offset % GRID, offset // GRID
+        observer = min(range(len(rooms)), key=lambda index: (
+            abs(probes[index][0] - position[0])
+            + abs(probes[index][1] - position[1]), index))
+        positions.append((position, "door-threshold", observer))
+    for index, adjacent in neighbours.items():
+        if len(adjacent) >= 3:
+            positions.append((probes[index], "choice-point", index))
+
+    relationships = []
+    for target_index in targets:
+        if not 0 <= target_index < len(rooms):
+            continue
+        target = probes[target_index]
+        for position, kind, observer in positions:
+            if kind == "choice-point" and observer == target_index:
+                continue
+            if _line_visible(tiles, position, target):
+                district = districts[observer] if observer < len(districts) else -1
+                relationships.append(LandmarkVisibility(
+                    target_index, position, kind, observer, district))
+    return tuple(relationships)
+
+
+def _has_loop_return(index: int, neighbours: dict[int, set[int]]) -> bool:
+    """Whether two approaches reconnect without passing through the landmark."""
+    approaches = sorted(neighbours[index])
+    if len(approaches) < 2:
+        return False
+    allowed = set(neighbours) - {index}
+    for start in approaches:
+        seen = {start}
+        queue = deque([start])
+        while queue:
+            current = queue.popleft()
+            for other in neighbours[current]:
+                if other in allowed and other not in seen:
+                    seen.add(other)
+                    queue.append(other)
+        if any(other in seen for other in approaches if other != start):
+            return True
+    return False
 
 
 def plan_landmarks(rooms: list[Room], specs: list[RoomSpec], roles: list[str],
                    edges: list[tuple[int, int]], districts: list[int],
-                   critical_route) -> tuple[LandmarkPlan, ...]:
-    """Nominate one primary landmark and up to three secondaries.
+                   critical_route, *, tiles: list[int] | None = None
+                   ) -> tuple[LandmarkPlan, ...]:
+    """Nominate landmarks by navigational usefulness, deterministically.
 
-    Deterministic and RNG-free: the same geometry always yields the same
-    hierarchy, so a landmark cannot appear or vanish between two candidates that
-    are otherwise identical. Scoring reads only realized geometry and the plan, so
-    this can run before any decoration exists.
-
-    Secondaries must not be graph-adjacent to the primary or to each other.
-    Adjacent landmarks compete rather than compose -- two grand rooms either side
-    of one door read as one confusing space, so spacing is a hard constraint
-    rather than a scoring term.
+    ``LandmarkPlan.score`` is the exposed 0..1 usefulness measurement for future
+    quality scoring. It combines repeated tile-visible orientation, district
+    identity, loop return, choice-point help, and structural distinctiveness.
     """
     if not rooms:
         return ()
-    degree: dict[int, int] = {index: 0 for index in range(len(rooms))}
-    neighbours: dict[int, set[int]] = {index: set() for index in range(len(rooms))}
+    if tiles is None:
+        context = _LANDMARK_TILE_CONTEXTS.get(id(rooms))
+        if context is not None and context[0] is rooms:
+            tiles = context[1]
+
+    degree = {index: 0 for index in range(len(rooms))}
+    neighbours = {index: set() for index in range(len(rooms))}
     for first, second in edges:
+        if first not in neighbours or second not in neighbours:
+            continue
         degree[first] += 1
         degree[second] += 1
         neighbours[first].add(second)
@@ -575,14 +839,22 @@ def plan_landmarks(rooms: list[Room], specs: list[RoomSpec], roles: list[str],
     largest = max((room.w * room.h for room in rooms), default=1) or 1
     busiest = max(degree.values(), default=1) or 1
     route = set(critical_route)
+    route_order = {room: order for order, room in enumerate(critical_route)}
     special = {"boss-arena", "premium-vault", "victory", "climax"}
+    visible = (landmark_visibility(tiles, rooms, edges, districts)
+               if tiles is not None else ())
+    visible_by_room = {index: [] for index in range(len(rooms))}
+    for relationship in visible:
+        visible_by_room[relationship.landmark_room].append(relationship)
 
-    scored: list[tuple[float, int, str]] = []
+    scored = []
     for index, room in enumerate(rooms):
         spec = specs[index] if index < len(specs) else None
         role = roles[index] if index < len(roles) else ""
-        # A room bordering two districts is where a player notices the building
-        # changing material, which is exactly what makes a place recognizable.
+        if spec is not None and spec.tier in ("closet", "corridor"):
+            continue
+        if role in ("start", "arrival", "exit"):
+            continue
         crosses = any(districts[other] != districts[index]
                       for other in neighbours[index]
                       if other < len(districts) and index < len(districts))
@@ -594,35 +866,58 @@ def plan_landmarks(rooms: list[Room], specs: list[RoomSpec], roles: list[str],
             "district_boundary": 1.0 if crosses else 0.0,
             "special_role": 1.0 if role in special else 0.0,
         }
-        total = sum(_LANDMARK_WEIGHTS[key] * value for key, value in parts.items())
-        reason = max(parts.items(), key=lambda kv: _LANDMARK_WEIGHTS[kv[0]] * kv[1])[0]
-        # Utility spaces are not landmarks however large they measure.
-        if spec is not None and spec.tier in ("closet", "corridor"):
-            continue
-        if role in ("start", "arrival", "exit"):
-            continue
-        scored.append((total, index, reason))
+        salience = sum(_LANDMARK_WEIGHTS[key] * value
+                       for key, value in parts.items()) / sum(_LANDMARK_WEIGHTS.values())
+        views = visible_by_room[index]
+        view_score = min(1.0, len({view.position for view in views}) / 4.0)
+        choice_score = float(any(view.position_kind == "choice-point"
+                                 for view in views))
+        own_district = districts[index] if index < len(districts) else -1
+        district_score = float(crosses or any(
+            view.observer_district not in (-1, own_district) for view in views))
+        observer_rooms = {view.observer_room for view in views}
+        loop_score = float(_has_loop_return(index, neighbours)
+                           and len(observer_rooms) >= 2)
+        usefulness = (0.30 * view_score + 0.20 * choice_score
+                      + 0.15 * district_score + 0.15 * loop_score
+                      + 0.20 * min(1.0, salience))
+        branch_destination = any(degree[other] >= 3 for other in neighbours[index])
+        contributions = {
+            "multi-vantage": 0.30 * view_score,
+            "choice-orienting": 0.20 * choice_score,
+            "district-identity": 0.15 * district_score,
+            "loop-reappearing": 0.15 * loop_score,
+            "structural-distinctiveness": 0.20 * min(1.0, salience),
+        }
+        purpose = max(contributions, key=lambda name: (contributions[name], name))
+        scored.append((usefulness, index, purpose, crosses, branch_destination))
 
     if not scored:
         return ()
-    # Sort by score, then by index so ties are stable rather than dict-ordered.
     scored.sort(key=lambda item: (-item[0], item[1]))
-    primary_score, primary_index, primary_reason = scored[0]
+    primary_score, primary_index, primary_reason, _, _ = scored[0]
 
     def approach_of(index: int) -> int:
-        """The neighbour a player most likely arrives from: earliest on the route."""
-        on_route = [other for other in neighbours[index] if other in route]
-        return min(on_route) if on_route else (
-            min(neighbours[index]) if neighbours[index] else -1)
+        on_route = [other for other in neighbours[index] if other in route_order]
+        return (min(on_route, key=route_order.get) if on_route else
+                min(neighbours[index]) if neighbours[index] else -1)
 
     plans = [LandmarkPlan(primary_index, "primary", primary_reason,
                           round(primary_score, 3), approach_of(primary_index))]
     claimed = {primary_index} | neighbours[primary_index]
-    for score, index, reason in scored[1:]:
+    # District transitions and destinations immediately beyond a choice are the
+    # semantic jobs of secondaries. Fill any remaining budget by usefulness.
+    secondary_order = sorted(scored[1:], key=lambda item: (
+        0 if item[3] else 1 if item[4] else 2, -item[0], item[1]))
+    for score, index, reason, transition, branch_destination in secondary_order:
         if len(plans) > _MAX_SECONDARY:
             break
         if index in claimed:
             continue
+        if transition:
+            reason = "district-transition"
+        elif branch_destination:
+            reason = "branch-destination"
         plans.append(LandmarkPlan(index, "secondary", reason, round(score, 3),
                                   approach_of(index)))
         claimed |= {index} | neighbours[index]

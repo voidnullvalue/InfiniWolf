@@ -22,6 +22,7 @@ was created to remove would reappear one layer down.
 from __future__ import annotations
 
 from collections import deque
+from dataclasses import dataclass
 from itertools import combinations
 import math
 import random
@@ -40,6 +41,66 @@ from .wl6 import (AMMO, CHAINGUN, DECOR_WALLS, DOOR_ELEVATOR, DOOR_ELEVATOR_NS,
                   PUSHWALL, SECRET_EXIT_ZONE, SECRET_HINT_BY_BASE, SILVER_KEY,
                   TREASURE, WALL, WALL_THEMES, _codes_for_colors)
 from .ledger import reserve as ledger_reserve
+
+
+_DEDUCTION_LANDMARK = 40
+_DEDUCTION_SALIENCE = {
+    "plain-wall": 0.10,
+    "single-landmark": 0.54,
+    "two-sided-incompleteness": 0.76,
+    "repeated-wall-anomaly": 0.84,
+    "symmetric-counterpart": 0.92,
+    "symmetric-landmark": 0.96,
+}
+_DEDUCTION_FALSE_POSITIVES = {
+    "plain-wall": 5,
+    "single-landmark": 2,
+    "two-sided-incompleteness": 0,
+    "repeated-wall-anomaly": 0,
+    "symmetric-counterpart": 0,
+    "symmetric-landmark": 0,
+}
+
+
+@dataclass(frozen=True, slots=True)
+class SecretDeductionDetail(SecretDetail):
+    """A secret plus the evidence-quality measurements quality can consume.
+
+    This deliberately extends, rather than changes, the shared model record:
+    progression owns the new data while other active workstreams can continue
+    treating every instance as an ordinary ``SecretDetail``.  ``replace`` in
+    the generator preserves the concrete dataclass and therefore recalculates
+    the texture-dependent salience after `_hint_secrets` realizes its grammar.
+    """
+    deduction_grammar: str = ""
+    hint_salience: float = 0.0
+    misleading_false_positives: int = 0
+    detour_cost: int = 0
+    reward_proportionality: float = 0.0
+    discovery_timing: float = 0.0
+    deducibility_score: float = 0.0
+
+    def __post_init__(self) -> None:
+        grammar = self.hint_treatment or "plain-wall"
+        salience = _DEDUCTION_SALIENCE.get(grammar, 0.45)
+        false_positives = _DEDUCTION_FALSE_POSITIVES.get(grammar, 2)
+        detour_legibility = 1.0 / (1.0 + max(0, self.detour_cost) / 3.0)
+        false_positive_score = 1.0 / (1.0 + false_positives)
+        score = (
+            0.35 * salience
+            + 0.15 * false_positive_score
+            + 0.15 * detour_legibility
+            + 0.20 * max(0.0, min(1.0, self.reward_proportionality))
+            + 0.15 * max(0.0, min(1.0, self.discovery_timing))
+        )
+        object.__setattr__(self, "deduction_grammar", grammar)
+        object.__setattr__(self, "hint_salience", round(salience, 4))
+        object.__setattr__(self, "misleading_false_positives", false_positives)
+        object.__setattr__(self, "reward_proportionality",
+                           round(max(0.0, min(1.0, self.reward_proportionality)), 4))
+        object.__setattr__(self, "discovery_timing",
+                           round(max(0.0, min(1.0, self.discovery_timing)), 4))
+        object.__setattr__(self, "deducibility_score", round(score, 4))
 
 
 def select_exit_host(tiles: list[int], rooms: list[Room], edges: list[tuple[int, int]],
@@ -380,6 +441,17 @@ def _key_spot(tiles: list[int], things: list[int], rooms: list[Room], roles: lis
     return None
 
 
+def _secret_landmark_frame(things: list[int], x: int, y: int
+                           ) -> tuple[tuple[int, int], tuple[int, int]] | None:
+    """Find the symmetric progression-owned landmark pair around a pushwall."""
+    for dx in (-1, 1):
+        for offset in (2, 1):
+            pair = ((x + dx, y - offset), (x + dx, y + offset))
+            if all(_at(things, *cell) == _DEDUCTION_LANDMARK for cell in pair):
+                return pair
+    return None
+
+
 def _hint_secrets(tiles: list[int], things: list[int],
                   component_of: dict[tuple[int, int], int],
                   group_theme: dict[int, tuple[int, tuple[int, ...]]],
@@ -387,24 +459,27 @@ def _hint_secrets(tiles: list[int], things: list[int],
                   special_pushwall: tuple[int, int] | None = None,
                   plain_walls: frozenset[tuple[int, int]] = frozenset(),
                   ) -> dict[tuple[int, int], str]:
-    """Hang a landmark decor tile (banner, portrait, insignia) on most
-    pushwalls, the way the original episodes telegraph theirs. Runs after
-    _apply_wall_theme so the theme can't repaint the hint, and prefers the
-    floor theme's own decor accents so the hint matches the material. Falls
-    back to a same-base sibling theme's accents rather than a hardcoded
-    cross-family constant, so a hint tile can never mix material families.
+    """Turn pushwalls into material-aware authored deductions.
 
-    Walls in ``plain_walls`` are deliberately left as ordinary wall material
-    with no landmark -- the inner wall of a nested double secret, so the second
-    chamber is not given away. The mandatory secret-exit ``special_pushwall``
-    is always hinted."""
+    Ordinary eligible walls realize one of two wall grammars: an accent that
+    breaks a five-panel repeated run, or an expected counterpart omitted
+    from a cadence readable while traversing either side of the host wall.  A
+    progression-owned pair of matched cages is stronger still: its symmetry
+    converges on the otherwise unimportant center wall.  Nested inner
+    walls remain plain and the secret lift keeps its established landmark.
+
+    Exactly one existing RNG draw is retained per material that has a hint, so
+    richer compositions do not perturb downstream semantic/population streams.
+    Every painted tile stays inside the wall's material family.
+    """
     treatments: dict[tuple[int, int], str] = {}
     for index, thing in enumerate(things):
         if thing != PUSHWALL:
             continue
         x, y = index % GRID, index // GRID
-        group = next((component_of[cell] for cell in ((x + 1, y), (x - 1, y),
-                                                       (x, y + 1), (x, y - 1))
+        group = next((component_of[cell]
+                      for cell in ((x + 1, y), (x - 1, y),
+                                   (x, y + 1), (x, y - 1))
                       if cell in component_of), None)
         if group is None:
             continue
@@ -417,39 +492,63 @@ def _hint_secrets(tiles: list[int], things: list[int],
         if not hints:
             hints = SECRET_HINT_BY_BASE.get(base, ())
         force_plain = (x, y) in plain_walls and (x, y) != special_pushwall
-        if hints:
-            # Always draw the hint even when the wall is deliberately left
-            # plain, so the marking choice never shifts the main rng stream
-            # that downstream population and item economy depend on.
-            hint = rng.choice(hints)
+        if not hints:
             if force_plain:
-                # An unmarked secret reads as ordinary wall, so it is found by
-                # pushing rather than by spotting a landmark.
                 tiles[index] = base
                 treatments[(x, y)] = "plain-wall"
-                continue
-            tiles[index] = hint
-            treatments[(x, y)] = ("plain-wall" if hint == base
-                                  else "single-landmark")
-            if (x, y) == special_pushwall and hint != base:
-                # A matching pair around the center hint gives the route to
-                # floor 10 a coherent landmark without borrowing another
-                # material family or spelling out "secret elevator".
-                for offset in (1, 2):
-                    pair = ((x, y - offset), (x, y + offset))
-                    family_surfaces = ({base}
-                                       | {tile for tile in accents
-                                          if tile not in DECOR_WALLS})
-                    if all(_at(tiles, *cell) in family_surfaces for cell in pair):
-                        for cell in pair:
-                            _set(tiles, *cell, hint)
-                        treatments[(x, y)] = "symmetric-landmark"
-                        break
-        elif force_plain:
-            # No landmark accent exists for this material, so the wall is
-            # already ordinary; just record it as the deliberate plain choice.
+            continue
+
+        # Preserve the old stream contract: even a deliberately plain inner
+        # wall consumes the same single selection as a marked outer wall.
+        hint = rng.choice(hints)
+        if force_plain:
             tiles[index] = base
             treatments[(x, y)] = "plain-wall"
+            continue
+
+        family_surfaces = {base, *accents}
+        composition = tuple((x, y + offset) for offset in range(-2, 3))
+        composition_fits = all(
+            1 <= cx < GRID - 1 and 1 <= cy < GRID - 1
+            and _at(tiles, cx, cy) in family_surfaces
+            and ((cx, cy) == (x, y) or _at(things, cx, cy) == 0)
+            for cx, cy in composition)
+        frame = _secret_landmark_frame(things, x, y)
+
+        tiles[index] = hint
+        treatment = "plain-wall" if hint == base else "single-landmark"
+        if (x, y) == special_pushwall and hint != base:
+            # A matching pair around the center hint gives the route to floor
+            # 10 a coherent landmark without borrowing another material family.
+            for offset in (1, 2):
+                pair = ((x, y - offset), (x, y + offset))
+                if all(_at(tiles, *cell) in family_surfaces for cell in pair):
+                    for cell in pair:
+                        _set(tiles, *cell, hint)
+                    treatment = "symmetric-landmark"
+                    break
+        elif frame is not None:
+            # The matched cages are useful even on plaster, whose only
+            # in-family hint is the base itself: their bilateral landmark
+            # points at the center.
+            treatment = "symmetric-counterpart"
+        elif composition_fits and hint != base:
+            for cell in composition:
+                _set(tiles, *cell, base)
+            if (x * 31 + y * 17) % 2:
+                # Four ordinary panels make the one altered panel intentional,
+                # not a random portrait sprinkled by decoration.
+                _set(tiles, x, y, hint)
+                treatment = "repeated-wall-anomaly"
+            else:
+                # Two matching panels establish a cadence on one half of the
+                # wall.  Its absent counterpart on the other half is legible
+                # from either lateral view as the player crosses the host room.
+                _set(tiles, x, y, hint)
+                _set(tiles, x, y - 2, hint)
+                _set(tiles, x, y + 2, base)
+                treatment = "two-sided-incompleteness"
+        treatments[(x, y)] = treatment
     return treatments
 
 
@@ -895,6 +994,107 @@ def verify_arena_terminus(tiles: list[int], rooms: list[Room], edges,
     return route
 
 
+def _secret_graph_detour(edges: list[tuple[int, int]], host_room: int,
+                         critical_route: list[int] | tuple[int, ...]) -> int:
+    """Count optional room transitions from the main route to one host."""
+    if host_room < 0:
+        return 3
+    route = set(critical_route)
+    if host_room in route:
+        return 0
+    adjacency: dict[int, set[int]] = {}
+    for first, second in edges:
+        adjacency.setdefault(first, set()).add(second)
+        adjacency.setdefault(second, set()).add(first)
+    queue = deque([(host_room, 0)])
+    seen = {host_room}
+    while queue:
+        room, distance = queue.popleft()
+        if room in route:
+            return distance
+        for neighbor in adjacency.get(room, ()):
+            if neighbor not in seen:
+                seen.add(neighbor)
+                queue.append((neighbor, distance + 1))
+    return 4
+
+
+def _install_fair_secret_frame(tiles: list[int], things: list[int], rooms: list[Room],
+                               details: list[SecretDetail], start: tuple[int, int],
+                               reserved: set[tuple[int, int]],
+                               critical_route: list[int] | tuple[int, ...]
+                               ) -> tuple[int, int] | None:
+    """Frame one optional wall with matched landmarks and keep it traversable."""
+    route = set(critical_route)
+    candidates = sorted(
+        (detail for detail in details
+         if not detail.secret_exit and 0 <= detail.host_room < len(rooms)),
+        key=lambda detail: (
+            detail.host_room not in route,
+            abs(detail.depth_ratio - 0.45),
+            detail.pushwall[1], detail.pushwall[0]))
+    baseline = _reachable(tiles, start, locked_open=True)
+    for detail in candidates:
+        room = rooms[detail.host_room]
+        px, py = detail.pushwall
+        approach_x = px - detail.push_direction
+        for offset in (2, 1):
+            pair = ((approach_x, py - offset), (approach_x, py + offset))
+            if (pair[0] == pair[1]
+                    or any(not (room.x <= x < room.x + room.w
+                                and room.y <= y < room.y + room.h)
+                           or sum(other.x <= x < other.x + other.w
+                                  and other.y <= y < other.y + other.h
+                                  for other in rooms) != 1
+                           or not _is_floor(_at(tiles, x, y))
+                           or _is_floor(_at(tiles, x + detail.push_direction, y))
+                           or _at(things, x, y) != 0 or (x, y) in reserved
+                           for x, y in pair)):
+                continue
+            # Hanging cages are solid native statics.  Commit only when
+            # removing their two cells leaves every other currently reachable
+            # tile connected.
+            opened = _reachable(tiles, start, locked_open=True, blocked=set(pair))
+            if len(opened) != len(baseline) - len(pair):
+                continue
+            for cell in pair:
+                _set(things, *cell, _DEDUCTION_LANDMARK)
+            ledger_reserve(reserved, pair, "progression",
+                           "secret-deduction-landmark")
+            return detail.pushwall
+    return None
+
+
+def _score_secret_deductions(details: list[SecretDetail],
+                             edges: list[tuple[int, int]],
+                             critical_route: list[int] | tuple[int, ...],
+                             reward_quality: int,
+                             framed_pushwall: tuple[int, int] | None
+                             ) -> list[SecretDeductionDetail]:
+    """Attach the five requested evidence-quality measures to every secret."""
+    scored: list[SecretDeductionDetail] = []
+    for detail in details:
+        detour = _secret_graph_detour(edges, detail.host_room, critical_route)
+        timing = max(0.0, 1.0 - abs(detail.depth_ratio - 0.45) / 0.65)
+        reward_value = detail.reward_count * (0.68 + 0.08 * reward_quality)
+        proportionality = min(1.0, reward_value / (3.0 + 0.35 * detour))
+        if detail.secret_exit:
+            treatment = "symmetric-landmark"
+        elif detail.pushwall == framed_pushwall:
+            treatment = "symmetric-counterpart"
+        elif (detail.pushwall[0] * 31 + detail.pushwall[1] * 17) % 2:
+            treatment = "repeated-wall-anomaly"
+        else:
+            treatment = "two-sided-incompleteness"
+        scored.append(SecretDeductionDetail(
+            detail.shape, detail.reward_count, detail.host_room,
+            detail.depth_ratio, detail.pushwall, detail.secret_exit,
+            treatment, detail.return_floor, detail.push_direction,
+            detour_cost=detour,
+            reward_proportionality=proportionality,
+            discovery_timing=timing))
+    return scored
+
 def install_secrets(canvas: FloorCanvas, config: CampaignConfig, number: int,
                     rng: random.Random, *, arrival, exit_room: Room | None,
                     anchor_index: int, critical_route, rare_profile,
@@ -1094,6 +1294,18 @@ def install_secrets(canvas: FloorCanvas, config: CampaignConfig, number: int,
                 fallback_push, False))
         else:
             break
+    framed_pushwall = None
+    if int(config.secrets) >= 4:
+        framed_pushwall = _install_fair_secret_frame(
+            tiles, things, rooms, secret_details, start, reserved, critical_route)
+        if framed_pushwall is None:
+            raise ValueError("secret-rich floor has no fair landmark frame")
+    secret_details = _score_secret_deductions(
+        secret_details, canvas.edges, critical_route,
+        int(config.secret_reward_quality), framed_pushwall)
+    if (int(config.secrets) >= 4 and secret_details
+            and max(detail.deducibility_score for detail in secret_details) < 0.65):
+        raise ValueError("secret-rich floor has no fairly deducible secret")
     return SecretInstallation(
         rewards=tuple(rewards), variants=tuple(secret_variants),
         details=tuple(secret_details),

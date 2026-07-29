@@ -343,6 +343,227 @@ def _place_planned_rooms(rng: random.Random, plan: FloorPlan, number: int = 0) -
                         for other in rooms)
             for cells in elevator_envelopes(room))
 
+    def sector_first_pack() -> PlacedPlan | None:
+        """Pack complete districts from preallocated cores before room growth.
+
+        Rooms prefer their district core and may overflow only from an already
+        placed local face.  This is a soft first choice: if a whole district
+        program cannot fit, the established spine placer runs with the unchanged
+        RNG state.
+        """
+        if (number in (9, 10) or hallway_first
+                or plan.skeleton == "perimeter-loop"
+                or plan.progression_grammar == "bounded-perimeter"):
+            return None
+        sector_sizes = list(sizes)
+        district_ids = sorted({spec.district for spec in plan.specs})
+        # A three-district plan needs a 2+1 macro layout whose diagonal
+        # transitions made the critical route shallower and increased rejected
+        # attempts in measurement.  Preserve the spine placer for that shape;
+        # two sequential half-map sectors improve packing without that conflict.
+        if len(district_ids) != 2:
+            return None
+
+        # Preallocate disjoint cores for the two sequential districts.  A
+        # crowded core may grow outward only through local room faces below.
+        left, right = (3, 3, 31, 60), (33, 3, 60, 60)
+        arrival_half, far_half = ((left, right) if heading[0] > 0
+                                  else (right, left))
+        sector_by_district = dict(zip(
+            district_ids, (arrival_half, far_half)))
+
+        anchor_box = sector_by_district[plan.specs[anchor_spec_index].district]
+        sector_anchor_candidates = [
+            candidate for *_, candidate in anchor_candidates
+            if (anchor_box[0] <= candidate.x
+                and anchor_box[1] <= candidate.y
+                and candidate.x + candidate.w <= anchor_box[2]
+                and candidate.y + candidate.h <= anchor_box[3])]
+        if not sector_anchor_candidates:
+            return None
+        sector_anchor = min(sector_anchor_candidates, key=lambda candidate: (
+            abs(candidate.center[0] - (anchor_box[0] + anchor_box[2]) // 2)
+            + abs(candidate.center[1] - (anchor_box[1] + anchor_box[3]) // 2),
+            candidate.y, candidate.x))
+
+        # SetPiecePlan.required_edges is the request-side vignette contract.
+        # Prefer a two/three-rock local adjacency, but never make it a floor
+        # contract: if the sector attempt fails, ordinary placement still runs.
+        requested_neighbors: dict[int, set[int]] = {}
+        for set_piece in plan.set_pieces:
+            for first, second in set_piece.required_edges:
+                requested_neighbors.setdefault(first, set()).add(second)
+                requested_neighbors.setdefault(second, set()).add(first)
+        graph_neighbors = {index: set() for index in range(len(plan.specs))}
+        for first, second in plan.edges:
+            graph_neighbors[first].add(second)
+            graph_neighbors[second].add(first)
+
+        sector_rooms = [start]
+        sector_room_by_spec = {0: start}
+        sector_protected = set(protected_elevator_rock)
+
+        def in_box(room: Room, box: tuple[int, int, int, int]) -> bool:
+            x0, y0, x1, y1 = box
+            return (x0 <= room.x and y0 <= room.y
+                    and room.x + room.w <= x1
+                    and room.y + room.h <= y1)
+
+        def clear(room: Room, *, anchor: bool = False) -> bool:
+            return (3 <= room.x and 3 <= room.y
+                    and room.x + room.w < 61 and room.y + room.h < 61
+                    and not any((x, y) in sector_protected
+                                for y in range(room.y, room.y + room.h)
+                                for x in range(room.x, room.x + room.w))
+                    and not any(_overlaps(room, other)
+                                for other in sector_rooms)
+                    and (anchor or not _overlaps(room, sector_anchor)))
+
+        def local(first: Room, second: Room) -> bool:
+            x_gap = max(first.x, second.x) - min(
+                first.x + first.w, second.x + second.w)
+            y_gap = max(first.y, second.y) - min(
+                first.y + first.h, second.y + second.h)
+            return ((2 <= x_gap <= 3 and y_gap <= -3)
+                    or (2 <= y_gap <= 3 and x_gap <= -3))
+
+        def exit_clear(room: Room) -> bool:
+            return any(
+                not (cells & sector_protected)
+                and not any(any(_inside_room([other], *cell)
+                                for cell in cells)
+                            for other in sector_rooms)
+                for cells in elevator_envelopes(room))
+
+        def reserve_lift_shell(index: int, room: Room) -> bool:
+            deep = (index < spine_count and index >= spine_count - 3
+                    and plan.specs[index].tier not in {"closet", "corridor"})
+            if plan.specs[index].role != "exit" and not deep:
+                return True
+            envelopes = [
+                cells for cells in elevator_envelopes(room)
+                if not (cells & sector_protected)
+                and not any(any(_inside_room([other], *cell) for cell in cells)
+                            for other in sector_rooms if other is not room)]
+            if not envelopes:
+                return plan.specs[index].role != "exit"
+            parent = sector_room_by_spec.get(parents.get(index, 0), start)
+            away = 1 if room.center[0] >= parent.center[0] else -1
+            chosen = max(envelopes, key=lambda cells: (
+                max(x for x, _ in cells) if away > 0
+                else -min(x for x, _ in cells)))
+            sector_protected.update(chosen)
+            return True
+
+        for district in district_ids:
+            box = sector_by_district[district]
+            pending = {index for index, spec in enumerate(plan.specs)
+                       if spec.district == district and index}
+            while pending:
+                # Place the anchor and large mandatory masses early.  A request
+                # partner jumps the queue as soon as its first endpoint exists.
+                index = min(pending, key=lambda candidate: (
+                    candidate != anchor_spec_index,
+                    0 if (requested_neighbors.get(candidate, set())
+                          & sector_room_by_spec.keys()) else 1,
+                    0 if candidate < spine_count else 1,
+                    -(sector_sizes[candidate][0]
+                      * sector_sizes[candidate][1]),
+                    candidate))
+                spec = plan.specs[index]
+                room: Room | None = None
+                if index == anchor_spec_index:
+                    if clear(sector_anchor, anchor=True):
+                        room = sector_anchor
+                else:
+                    variants = [sector_sizes[index]]
+                    if (spec.tier in {"corridor", "hall"}
+                            and sector_sizes[index][0] != sector_sizes[index][1]):
+                        variants.append(sector_sizes[index][::-1])
+                    existing = [sector_room_by_spec[other]
+                                for other, other_spec in enumerate(plan.specs)
+                                if (other in sector_room_by_spec
+                                    and other_spec.district == district)]
+                    requested = [sector_room_by_spec[other]
+                                 for other in requested_neighbors.get(index, ())
+                                 if other in sector_room_by_spec]
+                    connected = [sector_room_by_spec[other]
+                                 for other in graph_neighbors[index]
+                                 if other in sector_room_by_spec]
+                    candidates = []
+                    for variant_rank, (rw, rh) in enumerate(variants):
+                        x0, y0, x1, y1 = box
+                        positions: set[tuple[int, int]] = set()
+                        hosts = existing or connected
+                        for host in hosts:
+                            for gap in (2, 3):
+                                for y in range(host.y - rh + 3,
+                                               host.y + host.h - 2):
+                                    positions.add((host.x + host.w + gap, y))
+                                    positions.add((host.x - rw - gap, y))
+                                for x in range(host.x - rw + 3,
+                                               host.x + host.w - 2):
+                                    positions.add((x, host.y + host.h + gap))
+                                    positions.add((x, host.y - rh - gap))
+                        if not positions:
+                            positions.update(
+                                (x, y)
+                                for y in range(y0, y1 - rh + 1)
+                                for x in range(x0, x1 - rw + 1))
+                        for x, y in sorted(
+                                positions, key=lambda cell: (cell[1], cell[0])):
+                            candidate = Room(x, y, rw, rh)
+                            if (not clear(candidate)
+                                    or (spec.role == "exit"
+                                        and not exit_clear(candidate))):
+                                continue
+                            group = existing + [candidate]
+                            min_x = min(item.x for item in group)
+                            min_y = min(item.y for item in group)
+                            max_x = max(item.x + item.w for item in group)
+                            max_y = max(item.y + item.h for item in group)
+                            request_misses = sum(
+                                not local(candidate, other)
+                                for other in requested)
+                            graph_misses = sum(
+                                not local(candidate, other)
+                                for other in connected)
+                            candidates.append((
+                                request_misses,
+                                0 if in_box(candidate, box) else 1,
+                                graph_misses,
+                                (max_x - min_x) * (max_y - min_y),
+                                (max_x - min_x) + (max_y - min_y),
+                                abs(candidate.center[0] - (x0 + x1) // 2)
+                                + abs(candidate.center[1] - (y0 + y1) // 2),
+                                variant_rank, y, x, candidate))
+                    if candidates:
+                        *_, room = min(
+                            candidates, key=lambda candidate: candidate[:-1])
+                if room is None:
+                    return None
+                sector_sizes[index] = room.w, room.h
+                sector_rooms.append(room)
+                sector_room_by_spec[index] = room
+                pending.remove(index)
+                if not reserve_lift_shell(index, room):
+                    return None
+
+        if len(sector_room_by_spec) != len(plan.specs):
+            return None
+        spec_indices = sorted(sector_room_by_spec)
+        remap = {spec_index: room_index
+                 for room_index, spec_index in enumerate(spec_indices)}
+        return PlacedPlan(
+            [sector_room_by_spec[index] for index in spec_indices],
+            spec_indices,
+            [(remap[first], remap[second]) for first, second in plan.edges],
+            [(remap[first], remap[second]) for first, second in plan.loop_edges])
+
+    packed = sector_first_pack()
+    if packed is not None:
+        return packed
+
     # Three deep rooms, not every room past the anchor: reserving a lift shell
     # for all of them starves the floor of rock, and measurement showed the
     # largest room collapsing from 0.23 of the floor to 0.14 while the failure
@@ -1409,6 +1630,85 @@ def _carve_connection(tiles: list[int], a: Room, b: Room,
         route.reverse()
         return route
 
+    def simple_route(start: tuple[int, int], goal: tuple[int, int],
+                     start_heading: tuple[int, int],
+                     goal_heading: tuple[int, int]) -> list[tuple[int, int]] | None:
+        """Return a clear straight or single-elbow route, if one exists.
+
+        Portal ranking can only estimate bends from the two thresholds. The
+        first highly ranked pair may then make Dijkstra thread around an
+        obstacle even though a slightly less centered pair has a clean
+        architectural elbow. Probe every ranked pair for that cheap case
+        before accepting any multi-bend search result.
+        """
+        if start_heading == goal_heading:
+            delta = goal[0] - start[0], goal[1] - start[1]
+            if (delta[0] * start_heading[1]
+                    or delta[1] * start_heading[0]
+                    or delta[0] * start_heading[0] + delta[1] * start_heading[1] < 0):
+                return None
+            corner = goal
+        elif start_heading[0] == -goal_heading[0] and start_heading[1] == -goal_heading[1]:
+            return None
+        else:
+            corner = ((goal[0], start[1]) if start_heading[0]
+                      else (start[0], goal[1]))
+            first = corner[0] - start[0], corner[1] - start[1]
+            second = goal[0] - corner[0], goal[1] - corner[1]
+            if (first[0] * start_heading[0] + first[1] * start_heading[1] < 0
+                    or second[0] * goal_heading[0] + second[1] * goal_heading[1] < 0):
+                return None
+
+        route = [start]
+        cell = start
+        for heading, endpoint in ((start_heading, corner), (goal_heading, goal)):
+            while cell != endpoint:
+                cell = cell[0] + heading[0], cell[1] + heading[1]
+                route.append(cell)
+
+        for nx, ny in route[1:]:
+            if not (2 <= nx < GRID - 2 and 2 <= ny < GRID - 2):
+                return None
+            base = ny * GRID + nx
+            if base in protected_cells or tiles[base] != WALL:
+                return None
+            if (nx, ny) != goal and (
+                    _FLOOR_OR_DOOR[tiles[base - GRID]]
+                    or _FLOOR_OR_DOOR[tiles[base + GRID]]
+                    or _FLOOR_OR_DOOR[tiles[base - 1]]
+                    or _FLOOR_OR_DOOR[tiles[base + 1]]):
+                return None
+        return route
+
+    def loop_erased(path: list[tuple[int, int]]) -> list[tuple[int, int]]:
+        """Collapse repeated-cell switchbacks in the recorded connector walk."""
+        simple: list[tuple[int, int]] = []
+        positions: dict[tuple[int, int], int] = {}
+        for cell in path:
+            previous = positions.get(cell)
+            if previous is not None:
+                for removed in simple[previous + 1:]:
+                    positions.pop(removed)
+                del simple[previous + 1:]
+                continue
+            positions[cell] = len(simple)
+            simple.append(cell)
+        return simple
+
+    # A clear zero/one-bend route is both cheaper to recognize and better
+    # architecture than accepting a switchback from the first viable portal
+    # pair. Keep the same shuffled/ranked candidate order and consume no RNG.
+    for (outer_a, start, _, direction_a), (outer_b, goal, _, direction_b) in pairs[:64]:
+        route = simple_route(start, goal, direction_a,
+                             (-direction_b[0], -direction_b[1]))
+        if route is None:
+            continue
+        path = loop_erased([outer_a] + route + [outer_b])
+        for x, y in path:
+            _set(tiles, x, y, FLOOR)
+        avoid.update((outer_a, outer_b))
+        return path
+
     # Cheap clean thresholds are common. Try the best centered/bend-minimal
     # authored portals, then use the seam-safe relaxed router below. Exhausting
     # hundreds of nearly equivalent portal pairs makes dense floor-10 plans
@@ -1420,7 +1720,7 @@ def _carve_connection(tiles: list[int], a: Room, b: Room,
         direct = abs(start[0] - goal[0]) + abs(start[1] - goal[1])
         if len(route) > math.ceil(direct * 1.6) + 6:
             continue
-        path = [outer_a] + route + [outer_b]
+        path = loop_erased([outer_a] + route + [outer_b])
         for x, y in path:
             _set(tiles, x, y, FLOOR)
         avoid.update((outer_a, outer_b))
@@ -1457,18 +1757,42 @@ def _carve_connection(tiles: list[int], a: Room, b: Room,
 
     def threshold_route(start: tuple[int, int],
                         source_side: tuple[int, int]) -> list[tuple[int, int]] | None:
-        previous: dict[tuple[int, int], tuple[int, int] | None] = {start: None}
-        queue = deque([start])
+        outward = -source_side[0], -source_side[1]
+        start_state = start, outward
+        previous: dict[
+            tuple[tuple[int, int], tuple[int, int]],
+            tuple[tuple[int, int], tuple[int, int]] | None,
+        ] = {start_state: None}
+        dist = {start_state: 0}
+        goals: dict[tuple[tuple[int, int], tuple[int, int]], tuple[int, int]] = {}
+        queue = [(0, 0, start_state)]
+        sequence = 1
         while queue:
-            x, y = queue.popleft()
+            cost, _, state = heapq.heappop(queue)
+            if cost != dist[state]:
+                continue
+            if state in goals:
+                route = []
+                cursor: tuple[tuple[int, int], tuple[int, int]] | None = state
+                while cursor is not None:
+                    route.append(cursor[0])
+                    cursor = previous[cursor]
+                route.reverse()
+                for cell in route[:-1]:
+                    _set(tiles, *cell, FLOOR)
+                nxt = state[0]
+                target = goals[state]
+                _set(tiles, *nxt, DOOR_EW if target[0] else DOOR_NS)
+                avoid.add(nxt)
+                return route[1:]
+            (x, y), heading = state
             for dx, dy in directions:
-                if (x, y) == start and (dx, dy) != (-source_side[0],
-                                                        -source_side[1]):
+                if (x, y) == start and (dx, dy) != outward:
                     continue
                 nxt = x + dx, y + dy
-                if (nxt in previous or nxt in protected
+                if (nxt in protected
                         or not (2 <= nxt[0] < GRID - 2
-                                             and 2 <= nxt[1] < GRID - 2)
+                                and 2 <= nxt[1] < GRID - 2)
                         or _at(tiles, *nxt) != WALL):
                     continue
                 contacts = [(sx, sy) for sx, sy in directions
@@ -1486,21 +1810,24 @@ def _carve_connection(tiles: list[int], a: Room, b: Room,
                         continue
                     jambs = ((nxt[0] - target[0][1], nxt[1] - target[0][0]),
                              (nxt[0] + target[0][1], nxt[1] + target[0][0]))
-                    if any(cell in previous or _at(tiles, *cell) != WALL
+                    cursor = state
+                    route_cells = set()
+                    while cursor is not None:
+                        route_cells.add(cursor[0])
+                        cursor = previous[cursor]
+                    if any(cell in route_cells or _at(tiles, *cell) != WALL
                            for cell in jambs):
                         continue
-                    previous[nxt] = (x, y)
-                    route = []
-                    cell: tuple[int, int] | None = nxt
-                    while cell is not None:
-                        route.append(cell); cell = previous[cell]
-                    route.reverse()
-                    for cell in route[:-1]:
-                        _set(tiles, *cell, FLOOR)
-                    _set(tiles, *nxt, DOOR_EW if target[0][0] else DOOR_NS)
-                    avoid.add(nxt)
-                    return route[1:]
-                previous[nxt] = (x, y); queue.append(nxt)
+                next_state = nxt, (dx, dy)
+                next_cost = cost + 1 + (turn_penalty if (dx, dy) != heading else 0)
+                if next_cost >= dist.get(next_state, math.inf):
+                    continue
+                dist[next_state] = next_cost
+                previous[next_state] = state
+                if target:
+                    goals[next_state] = target[0]
+                heapq.heappush(queue, (next_cost, sequence, next_state))
+                sequence += 1
         return None
 
     # A relaxed route joins the intended room from the whole source component;
