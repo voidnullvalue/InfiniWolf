@@ -34,6 +34,12 @@ def test_named_roles_resolve_through_realized_plan_indices():
 
 
 def test_light_contract_overrides_a_high_pacing_room():
+    """A memorial beside a war-room is thinned to the "light" band, not emptied.
+
+    quality._intensity_class reserves zero actors for "calm" and calls 1-2
+    "light", so the contract clamps the pacing-derived budget to one actor
+    rather than deleting the room's population outright.
+    """
     rooms, tiles = _open_rooms()
     things = [0] * len(tiles)
     identities = [
@@ -49,7 +55,8 @@ def test_light_contract_overrides_a_high_pacing_room():
         identities=identities, critical_route=(0, 1, 2),
         encounter_out=encounters)
 
-    assert not [item for item in encounters if item.room_index == 1]
+    owned = [item for item in encounters if item.room_index == 1]
+    assert sum(len(item.cells) for item in owned) == 1
 
 
 def test_patrolled_contract_forces_a_route_when_patrol_target_is_zero():

@@ -670,9 +670,14 @@ def _place_population(config: CampaignConfig, number: int, rooms: list[Room],
             budget = 0
         elif room == boss_room:
             budget = 0 if rng.random() < 0.55 else min(2, budget)
+        # "light" thins a room, it does not empty it. quality's own vocabulary
+        # reserves zero actors for "calm" and calls 1-2 "light", and emptying
+        # these rooms outright deletes a tenth of a floor's population -- the
+        # survivors then have to fit the remaining rooms, which is what drove
+        # the neighbour-adjacency huddle rather than any patrol over-planning.
         elif (contract_intents.get(ridx) == "light"
               and ridx not in recess_by_room and ridx not in key_hosts):
-            budget = 0
+            budget = min(budget, 1)
         elif contract_intents.get(ridx) in {
                 "guarded", "ambush", "patrolled", "objective"}:
             budget = max(1, budget)

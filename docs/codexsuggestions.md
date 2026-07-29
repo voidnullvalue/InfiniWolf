@@ -1,14 +1,14 @@
 # Roadmap: Human-Quality InfiniWolf Maps
 
-> **Status as of 2.1.0.** A live roadmap. Every one of the twelve recommendations has
-> now been attempted; ten are implemented, two remain partial, and the two honest misses
-> are named below rather than rounded up.
+> **Status as of 2.1.1.** A live roadmap. Every one of the twelve recommendations has
+> now been attempted; eleven are implemented, one remains partial, and the honest miss
+> is named below rather than rounded up.
 >
 > | # | Recommendation | Status |
 > |---|----------------|--------|
 > | 1 | Whole-map `QualityReport` | **Done** |
 > | 2 | Corpus analysis beyond decoration | **Done** |
-> | 3 | Concept-first planner | **Partial** — programs ship; contracts have no consumer yet |
+> | 3 | Concept-first planner | **Done** — programs ship; all four contracts have consumers, 99.4% of encounter intents honoured |
 > | 4 | Vignettes before geometry | **Done** — 81.9% of adjacency requests honoured, rest fail soft |
 > | 5 | Spatial scale and hierarchy | **Partial** — see the miss below |
 > | 6 | Staged beam search | **Done** — campaigns 19.6% faster |
@@ -19,7 +19,7 @@
 > | 11 | Secrets as authored deductions | **Done** |
 > | 12 | Room-sequence composition | **Done** |
 >
-> **The two misses, stated plainly.**
+> **The remaining miss, stated plainly.**
 >
 > *Item 5's large-space tail.* `biggest_room_share` p90 sits at 0.31 against id's 0.42.
 > The rooms are already PLANNED large enough -- summed drawn sizes reach ~1638 walkable
@@ -28,9 +28,14 @@
 > failure rate to 26.5%, so only a bounded subset shipped. Three-district, hallway-first,
 > perimeter-loop and bounded-perimeter layouts still use the greedy spine placer.
 >
-> *Item 3's contracts.* `visibility_contracts`, `encounter_contract`, `reward_contract`
-> and `landmark_contract` were deliberately omitted rather than stubbed, because nothing
-> downstream can consume them yet.
+> *Item 3's contracts, now closed.* All four contracts have consumers as of 2.1.0:
+> encounters 99.4% honoured, rewards 89.8%, landmarks 32.6%, visibility 16.2%. The last
+> two are low because geometry may refuse the request, which is the intended advisory
+> degradation rather than a failure. One correction landed in 2.1.1: the `"light"` intent
+> zeroed a room's actor budget, which is `quality`'s definition of **calm**, not light.
+> Emptying those rooms deleted about a tenth of a floor's population and pushed the
+> survivors into the remaining rooms -- measured as a neighbour-adjacency rise from 0.546
+> to 0.622. It now clamps to one actor, the bottom of the light band.
 >
 > **The correction this document could not have known.** Its area figures come from a
 > corpus of 227 fan maps and conclude generated floors carry ~30% less usable space.
@@ -177,14 +182,20 @@ Mine the 207-map corpus for:
 
 The existing corpus work demonstrates that empirical analysis is effective. Apply the same discipline to layout and gameplay that was applied to props.
 
-## 3. Make the planner concept-first rather than graph-first — **PARTIAL (2.1.0)**
+## 3. Make the planner concept-first rather than graph-first — **DONE (2.1.1)**
 
 > `SetPiecePlan` exists and `planning.py` reserves one primary 3–5 room program plus one or
 > two secondaries before any filler, so a floor now reads as
 > `processing-desk → guardroom → cell-block`. The `visibility_contracts`,
-> `encounter_contract`, `reward_contract` and `landmark_contract` fields proposed below were
-> deliberately **omitted** rather than stubbed: nothing downstream can consume them until
-> geometry integration lands.
+> `encounter_contract`, `reward_contract` and `landmark_contract` fields proposed below all
+> have consumers: encounters 99.4% honoured, rewards 89.8%, landmarks 32.6%, visibility
+> 16.2%. Every contract is advisory -- the owning pass may refuse and the program degrades
+> to ordinary rooms rather than failing -- so the low rates are geometry declining a
+> request, not a broken handshake.
+>
+> The one intent that needed correcting was `"light"`, which zeroed a room's actor budget.
+> `quality._intensity_class` reserves zero for **calm** and calls 1–2 **light**, so the
+> contract was overshooting its own vocabulary; it now clamps to one actor. See 2.1.1.
 
 The current planner creates a progression spine, corridor nodes, generic motifs, and filler branches. Filler rooms are attached until the room target is reached, usually as a closet, standard room, or hall.
 
