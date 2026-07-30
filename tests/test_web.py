@@ -46,8 +46,9 @@ class BrowserAdapterTests(unittest.TestCase):
         self.assertIn("build", result)
         self.assertIn("commit", result)
 
+    @patch("infiniwolf.web.zipfile.is_zipfile", return_value=False)
     @patch("infiniwolf.web.verify_path")
-    def test_checker_reuses_existing_verifier(self, verify_path):
+    def test_checker_keeps_floor_for_standalone_wad(self, verify_path, _is_zipfile):
         verification = Mock()
         verification.to_json.return_value = '{"verdict": "verified"}'
         verify_path.return_value = verification
@@ -55,6 +56,18 @@ class BrowserAdapterTests(unittest.TestCase):
         result = check_for_web("/tmp/map.wad", 7)
 
         verify_path.assert_called_once_with(Path("/tmp/map.wad"), 7)
+        self.assertEqual(json.loads(result)["verdict"], "verified")
+
+    @patch("infiniwolf.web.zipfile.is_zipfile", return_value=True)
+    @patch("infiniwolf.web.verify_path")
+    def test_checker_ignores_floor_for_pk3(self, verify_path, _is_zipfile):
+        verification = Mock()
+        verification.to_json.return_value = '{"verdict": "verified"}'
+        verify_path.return_value = verification
+
+        result = check_for_web("/tmp/campaign.pk3", 7)
+
+        verify_path.assert_called_once_with(Path("/tmp/campaign.pk3"), None)
         self.assertEqual(json.loads(result)["verdict"], "verified")
 
 
