@@ -10,6 +10,7 @@ from collections.abc import Callable, Mapping
 import json
 from pathlib import Path
 from typing import Any
+import zipfile
 
 from .build_info import COMMIT as BUILD_COMMIT, build_label
 from .config import CampaignConfig, GenerationQuality, Intensity, ThemeBias
@@ -85,4 +86,6 @@ def generate_for_web(
 
 def check_for_web(path: str | Path, floor: int | None = None) -> str:
     """Run the existing PK3/WAD provenance checker and return its JSON result."""
-    return verify_path(Path(path), floor).to_json()
+    check_path = Path(path)
+    effective_floor = None if zipfile.is_zipfile(check_path) else floor
+    return verify_path(check_path, effective_floor).to_json()
