@@ -2,8 +2,7 @@
 
 This is the end-to-end control flow for InfiniWolf itself. It covers seeded
 campaign planning, floor generation, validation, candidate selection, and the
-final campaign file. It deliberately does not describe CI/CD, GitHub releases,
-or platform distribution packaging.
+final campaign file. 
 
 The central rule is that randomness chooses between bounded, purposeful options.
 That balance keeps seeds surprising while preserving readable spaces, fair
