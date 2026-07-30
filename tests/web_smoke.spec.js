@@ -20,13 +20,15 @@ test("loads the current wheel and runs the map checker in Pyodide", async ({ pag
 
   await page.locator("#check-floor").fill("7");
   await page.locator("#check-file").setInputFiles({
-    name: "broken.pk3",
+    name: "other.pk3",
     mimeType: "application/zip",
     buffer: Buffer.from("UEsFBgAAAAAAAAAAAAAAAAAAAAAAAA==", "base64"),
   });
   await page.locator("#check-button").click();
 
   const checkerStatus = page.locator("#checker-status");
-  await expect(checkerStatus).toContainText("maps/iw01.wad", { timeout: 30_000 });
+  await expect(checkerStatus).toContainText("not-infiniwolf", { timeout: 30_000 });
+  await expect(checkerStatus).not.toContainText("Traceback");
+  await expect(checkerStatus).not.toContainText("KeyError");
   await expect(checkerStatus).not.toContainText("--floor is only used with a standalone WAD");
 });
