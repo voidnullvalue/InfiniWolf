@@ -11,6 +11,7 @@ on:
       - "infiniwolf/**"
       - "pyproject.toml"
       - "tests/test_web.py"
+      - "tests/web_smoke.spec.js"
       - "web/**"
   workflow_dispatch: {}
 
@@ -32,6 +33,11 @@ jobs:
         uses: actions/setup-python@v6
         with:
           python-version: "3.11"
+
+      - name: Set up Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: "24"
 
       - name: Install build tooling
         run: python -m pip install --upgrade build
@@ -82,6 +88,26 @@ jobs:
         run: |
           python -m pip install --force-reinstall dist/*.whl
           python -c 'from infiniwolf.web import campaign_config, check_for_web, generate_for_web; print(campaign_config({"seed": 1}).seed)'
+
+      - name: Install Chromium smoke-test tooling
+        run: |
+          npm install --no-save @playwright/test
+          npx playwright install --with-deps chromium
+
+      - name: Smoke-test Pyodide site
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m http.server 8000 --directory site >/tmp/infiniwolf-pages.log 2>&1 &
+          server_pid=$!
+          trap 'kill "$server_pid"' EXIT
+          for attempt in {1..40}; do
+            if curl --fail --silent http://127.0.0.1:8000/ >/dev/null; then
+              break
+            fi
+            sleep 0.25
+          done
+          npx playwright test tests/web_smoke.spec.js --reporter=line --workers=1
 
       - name: Configure GitHub Pages
         if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
