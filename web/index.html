@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Generate InfiniWolf campaigns and verify InfiniWolf map provenance entirely in your browser.">
+  <title>InfiniWolf Browser Generator</title>
+  <link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+  <header class="site-header">
+    <img class="logo" src="./assets/infiniwolf-logo.png" alt="InfiniWolf">
+    <div>
+      <h1>Browser Generator</h1>
+      <p>Generate ECWolf campaigns and inspect InfiniWolf provenance locally in your browser.</p>
+      <p id="build-label" class="build-label">Loading current main build…</p>
+    </div>
+  </header>
+
+  <main>
+    <section class="card" aria-labelledby="generator-title">
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow">Campaign generator</p>
+          <h2 id="generator-title">Generate a ten-floor PK3</h2>
+        </div>
+        <span class="privacy-chip">No uploads</span>
+      </div>
+
+      <form id="generator-form">
+        <div class="field-grid compact-grid">
+          <label>
+            Seed
+            <input id="seed" name="seed" type="text" autocomplete="off" placeholder="Blank uses fresh entropy">
+          </label>
+          <label>
+            Generation quality
+            <select id="generation-quality" name="generation_quality">
+              <option value="fast">Fast</option>
+              <option value="balanced">Balanced</option>
+              <option value="thorough" selected>Thorough</option>
+            </select>
+          </label>
+          <label>
+            Theme bias
+            <select id="theme-bias" name="theme_bias">
+              <option value="mixed" selected>Mixed</option>
+              <option value="garrison">Garrison</option>
+              <option value="catacombs">Catacombs</option>
+              <option value="grand-halls">Grand halls</option>
+              <option value="storehouse">Storehouse</option>
+              <option value="quarters">Quarters</option>
+            </select>
+          </label>
+        </div>
+
+        <details>
+          <summary>Campaign controls</summary>
+          <div id="intensity-controls" class="slider-grid"></div>
+        </details>
+
+        <div class="actions">
+          <button id="generate-button" type="submit">Generate PK3</button>
+          <button id="cancel-button" type="button" class="secondary" disabled>Cancel</button>
+        </div>
+      </form>
+
+      <div class="operation-status" aria-live="polite">
+        <progress id="generation-progress" max="10" value="0"></progress>
+        <p id="generation-status">The Python runtime is loading in a background worker.</p>
+      </div>
+    </section>
+
+    <section class="card" aria-labelledby="checker-title">
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow">Map checker</p>
+          <h2 id="checker-title">Check a campaign or standalone map</h2>
+        </div>
+        <span class="privacy-chip">Runs locally</span>
+      </div>
+
+      <form id="checker-form">
+        <div class="field-grid checker-grid">
+          <label>
+            PK3 or WAD
+            <input id="check-file" type="file" accept=".pk3,.wad,application/zip">
+          </label>
+          <label>
+            Standalone floor
+            <input id="check-floor" type="number" min="1" max="10" placeholder="Optional">
+            <small>Only needed when a standalone WAD does not identify its IW01–IW10 floor.</small>
+          </label>
+        </div>
+        <div class="actions">
+          <button id="check-button" type="submit">Check provenance</button>
+        </div>
+      </form>
+
+      <p id="checker-status" class="operation-status" aria-live="polite">Choose a generated PK3 or WAD.</p>
+      <pre id="checker-result" hidden></pre>
+    </section>
+
+    <section class="notice">
+      <h2>What this page does not include</h2>
+      <p>The generated PK3 contains maps and metadata only. You still need a legally owned registered Wolfenstein 3D data set and ECWolf to play it.</p>
+    </section>
+  </main>
+
+  <footer>
+    <p>Generation and checking happen entirely inside this tab through Pyodide. Closing or reloading the page discards the in-memory runtime.</p>
+  </footer>
+
+  <script type="module" src="./app.js"></script>
+</body>
+</html>
