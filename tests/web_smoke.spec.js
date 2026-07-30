@@ -17,4 +17,16 @@ test("loads the current wheel and runs the map checker in Pyodide", async ({ pag
   await expect(page.locator("#checker-status")).toContainText("not a WDC PWAD", {
     timeout: 30_000,
   });
+
+  await page.locator("#check-floor").fill("7");
+  await page.locator("#check-file").setInputFiles({
+    name: "broken.pk3",
+    mimeType: "application/zip",
+    buffer: Buffer.from("UEsFBgAAAAAAAAAAAAAAAAAAAAAAAA==", "base64"),
+  });
+  await page.locator("#check-button").click();
+
+  const checkerStatus = page.locator("#checker-status");
+  await expect(checkerStatus).toContainText("maps/iw01.wad", { timeout: 30_000 });
+  await expect(checkerStatus).not.toContainText("--floor is only used with a standalone WAD");
 });
