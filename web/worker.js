@@ -75,11 +75,13 @@ generate_for_web(web_settings_json, "${GENERATED_PATH}", web_progress_callback)
 }
 
 async function check(pyodide, name, floor, buffer) {
-  const suffix = name.toLowerCase().endsWith(".wad") ? ".wad" : ".pk3";
+  const isStandaloneWad = name.toLowerCase().endsWith(".wad");
+  const suffix = isStandaloneWad ? ".wad" : ".pk3";
+  const effectiveFloor = isStandaloneWad ? floor : null;
   const path = `/tmp/infiniwolf-upload${suffix}`;
   pyodide.FS.writeFile(path, new Uint8Array(buffer));
   pyodide.globals.set("web_check_path", path);
-  pyodide.globals.set("web_check_floor", floor);
+  pyodide.globals.set("web_check_floor", effectiveFloor);
   try {
     const resultJson = await pyodide.runPythonAsync(`
 from infiniwolf.web import check_for_web
