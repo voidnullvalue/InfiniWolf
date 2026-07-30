@@ -25,6 +25,10 @@ MODULUS = 43
 SECONDARY_MODULUS = 17
 ITEM_WEIGHTS = {23: 2, 24: 3, 25: 5, 26: 7, 27: 11, 30: 13,
                 31: 17, 35: 19, 37: 23, 39: 29, 58: 31, 62: 37}
+EXPECTED_CAMPAIGN_MAPS = tuple(
+    f"maps/iw{number:02d}.wad"
+    for number in range(1, 11)
+)
 
 
 def floor_target(number: int) -> int:
@@ -142,8 +146,18 @@ def _parse_wad(data: bytes) -> _MapRecord:
 
 def read_campaign(path: Path) -> list[_MapRecord]:
     with zipfile.ZipFile(path) as package:
-        return [_parse_wad(package.read(f"maps/iw{number:02d}.wad"))
-                for number in range(1, 11)]
+        names = set(package.namelist())
+        present = [name for name in EXPECTED_CAMPAIGN_MAPS if name in names]
+        if not present:
+            return []
+
+        missing = [name for name in EXPECTED_CAMPAIGN_MAPS if name not in names]
+        if missing:
+            raise ValueError(
+                "incomplete InfiniWolf campaign; missing " + ", ".join(missing)
+            )
+
+        return [_parse_wad(package.read(name)) for name in EXPECTED_CAMPAIGN_MAPS]
 
 
 def _structural_match(record: _MapRecord) -> bool:
@@ -213,7 +227,8 @@ def verify_campaign(path: Path) -> VerificationResult:
     records = read_campaign(path)
     with zipfile.ZipFile(path) as package:
         manifest = "infiniwolf-manifest.json" in package.namelist()
-    return _verification(records, list(range(1, 11)), manifest)
+    numbers = list(range(1, 11)) if records else []
+    return _verification(records, numbers, manifest)
 
 
 def _infer_floor(record: _MapRecord, path: Path, requested: int | None) -> int:
