@@ -65,12 +65,15 @@ jobs:
           if len(wheels) != 1:
               raise SystemExit(f"expected one wheel, found {len(wheels)}")
           wheel = wheels[0]
-          shutil.copy2(wheel, Path("site") / wheel.name)
+          commit = os.environ["GITHUB_SHA"]
+          wheel_dir = Path("site/builds") / commit
+          wheel_dir.mkdir(parents=True)
+          shutil.copy2(wheel, wheel_dir / wheel.name)
           version = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))["project"]["version"]
           Path("site/build.json").write_text(json.dumps({
-              "wheel": wheel.name,
+              "wheel": f"builds/{commit}/{wheel.name}",
               "version": version,
-              "commit": os.environ["GITHUB_SHA"],
+              "commit": commit,
           }, indent=2) + "\n", encoding="utf-8")
           PY
 
