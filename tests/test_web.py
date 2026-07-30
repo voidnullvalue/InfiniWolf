@@ -1,7 +1,9 @@
 from pathlib import Path
 import json
+from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import Mock, patch
+import zipfile
 
 from infiniwolf.config import GenerationQuality, Intensity, ThemeBias
 from infiniwolf.web import campaign_config, check_for_web, generate_for_web
@@ -69,6 +71,30 @@ class BrowserAdapterTests(unittest.TestCase):
 
         verify_path.assert_called_once_with(Path("/tmp/campaign.pk3"), None)
         self.assertEqual(json.loads(result)["verdict"], "verified")
+
+    def test_checker_classifies_unrelated_pk3(self):
+        with TemporaryDirectory() as temp:
+            path = Path(temp) / "other.pk3"
+            with zipfile.ZipFile(path, "w") as package:
+                package.writestr("maps/map01.wad", b"not an InfiniWolf map")
+
+            result = json.loads(check_for_web(path, 7))
+
+        self.assertEqual(result["verdict"], "not-infiniwolf")
+        self.assertEqual(result["maps_checked"], 0)
+        self.assertEqual(result["floor_numbers"], [])
+
+    def test_checker_rejects_partial_infiniwolf_campaign_cleanly(self):
+        with TemporaryDirectory() as temp:
+            path = Path(temp) / "partial.pk3"
+            with zipfile.ZipFile(path, "w") as package:
+                package.writestr("maps/iw01.wad", b"not enough maps")
+
+            with self.assertRaisesRegex(
+                ValueError,
+                r"incomplete InfiniWolf campaign; missing maps/iw02\.wad",
+            ):
+                check_for_web(path)
 
 
 if __name__ == "__main__":
